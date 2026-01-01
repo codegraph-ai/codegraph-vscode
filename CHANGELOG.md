@@ -10,11 +10,14 @@ All notable changes to the CodeGraph extension will be documented in this file.
 - **Cross-file call resolution**: Function calls to symbols in other files now create proper call edges in the dependency graph
 - **Reindex workspace command**: Now properly re-parses all workspace files and resolves cross-file relationships
 - **`codegraph_find_unused_code` false positives**: Fixed issue where exported symbols that were imported elsewhere were incorrectly flagged as unused
+- **Framework entry points**: VS Code extension entry points (`activate`/`deactivate`) are no longer flagged as unused
+- **Trait implementations**: Rust trait methods and LSP protocol handlers are now excluded from unused code detection
 
 ### Changed
 
 - TypeScript parser now stores unresolved calls for post-processing cross-file resolution
 - LSP document handlers (`did_open`, `did_change`, `did_save`) now trigger cross-file resolution after parsing
+- All language parsers (Python, Rust, Go, C) now support cross-file call resolution
 
 ## [0.3.0] - 2025-12-31
 

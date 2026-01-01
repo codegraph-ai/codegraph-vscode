@@ -445,12 +445,20 @@ impl CodeGraphBackend {
                             .unwrap_or(false);
 
                     let is_entry = Self::is_entry_point(&name);
+                    let is_vscode_entry = Self::is_vscode_entry_point(&name);
+                    let is_trait_method = Self::is_trait_or_protocol_method(&name);
                     let is_handler = name.contains("handle")
                         || name.contains("Handler")
                         || name.starts_with("on");
                     let is_lifecycle = ["init", "setup", "teardown", "cleanup", "main", "run"]
                         .iter()
                         .any(|k| name.to_lowercase().contains(k));
+
+                    // Skip VS Code entry points and trait implementations entirely
+                    // These are called by the runtime/framework, not by user code
+                    if is_vscode_entry || is_trait_method {
+                        continue;
+                    }
 
                     // Calculate confidence
                     let confidence = if is_exported {
@@ -545,6 +553,88 @@ impl CodeGraphBackend {
             || lower.ends_with("handler")
             || lower.ends_with("listener")
             || lower.ends_with("callback")
+    }
+
+    /// Check if a function is a VS Code extension entry point
+    fn is_vscode_entry_point(name: &str) -> bool {
+        name == "activate" || name == "deactivate"
+    }
+
+    /// Check if a function is likely a trait implementation or protocol method
+    fn is_trait_or_protocol_method(name: &str) -> bool {
+        // LSP protocol methods (tower-lsp trait implementations)
+        let lsp_methods = [
+            "initialize",
+            "initialized",
+            "shutdown",
+            "did_open",
+            "did_change",
+            "did_save",
+            "did_close",
+            "completion",
+            "hover",
+            "goto_definition",
+            "references",
+            "document_symbol",
+            "formatting",
+            "rename",
+            "code_action",
+            "code_lens",
+            "folding_range",
+            "semantic_tokens_full",
+            "inlay_hint",
+            "signature_help",
+            "document_highlight",
+            "will_save",
+            "will_save_wait_until",
+            "goto_declaration",
+            "goto_type_definition",
+            "goto_implementation",
+            "prepare_rename",
+            "workspace_symbol",
+            "execute_command",
+        ];
+
+        // Common Rust trait method names
+        let trait_methods = [
+            "new",
+            "default",
+            "clone",
+            "fmt",
+            "from",
+            "into",
+            "try_from",
+            "try_into",
+            "as_ref",
+            "as_mut",
+            "deref",
+            "deref_mut",
+            "drop",
+            "eq",
+            "ne",
+            "partial_cmp",
+            "cmp",
+            "hash",
+            "index",
+            "index_mut",
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "neg",
+            "not",
+            "borrow",
+            "borrow_mut",
+            "serialize",
+            "deserialize",
+            "next",
+            "size_hint",
+            "poll",
+            "call",
+        ];
+
+        let lower = name.to_lowercase();
+        lsp_methods.contains(&lower.as_str()) || trait_methods.contains(&lower.as_str())
     }
 
     /// Analyze module coupling and cohesion
