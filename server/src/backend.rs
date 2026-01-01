@@ -638,6 +638,7 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.getCallers".to_string(),
                         "codegraph.getCallees".to_string(),
                         "codegraph.getDetailedSymbolInfo".to_string(),
+                        "codegraph.findBySignature".to_string(),
                     ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
@@ -1377,6 +1378,18 @@ impl LanguageServer for CodeGraphBackend {
                         tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
                     })?;
                 let response = self.handle_get_detailed_symbol_info(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.findBySignature" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::FindBySignatureParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_find_by_signature(params).await?;
                 Ok(Some(serde_json::to_value(response).unwrap()))
             }
 

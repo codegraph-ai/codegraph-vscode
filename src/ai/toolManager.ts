@@ -633,10 +633,19 @@ export class CodeGraphToolManager {
             vscode.lm.registerTool('codegraph_find_by_imports', {
                 invoke: async (options, token) => {
                     const input = options.input as {
-                        libraries: string[];
-                        matchMode?: 'exact' | 'prefix' | 'fuzzy';
+                        moduleName?: string;
+                        libraries?: string[];
+                        matchMode?: 'exact' | 'prefix' | 'contains' | 'fuzzy';
                     };
-                    const { libraries, matchMode = 'exact' } = input;
+                    // Support both moduleName (from package.json) and libraries (legacy)
+                    const libraries = input.libraries || (input.moduleName ? [input.moduleName] : []);
+                    const matchMode = input.matchMode || 'contains';
+
+                    if (libraries.length === 0) {
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart('Error: No module name provided. Please specify a moduleName to search for.')
+                        ]);
+                    }
 
                     try {
                         const response = await this.sendRequestWithRetry<FindByImportsResponse>(
@@ -654,11 +663,12 @@ export class CodeGraphToolManager {
                     }
                 },
                 prepareInvocation: async (options, _token) => {
-                    const input = options.input as { libraries: string[] };
-                    const { libraries } = input;
+                    const input = options.input as { moduleName?: string; libraries?: string[] };
+                    const libraries = input.libraries || (input.moduleName ? [input.moduleName] : []);
+                    const displayNames = libraries.length > 0 ? libraries.join(', ') : 'modules';
 
                     return {
-                        invocationMessage: `Finding code that imports ${libraries.join(', ')}...`
+                        invocationMessage: `Finding code that imports ${displayNames}...`
                     };
                 }
             })
