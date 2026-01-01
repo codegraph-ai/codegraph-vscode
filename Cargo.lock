@@ -253,6 +253,7 @@ dependencies = [
  "dashmap",
  "lru",
  "notify",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

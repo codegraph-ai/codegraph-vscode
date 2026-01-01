@@ -93,6 +93,63 @@ impl CodeGraphBackend {
                 serde_json::to_value(response).map_err(|_| Error::internal_error())
             }
 
+            // AI Agent Query Primitives
+            "codegraph/symbolSearch" => {
+                let params: SymbolSearchParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_symbol_search(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/findByImports" => {
+                let params: FindByImportsParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_find_by_imports(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/findEntryPoints" => {
+                let params: FindEntryPointsParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_find_entry_points(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/traverseGraph" => {
+                let params: TraverseGraphParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_traverse_graph(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/getCallers" => {
+                let params: GetCallersParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_get_callers(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/getCallees" => {
+                let params: GetCallersParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_get_callees(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/getDetailedSymbolInfo" => {
+                let params: GetDetailedInfoParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_get_detailed_symbol_info(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/findBySignature" => {
+                let params: FindBySignatureParams = serde_json::from_value(params)
+                    .map_err(|e| Error::invalid_params(format!("Invalid params: {e}")))?;
+                let response = self.handle_find_by_signature(params).await?;
+                serde_json::to_value(response).map_err(|_| Error::internal_error())
+            }
+
             _ => Err(Error::method_not_found()),
         }
     }

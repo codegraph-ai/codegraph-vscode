@@ -2,6 +2,7 @@
 //!
 //! This module implements the Language Server Protocol for CodeGraph.
 
+use crate::ai_query::QueryEngine;
 use crate::cache::QueryCache;
 use crate::error::{LspError, LspResult};
 use crate::index::SymbolIndex;
@@ -37,6 +38,9 @@ pub struct CodeGraphBackend {
     /// Symbol index for fast lookups.
     pub symbol_index: Arc<SymbolIndex>,
 
+    /// AI Agent Query Engine for fast code exploration.
+    pub query_engine: Arc<QueryEngine>,
+
     /// Workspace folders
     workspace_folders: Arc<RwLock<Vec<std::path::PathBuf>>>,
 
@@ -47,11 +51,14 @@ pub struct CodeGraphBackend {
 impl CodeGraphBackend {
     /// Create a new CodeGraph backend.
     pub fn new(client: Client) -> Self {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create in-memory graph"),
+        ));
+
         Self {
             client,
-            graph: Arc::new(RwLock::new(
-                CodeGraph::in_memory().expect("Failed to create in-memory graph"),
-            )),
+            query_engine: Arc::new(QueryEngine::new(Arc::clone(&graph))),
+            graph,
             parsers: Arc::new(ParserRegistry::new()),
             file_cache: Arc::new(DashMap::new()),
             query_cache: Arc::new(QueryCache::new(1000)),
@@ -600,6 +607,14 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.analyzeComplexity".to_string(),
                         "codegraph.findUnusedCode".to_string(),
                         "codegraph.analyzeCoupling".to_string(),
+                        // AI Agent Query Primitives
+                        "codegraph.symbolSearch".to_string(),
+                        "codegraph.findByImports".to_string(),
+                        "codegraph.findEntryPoints".to_string(),
+                        "codegraph.traverseGraph".to_string(),
+                        "codegraph.getCallers".to_string(),
+                        "codegraph.getCallees".to_string(),
+                        "codegraph.getDetailedSymbolInfo".to_string(),
                     ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
@@ -634,6 +649,12 @@ impl LanguageServer for CodeGraphBackend {
                 MessageType::INFO,
                 format!("Total files indexed: {total_indexed}"),
             )
+            .await;
+
+        // Build AI query engine indexes
+        self.query_engine.build_indexes().await;
+        self.client
+            .log_message(MessageType::INFO, "AI query engine indexes built")
             .await;
 
         // Start file watcher for incremental updates
@@ -1138,6 +1159,7 @@ impl LanguageServer for CodeGraphBackend {
                 }
                 self.symbol_index.clear();
                 self.file_cache.clear();
+                self.query_cache.invalidate_all();
 
                 self.client
                     .log_message(MessageType::INFO, "Reindexing workspace...")
@@ -1152,6 +1174,9 @@ impl LanguageServer for CodeGraphBackend {
                     let count = self.index_directory(&folder).await;
                     total_indexed += count;
                 }
+
+                // Rebuild AI query engine indexes
+                self.query_engine.build_indexes().await;
 
                 self.client
                     .log_message(
@@ -1244,6 +1269,91 @@ impl LanguageServer for CodeGraphBackend {
                         tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
                     })?;
                 let response = self.handle_analyze_coupling(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            // AI Agent Query Primitives
+            "codegraph.symbolSearch" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::SymbolSearchParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_symbol_search(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.findByImports" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::FindByImportsParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_find_by_imports(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.findEntryPoints" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::FindEntryPointsParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_find_entry_points(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.traverseGraph" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::TraverseGraphParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_traverse_graph(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.getCallers" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::GetCallersParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_get_callers(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.getCallees" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::GetCallersParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_get_callees(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.getDetailedSymbolInfo" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::GetDetailedInfoParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_get_detailed_symbol_info(params).await?;
                 Ok(Some(serde_json::to_value(response).unwrap()))
             }
 

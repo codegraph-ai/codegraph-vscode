@@ -27,6 +27,7 @@ notify = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lru = "0.12"
+regex = "1"
 
 # CodeGraph ecosystem (crates.io)
 codegraph = "0.1.1"
