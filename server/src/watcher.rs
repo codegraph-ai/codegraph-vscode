@@ -171,6 +171,9 @@ impl FileWatcher {
         // Parse and add new nodes
         parser.parse_source(&content, path, &mut graph)?;
 
+        // Resolve cross-file imports after parsing
+        GraphUpdater::resolve_cross_file_imports(&mut graph);
+
         Ok(())
     }
 
@@ -236,7 +239,180 @@ impl GraphUpdater {
             }
         }
 
+        // Post-process: resolve cross-file import edges to actual symbol nodes
+        Self::resolve_cross_file_imports(&mut graph_guard);
+
         BatchUpdateResult { succeeded, failed }
+    }
+
+    /// Resolve import edges to actual symbol nodes across files.
+    ///
+    /// After parsing all files, import edges may point to placeholder module nodes
+    /// with relative path strings like "./toolManager". This function:
+    /// 1. Finds all import edges with a `symbols` property
+    /// 2. Looks up the actual symbol nodes by name in the graph
+    /// 3. Creates direct import edges from the importing file to the symbol nodes
+    ///
+    /// This should be called after any parse operation to ensure cross-file
+    /// imports are properly resolved.
+    pub fn resolve_cross_file_imports(graph: &mut CodeGraph) {
+        use codegraph::{Direction, EdgeType, NodeType, PropertyMap};
+
+        // Collect all file nodes and their import edges
+        let file_nodes: Vec<_> = graph
+            .query()
+            .node_type(NodeType::CodeFile)
+            .execute()
+            .unwrap_or_default();
+
+        // Build a map of symbol name -> node ID for quick lookup
+        let mut symbol_map: std::collections::HashMap<String, codegraph::NodeId> =
+            std::collections::HashMap::new();
+
+        // Index all functions
+        if let Ok(functions) = graph.query().node_type(NodeType::Function).execute() {
+            for func_id in functions {
+                if let Ok(node) = graph.get_node(func_id) {
+                    if let Some(name) = node.properties.get_string("name") {
+                        symbol_map.insert(name.to_string(), func_id);
+                    }
+                }
+            }
+        }
+
+        // Index all classes
+        if let Ok(classes) = graph.query().node_type(NodeType::Class).execute() {
+            for class_id in classes {
+                if let Ok(node) = graph.get_node(class_id) {
+                    if let Some(name) = node.properties.get_string("name") {
+                        symbol_map.insert(name.to_string(), class_id);
+                    }
+                }
+            }
+        }
+
+        // Index all interfaces
+        if let Ok(interfaces) = graph.query().node_type(NodeType::Interface).execute() {
+            for interface_id in interfaces {
+                if let Ok(node) = graph.get_node(interface_id) {
+                    if let Some(name) = node.properties.get_string("name") {
+                        symbol_map.insert(name.to_string(), interface_id);
+                    }
+                }
+            }
+        }
+
+        // Process each file's outgoing import edges
+        let mut edges_to_add: Vec<(codegraph::NodeId, codegraph::NodeId, PropertyMap)> = Vec::new();
+
+        for file_id in file_nodes {
+            // Get outgoing edges from this file
+            if let Ok(neighbors) = graph.get_neighbors(file_id, Direction::Outgoing) {
+                for neighbor_id in neighbors {
+                    // Check if this is an import edge
+                    if let Ok(edge_ids) = graph.get_edges_between(file_id, neighbor_id) {
+                        for edge_id in edge_ids {
+                            if let Ok(edge) = graph.get_edge(edge_id) {
+                                if edge.edge_type == EdgeType::Imports {
+                                    // Check if this edge has symbols that we can resolve
+                                    if let Some(symbols_str) = edge.properties.get_string("symbols")
+                                    {
+                                        // Parse the comma-separated symbols
+                                        for symbol in symbols_str.split(',') {
+                                            let symbol = symbol.trim();
+                                            if !symbol.is_empty() {
+                                                // Look up the symbol in our map
+                                                if let Some(&symbol_id) = symbol_map.get(symbol) {
+                                                    // Check if we already have an edge to this symbol
+                                                    let already_linked = graph
+                                                        .get_edges_between(file_id, symbol_id)
+                                                        .map(|edges| {
+                                                            edges.iter().any(|e| {
+                                                                graph
+                                                                    .get_edge(*e)
+                                                                    .map(|edge| {
+                                                                        edge.edge_type
+                                                                            == EdgeType::Imports
+                                                                    })
+                                                                    .unwrap_or(false)
+                                                            })
+                                                        })
+                                                        .unwrap_or(false);
+
+                                                    if !already_linked {
+                                                        // Queue edge creation
+                                                        let props = PropertyMap::new()
+                                                            .with("imported_symbol", symbol)
+                                                            .with(
+                                                                "resolved_by",
+                                                                "cross_file_resolution",
+                                                            );
+                                                        edges_to_add
+                                                            .push((file_id, symbol_id, props));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the resolved import edges
+        for (from_id, to_id, props) in edges_to_add {
+            let _ = graph.add_edge(from_id, to_id, EdgeType::Imports, props);
+        }
+
+        // Phase 2: Resolve cross-file calls
+        // Find all function nodes with unresolved_calls property and resolve them
+        let mut call_edges_to_add: Vec<(codegraph::NodeId, codegraph::NodeId, PropertyMap)> =
+            Vec::new();
+
+        if let Ok(functions) = graph.query().node_type(NodeType::Function).execute() {
+            for func_id in functions {
+                if let Ok(node) = graph.get_node(func_id) {
+                    if let Some(unresolved) = node.properties.get_string("unresolved_calls") {
+                        // Parse comma-separated callee names
+                        for callee_name in unresolved.split(',') {
+                            let callee_name = callee_name.trim();
+                            if !callee_name.is_empty() {
+                                // Look up the callee in our symbol map
+                                if let Some(&callee_id) = symbol_map.get(callee_name) {
+                                    // Check if we already have a call edge
+                                    let already_linked = graph
+                                        .get_edges_between(func_id, callee_id)
+                                        .map(|edges| {
+                                            edges.iter().any(|e| {
+                                                graph
+                                                    .get_edge(*e)
+                                                    .map(|edge| edge.edge_type == EdgeType::Calls)
+                                                    .unwrap_or(false)
+                                            })
+                                        })
+                                        .unwrap_or(false);
+
+                                    if !already_linked {
+                                        let props = PropertyMap::new()
+                                            .with("resolved_by", "cross_file_resolution")
+                                            .with("is_direct", "true");
+                                        call_edges_to_add.push((func_id, callee_id, props));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the resolved call edges
+        for (from_id, to_id, props) in call_edges_to_add {
+            let _ = graph.add_edge(from_id, to_id, EdgeType::Calls, props);
+        }
     }
 }
 
@@ -464,5 +640,87 @@ mod tests {
         let result = GraphUpdater::update_files(&graph, &parsers, &files2).await;
 
         assert!(result.all_succeeded());
+    }
+
+    #[tokio::test]
+    async fn test_cross_file_import_resolution() {
+        use codegraph::{Direction, EdgeType, NodeType};
+
+        let graph = Arc::new(RwLock::new(CodeGraph::in_memory().unwrap()));
+        let parsers = Arc::new(ParserRegistry::new());
+
+        // Create two TypeScript files:
+        // 1. utils.ts defines a class MyClass
+        // 2. main.ts imports { MyClass } from './utils'
+        let files = vec![
+            (
+                PathBuf::from("/src/utils.ts"),
+                r#"
+                export class MyClass {
+                    constructor() {}
+                    doSomething() {}
+                }
+                "#
+                .to_string(),
+            ),
+            (
+                PathBuf::from("/src/main.ts"),
+                r#"
+                import { MyClass } from './utils';
+
+                const instance = new MyClass();
+                instance.doSomething();
+                "#
+                .to_string(),
+            ),
+        ];
+
+        let result = GraphUpdater::update_files(&graph, &parsers, &files).await;
+        assert!(result.all_succeeded());
+
+        // Now check if the import edge was resolved correctly
+        let graph_guard = graph.read().await;
+
+        // Find the MyClass node
+        let class_nodes: Vec<_> = graph_guard
+            .query()
+            .node_type(NodeType::Class)
+            .execute()
+            .unwrap_or_default();
+
+        let my_class_id = class_nodes.iter().find(|&id| {
+            graph_guard
+                .get_node(*id)
+                .map(|n| n.properties.get_string("name") == Some("MyClass"))
+                .unwrap_or(false)
+        });
+
+        assert!(my_class_id.is_some(), "MyClass should exist in the graph");
+
+        let my_class_id = my_class_id.unwrap();
+
+        // Check if MyClass has incoming import edges
+        let incoming_neighbors = graph_guard
+            .get_neighbors(*my_class_id, Direction::Incoming)
+            .unwrap_or_default();
+
+        let has_import_edge = incoming_neighbors.iter().any(|neighbor_id| {
+            graph_guard
+                .get_edges_between(*neighbor_id, *my_class_id)
+                .map(|edges| {
+                    edges.iter().any(|e| {
+                        graph_guard
+                            .get_edge(*e)
+                            .map(|edge| edge.edge_type == EdgeType::Imports)
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        });
+
+        assert!(
+            has_import_edge,
+            "MyClass should have an incoming import edge from main.ts"
+        );
     }
 }

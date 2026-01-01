@@ -2,6 +2,20 @@
 
 All notable changes to the CodeGraph extension will be documented in this file.
 
+## [0.3.1] - 2026-01-01
+
+### Fixed
+
+- **Cross-file import resolution**: Exported classes and functions are now correctly detected as "used" when imported by other files
+- **Cross-file call resolution**: Function calls to symbols in other files now create proper call edges in the dependency graph
+- **Reindex workspace command**: Now properly re-parses all workspace files and resolves cross-file relationships
+- **`codegraph_find_unused_code` false positives**: Fixed issue where exported symbols that were imported elsewhere were incorrectly flagged as unused
+
+### Changed
+
+- TypeScript parser now stores unresolved calls for post-processing cross-file resolution
+- LSP document handlers (`did_open`, `did_change`, `did_save`) now trigger cross-file resolution after parsing
+
 ## [0.3.0] - 2025-12-31
 
 ### Added

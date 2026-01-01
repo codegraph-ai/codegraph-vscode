@@ -7,7 +7,7 @@ use crate::cache::QueryCache;
 use crate::error::{LspError, LspResult};
 use crate::index::SymbolIndex;
 use crate::parser_registry::ParserRegistry;
-use crate::watcher::FileWatcher;
+use crate::watcher::{FileWatcher, GraphUpdater};
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use codegraph_parser_api::FileInfo;
 use dashmap::DashMap;
@@ -42,7 +42,7 @@ pub struct CodeGraphBackend {
     pub query_engine: Arc<QueryEngine>,
 
     /// Workspace folders
-    workspace_folders: Arc<RwLock<Vec<std::path::PathBuf>>>,
+    pub workspace_folders: Arc<RwLock<Vec<std::path::PathBuf>>>,
 
     /// File system watcher for incremental updates.
     file_watcher: Arc<Mutex<Option<FileWatcher>>>,
@@ -151,7 +151,7 @@ impl CodeGraphBackend {
     }
 
     /// Index all supported files in a directory
-    fn index_directory<'a>(
+    pub fn index_directory<'a>(
         &'a self,
         dir: &'a std::path::Path,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
@@ -675,6 +675,15 @@ impl LanguageServer for CodeGraphBackend {
             )
             .await;
 
+        // Resolve cross-file imports after all files are indexed
+        {
+            let mut graph = self.graph.write().await;
+            GraphUpdater::resolve_cross_file_imports(&mut graph);
+        }
+        self.client
+            .log_message(MessageType::INFO, "Cross-file imports resolved")
+            .await;
+
         // Build AI query engine indexes
         self.query_engine.build_indexes().await;
         self.client
@@ -713,6 +722,10 @@ impl LanguageServer for CodeGraphBackend {
             match parser.parse_source(&text, &path, &mut graph) {
                 Ok(file_info) => {
                     tracing::info!("Parse succeeded for: {:?}", path);
+
+                    // Resolve cross-file imports after parsing
+                    GraphUpdater::resolve_cross_file_imports(&mut graph);
+
                     // Update symbol index
                     self.symbol_index.add_file(path.clone(), &file_info, &graph);
 
@@ -752,6 +765,9 @@ impl LanguageServer for CodeGraphBackend {
                 // Re-parse with new content
                 let mut graph = self.graph.write().await;
                 if let Ok(file_info) = parser.parse_source(&change.text, &path, &mut graph) {
+                    // Resolve cross-file imports after parsing
+                    GraphUpdater::resolve_cross_file_imports(&mut graph);
+
                     self.symbol_index.add_file(path.clone(), &file_info, &graph);
                     self.file_cache.insert(uri, file_info);
                 }
@@ -773,6 +789,9 @@ impl LanguageServer for CodeGraphBackend {
 
                 let mut graph = self.graph.write().await;
                 if let Ok(file_info) = parser.parse_source(&text, &path, &mut graph) {
+                    // Resolve cross-file imports after parsing
+                    GraphUpdater::resolve_cross_file_imports(&mut graph);
+
                     self.symbol_index.add_file(path.clone(), &file_info, &graph);
                     self.file_cache.insert(uri, file_info);
                 }

@@ -4,6 +4,7 @@
 
 use crate::backend::CodeGraphBackend;
 use crate::handlers::*;
+use crate::watcher::GraphUpdater;
 use serde_json::Value;
 use tower_lsp::jsonrpc::{Error, Result};
 
@@ -169,7 +170,38 @@ impl CodeGraphBackend {
         self.client
             .log_message(
                 tower_lsp::lsp_types::MessageType::INFO,
-                "Workspace reindexed",
+                "Clearing indexes...",
+            )
+            .await;
+
+        // Re-index all workspace folders
+        let folders = self.workspace_folders.read().await.clone();
+        let mut total_indexed = 0;
+
+        for folder in &folders {
+            let count = self.index_directory(folder).await;
+            total_indexed += count;
+            self.client
+                .log_message(
+                    tower_lsp::lsp_types::MessageType::INFO,
+                    format!("Reindexed {} files from {}", count, folder.display()),
+                )
+                .await;
+        }
+
+        // Resolve cross-file imports after all files are indexed
+        {
+            let mut graph = self.graph.write().await;
+            GraphUpdater::resolve_cross_file_imports(&mut graph);
+        }
+
+        // Rebuild AI query engine indexes
+        self.query_engine.build_indexes().await;
+
+        self.client
+            .log_message(
+                tower_lsp::lsp_types::MessageType::INFO,
+                format!("Workspace reindexed: {total_indexed} files"),
             )
             .await;
 
