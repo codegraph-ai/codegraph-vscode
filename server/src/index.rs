@@ -235,6 +235,48 @@ impl SymbolIndex {
     }
 
     /// Clear all indexes.
+    /// Add a single node to the index (for testing purposes).
+    #[cfg(test)]
+    pub fn add_node_for_test(
+        &self,
+        path: PathBuf,
+        node_id: NodeId,
+        name: &str,
+        node_type: &str,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        // Index by name
+        self.by_name
+            .entry(name.to_string())
+            .or_default()
+            .push(node_id);
+
+        // Index by type
+        self.by_type
+            .entry(node_type.to_string())
+            .or_default()
+            .push(node_id);
+
+        // Add to file index
+        self.by_file.entry(path.clone()).or_default().push(node_id);
+
+        // Add to reverse index
+        self.node_to_file.insert(node_id, path.clone());
+
+        // Add to position index
+        let range = IndexRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col: 100,
+        };
+        self.by_position
+            .entry(path)
+            .or_default()
+            .push((range, node_id));
+    }
+
     pub fn clear(&self) {
         self.by_name.clear();
         self.by_file.clear();

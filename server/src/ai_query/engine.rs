@@ -1136,4 +1136,796 @@ mod tests {
         );
         assert!(!results.results.is_empty());
     }
+
+    // ==========================================
+    // find_by_signature tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_find_by_signature_name_pattern() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add functions with different names
+            for (name, is_async) in [
+                ("getUserById", false),
+                ("getOrderById", false),
+                ("createUser", true),
+                ("deleteUser", false),
+                ("processData", false),
+            ] {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/api.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "is_async".to_string(),
+                    codegraph::PropertyValue::Bool(is_async),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for functions matching "get.*ById" pattern
+        let pattern = SignaturePattern {
+            name_pattern: Some("get.*ById".to_string()),
+            return_type: None,
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"getUserById"));
+        assert!(names.contains(&"getOrderById"));
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_return_type() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add functions with different return types
+            for (name, return_type) in [
+                ("getString", "String"),
+                ("getInt", "i32"),
+                ("getBool", "bool"),
+                ("getResult", "Result<String, Error>"),
+            ] {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "return_type".to_string(),
+                    codegraph::PropertyValue::String(return_type.to_string()),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for functions returning String
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: Some("String".to_string()),
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "getString");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_return_type_normalized() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add functions with equivalent return types
+            for (name, return_type) in [
+                ("fn1", "boolean"),
+                ("fn2", "bool"),
+                ("fn3", "void"),
+                ("fn4", "()"),
+            ] {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "return_type".to_string(),
+                    codegraph::PropertyValue::String(return_type.to_string()),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for boolean (should match both "boolean" and "bool")
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: Some("bool".to_string()),
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"fn1"));
+        assert!(names.contains(&"fn2"));
+
+        // Search for void (should match "void" and "()")
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: Some("void".to_string()),
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"fn3"));
+        assert!(names.contains(&"fn4"));
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_param_count() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add functions with different param counts
+            for (name, param_count) in [
+                ("noParams", 0),
+                ("oneParam", 1),
+                ("twoParams", 2),
+                ("threeParams", 3),
+                ("manyParams", 5),
+            ] {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "param_count".to_string(),
+                    codegraph::PropertyValue::Int(param_count),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for functions with 1-2 parameters
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: None,
+            param_count: Some((1, 2)),
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"oneParam"));
+        assert!(names.contains(&"twoParams"));
+
+        // Search for functions with exactly 0 parameters
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: None,
+            param_count: Some((0, 0)),
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "noParams");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_modifiers() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add functions with different modifiers
+            let configs = [
+                ("syncPublic", false, true, false),
+                ("asyncPublic", true, true, false),
+                ("syncPrivate", false, false, false),
+                ("asyncPrivate", true, false, false),
+                ("staticFunc", false, true, true),
+            ];
+
+            for (name, is_async, is_public, is_static) in configs {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "is_async".to_string(),
+                    codegraph::PropertyValue::Bool(is_async),
+                );
+                props.insert(
+                    "is_public".to_string(),
+                    codegraph::PropertyValue::Bool(is_public),
+                );
+                props.insert(
+                    "is_static".to_string(),
+                    codegraph::PropertyValue::Bool(is_static),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for async functions
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: None,
+            param_count: None,
+            modifiers: vec!["async".to_string()],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"asyncPublic"));
+        assert!(names.contains(&"asyncPrivate"));
+
+        // Search for public async functions
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: None,
+            param_count: None,
+            modifiers: vec!["async".to_string(), "public".to_string()],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "asyncPublic");
+
+        // Search for static functions
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: None,
+            param_count: None,
+            modifiers: vec!["static".to_string()],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "staticFunc");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_combined_filters() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add various functions
+            let configs = [
+                ("getUserById", "User", 1, true, true),
+                ("getOrderById", "Order", 1, true, false),
+                ("fetchUserData", "User", 2, true, true),
+                ("createUser", "User", 3, false, true),
+                ("processRequest", "Response", 1, true, true),
+            ];
+
+            for (name, return_type, param_count, is_async, is_public) in configs {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/api.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "return_type".to_string(),
+                    codegraph::PropertyValue::String(return_type.to_string()),
+                );
+                props.insert(
+                    "param_count".to_string(),
+                    codegraph::PropertyValue::Int(param_count),
+                );
+                props.insert(
+                    "is_async".to_string(),
+                    codegraph::PropertyValue::Bool(is_async),
+                );
+                props.insert(
+                    "is_public".to_string(),
+                    codegraph::PropertyValue::Bool(is_public),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for async public functions returning User with 1 param
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: Some("User".to_string()),
+            param_count: Some((1, 1)),
+            modifiers: vec!["async".to_string(), "public".to_string()],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "getUserById");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_no_matches() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("someFunction".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add node");
+        }
+
+        engine.build_indexes().await;
+
+        // Search for a pattern that won't match
+        let pattern = SignaturePattern {
+            name_pattern: Some("nonexistent.*".to_string()),
+            return_type: None,
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_only_matches_functions() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Add a function
+            let mut func_props = PropertyMap::new();
+            func_props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("myFunction".to_string()),
+            );
+            func_props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            func_props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            g.add_node(NodeType::Function, func_props)
+                .expect("Failed to add function");
+
+            // Add a class with similar name
+            let mut class_props = PropertyMap::new();
+            class_props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("myClass".to_string()),
+            );
+            class_props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            class_props.insert("line_start".to_string(), codegraph::PropertyValue::Int(10));
+            g.add_node(NodeType::Class, class_props)
+                .expect("Failed to add class");
+
+            // Add a variable with similar name
+            let mut var_props = PropertyMap::new();
+            var_props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("myVariable".to_string()),
+            );
+            var_props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            var_props.insert("line_start".to_string(), codegraph::PropertyValue::Int(20));
+            g.add_node(NodeType::Variable, var_props)
+                .expect("Failed to add variable");
+        }
+
+        engine.build_indexes().await;
+
+        // Search with pattern matching all "my*"
+        let pattern = SignaturePattern {
+            name_pattern: Some("my.*".to_string()),
+            return_type: None,
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        // Should only match the function
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "myFunction");
+        assert_eq!(results[0].symbol.kind, "Function");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_signature_match_reason() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("testFunc".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            props.insert(
+                "return_type".to_string(),
+                codegraph::PropertyValue::String("bool".to_string()),
+            );
+            props.insert("param_count".to_string(), codegraph::PropertyValue::Int(2));
+            props.insert("is_async".to_string(), codegraph::PropertyValue::Bool(true));
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add node");
+        }
+
+        engine.build_indexes().await;
+
+        let pattern = SignaturePattern {
+            name_pattern: Some("test.*".to_string()),
+            return_type: Some("bool".to_string()),
+            param_count: Some((2, 2)),
+            modifiers: vec!["async".to_string()],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 1);
+        let match_reason = &results[0].match_reason;
+        assert!(match_reason.contains("name matches /test.*/"));
+        assert!(match_reason.contains("returns bool"));
+        assert!(match_reason.contains("2 parameters"));
+        assert!(match_reason.contains("modifiers: async"));
+    }
+
+    #[tokio::test]
+    async fn test_type_matches_wildcard() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            for (name, return_type) in [
+                ("fn1", "Result<String, Error>"),
+                ("fn2", "Result<i32, Error>"),
+                ("fn3", "Option<String>"),
+            ] {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                props.insert(
+                    "return_type".to_string(),
+                    codegraph::PropertyValue::String(return_type.to_string()),
+                );
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        // Search for Result<*, Error> pattern
+        let pattern = SignaturePattern {
+            name_pattern: None,
+            return_type: Some("Result<*, Error>".to_string()),
+            param_count: None,
+            modifiers: vec![],
+        };
+
+        let results = engine.find_by_signature(&pattern).await;
+
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"fn1"));
+        assert!(names.contains(&"fn2"));
+    }
+
+    // ==========================================
+    // detect_entry_type tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_detect_entry_type_http_handler() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("getUsers".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/handlers.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            props.insert(
+                "route".to_string(),
+                codegraph::PropertyValue::String("/api/users".to_string()),
+            );
+            props.insert(
+                "http_method".to_string(),
+                codegraph::PropertyValue::String("GET".to_string()),
+            );
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add node");
+        }
+
+        engine.build_indexes().await;
+
+        let results = engine.find_entry_points(&[EntryType::HttpHandler]).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol.name, "getUsers");
+        assert!(matches!(results[0].entry_type, EntryType::HttpHandler));
+        assert_eq!(results[0].route, Some("/api/users".to_string()));
+        assert_eq!(results[0].method, Some("GET".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_detect_entry_type_cli_command() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // CLI command by name
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("runCommand".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/cli.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add node");
+
+            // CLI command by property
+            let mut props2 = PropertyMap::new();
+            props2.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("execute".to_string()),
+            );
+            props2.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/cli.rs".to_string()),
+            );
+            props2.insert("line_start".to_string(), codegraph::PropertyValue::Int(10));
+            props2.insert("is_cli".to_string(), codegraph::PropertyValue::Bool(true));
+            g.add_node(NodeType::Function, props2)
+                .expect("Failed to add node");
+        }
+
+        engine.build_indexes().await;
+
+        let results = engine.find_entry_points(&[EntryType::CliCommand]).await;
+
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_detect_entry_type_event_handler() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Use names that match the actual detection patterns:
+            // - starts_with("on_")
+            // - starts_with("handle_")
+            // - ends_with("_handler")
+            // - ends_with("_callback")
+            // Note: Avoid "cli" in names as it triggers CliCommand detection first
+            for name in [
+                "on_submit",
+                "handle_submit",
+                "button_handler",
+                "data_callback",
+            ] {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    codegraph::PropertyValue::String(name.to_string()),
+                );
+                props.insert(
+                    "path".to_string(),
+                    codegraph::PropertyValue::String("/src/events.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        engine.build_indexes().await;
+
+        let results = engine.find_entry_points(&[EntryType::EventHandler]).await;
+
+        assert_eq!(results.len(), 4);
+
+        // Verify all expected patterns are detected
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(
+            names.contains(&"on_submit"),
+            "on_submit should be detected (starts with on_)"
+        );
+        assert!(
+            names.contains(&"handle_submit"),
+            "handle_submit should be detected (starts with handle_)"
+        );
+        assert!(
+            names.contains(&"button_handler"),
+            "button_handler should be detected (ends with _handler)"
+        );
+        assert!(
+            names.contains(&"data_callback"),
+            "data_callback should be detected (ends with _callback)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_entry_points_all_types() {
+        let (engine, graph) = create_test_engine().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Main
+            let mut main_props = PropertyMap::new();
+            main_props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("main".to_string()),
+            );
+            main_props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/main.rs".to_string()),
+            );
+            main_props.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            g.add_node(NodeType::Function, main_props)
+                .expect("Failed to add main");
+
+            // Test
+            let mut test_props = PropertyMap::new();
+            test_props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("test_something".to_string()),
+            );
+            test_props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/tests.rs".to_string()),
+            );
+            test_props.insert("line_start".to_string(), codegraph::PropertyValue::Int(10));
+            g.add_node(NodeType::Function, test_props)
+                .expect("Failed to add test");
+
+            // Public API
+            let mut api_props = PropertyMap::new();
+            api_props.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("someApi".to_string()),
+            );
+            api_props.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            api_props.insert("line_start".to_string(), codegraph::PropertyValue::Int(20));
+            api_props.insert("exported".to_string(), codegraph::PropertyValue::Bool(true));
+            g.add_node(NodeType::Function, api_props)
+                .expect("Failed to add api");
+        }
+
+        engine.build_indexes().await;
+
+        // Find all entry points (empty filter)
+        let results = engine.find_entry_points(&[]).await;
+
+        // Should find main, test, and public API
+        assert!(results.len() >= 3);
+    }
 }

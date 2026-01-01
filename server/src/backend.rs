@@ -68,6 +68,29 @@ impl CodeGraphBackend {
         }
     }
 
+    /// Create a backend for testing with a pre-configured graph and query engine.
+    /// This allows tests to inject their own graph state without needing a real LSP client.
+    #[cfg(test)]
+    pub fn new_for_test(graph: Arc<RwLock<CodeGraph>>, query_engine: Arc<QueryEngine>) -> Self {
+        use tower_lsp::LspService;
+
+        // Create a dummy client for testing
+        let (service, _socket) = LspService::new(Self::new);
+        let dummy_client = service.inner().client.clone();
+
+        Self {
+            client: dummy_client,
+            query_engine,
+            graph,
+            parsers: Arc::new(ParserRegistry::new()),
+            file_cache: Arc::new(DashMap::new()),
+            query_cache: Arc::new(QueryCache::new(1000)),
+            symbol_index: Arc::new(SymbolIndex::new()),
+            workspace_folders: Arc::new(RwLock::new(Vec::new())),
+            file_watcher: Arc::new(Mutex::new(None)),
+        }
+    }
+
     /// Start the file watcher for the given workspace folders.
     pub async fn start_file_watcher(&self, folders: &[PathBuf]) {
         // Create the file watcher
@@ -1378,5 +1401,447 @@ impl CodeGraphBackend {
         node_id_str
             .parse::<NodeId>()
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid nodeId"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codegraph::{NodeType, PropertyMap};
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Helper to create a test backend with an empty graph
+    fn create_test_backend() -> CodeGraphBackend {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create graph"),
+        ));
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        CodeGraphBackend::new_for_test(graph, query_engine)
+    }
+
+    /// Helper to create a backend with a pre-populated graph
+    async fn create_backend_with_nodes() -> (CodeGraphBackend, NodeId, NodeId) {
+        use codegraph::PropertyValue;
+
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create graph"),
+        ));
+
+        let (func1_id, func2_id) = {
+            let mut g = graph.write().await;
+
+            // Create a function node
+            let mut props1 = PropertyMap::new();
+            props1.insert(
+                "name".to_string(),
+                PropertyValue::String("test_function".to_string()),
+            );
+            props1.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/file.rs".to_string()),
+            );
+            props1.insert("line_start".to_string(), PropertyValue::Int(10));
+            props1.insert("line_end".to_string(), PropertyValue::Int(20));
+            props1.insert("col_start".to_string(), PropertyValue::Int(0));
+            props1.insert("col_end".to_string(), PropertyValue::Int(50));
+            props1.insert(
+                "signature".to_string(),
+                PropertyValue::String("fn test_function() -> bool".to_string()),
+            );
+            let func1_id = g.add_node(NodeType::Function, props1).unwrap();
+
+            // Create another function that calls the first
+            let mut props2 = PropertyMap::new();
+            props2.insert(
+                "name".to_string(),
+                PropertyValue::String("caller_function".to_string()),
+            );
+            props2.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/file.rs".to_string()),
+            );
+            props2.insert("line_start".to_string(), PropertyValue::Int(30));
+            props2.insert("line_end".to_string(), PropertyValue::Int(40));
+            props2.insert("col_start".to_string(), PropertyValue::Int(0));
+            props2.insert("col_end".to_string(), PropertyValue::Int(50));
+            props2.insert(
+                "signature".to_string(),
+                PropertyValue::String("fn caller_function()".to_string()),
+            );
+            let func2_id = g.add_node(NodeType::Function, props2).unwrap();
+
+            // Create a call edge from func2 to func1
+            g.add_edge(func2_id, func1_id, EdgeType::Calls, PropertyMap::new())
+                .unwrap();
+
+            (func1_id, func2_id)
+        };
+
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        let backend = CodeGraphBackend::new_for_test(graph, query_engine);
+
+        (backend, func1_id, func2_id)
+    }
+
+    /// Helper to add a function node to the symbol index
+    fn add_func_to_index(
+        backend: &CodeGraphBackend,
+        path: &Path,
+        func_id: NodeId,
+        name: &str,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        backend.symbol_index.add_node_for_test(
+            path.to_path_buf(),
+            func_id,
+            name,
+            "Function",
+            start_line,
+            end_line,
+        );
+    }
+
+    #[test]
+    fn test_backend_creation() {
+        let backend = create_test_backend();
+        assert!(backend.file_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_node_at_position_empty_graph() {
+        let backend = create_test_backend();
+        let graph = backend.graph.read().await;
+        let path = Path::new("/test/file.rs");
+        let position = Position {
+            line: 10,
+            character: 5,
+        };
+
+        let result = backend.find_node_at_position(&graph, path, position);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_find_node_at_position_with_indexed_symbol() {
+        let (backend, func_id, _) = create_backend_with_nodes().await;
+
+        // Add the node to the symbol index
+        let path = Path::new("/test/file.rs");
+        add_func_to_index(&backend, path, func_id, "test_function", 10, 20);
+
+        let graph = backend.graph.read().await;
+        // Position within the function (line 15, 0-indexed is 14, but we add 1 = 15)
+        let position = Position {
+            line: 14, // 0-indexed, will be converted to 15 (1-indexed)
+            character: 10,
+        };
+
+        let result = backend.find_node_at_position(&graph, path, position);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(func_id));
+    }
+
+    #[tokio::test]
+    async fn test_find_nearest_node_exact_match() {
+        let (backend, func_id, _) = create_backend_with_nodes().await;
+
+        // Add the node to the symbol index
+        let path = Path::new("/test/file.rs");
+        add_func_to_index(&backend, path, func_id, "test_function", 10, 20);
+
+        let graph = backend.graph.read().await;
+        let position = Position {
+            line: 14,
+            character: 10,
+        };
+
+        let result = backend.find_nearest_node(&graph, path, position);
+        assert!(result.is_ok());
+        let (node_id, was_fallback) = result.unwrap().unwrap();
+        assert_eq!(node_id, func_id);
+        assert!(!was_fallback);
+    }
+
+    #[tokio::test]
+    async fn test_find_nearest_node_fallback() {
+        let (backend, func_id, _) = create_backend_with_nodes().await;
+
+        // Add the node to the symbol index
+        let path = Path::new("/test/file.rs");
+        add_func_to_index(&backend, path, func_id, "test_function", 10, 20);
+
+        let graph = backend.graph.read().await;
+        // Position before the function
+        let position = Position {
+            line: 0,
+            character: 0,
+        };
+
+        let result = backend.find_nearest_node(&graph, path, position);
+        assert!(result.is_ok());
+        let (node_id, was_fallback) = result.unwrap().unwrap();
+        assert_eq!(node_id, func_id);
+        assert!(was_fallback);
+    }
+
+    #[tokio::test]
+    async fn test_get_connected_edges_outgoing() {
+        let (backend, func1_id, func2_id) = create_backend_with_nodes().await;
+        let graph = backend.graph.read().await;
+
+        // func2 calls func1, so outgoing edges from func2 should include func1
+        let edges = backend.get_connected_edges(&graph, func2_id, Direction::Outgoing);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].0, func2_id); // source
+        assert_eq!(edges[0].1, func1_id); // target
+        assert_eq!(edges[0].2, EdgeType::Calls);
+    }
+
+    #[tokio::test]
+    async fn test_get_connected_edges_incoming() {
+        let (backend, func1_id, func2_id) = create_backend_with_nodes().await;
+        let graph = backend.graph.read().await;
+
+        // func1 is called by func2, so incoming edges to func1 should include func2
+        let edges = backend.get_connected_edges(&graph, func1_id, Direction::Incoming);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].0, func2_id); // source
+        assert_eq!(edges[0].1, func1_id); // target
+        assert_eq!(edges[0].2, EdgeType::Calls);
+    }
+
+    #[tokio::test]
+    async fn test_get_connected_edges_both() {
+        let (backend, func1_id, _func2_id) = create_backend_with_nodes().await;
+        let graph = backend.graph.read().await;
+
+        // Get both directions for func1
+        let edges = backend.get_connected_edges(&graph, func1_id, Direction::Both);
+        assert_eq!(edges.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_node_to_location() {
+        let (backend, func_id, _) = create_backend_with_nodes().await;
+        let graph = backend.graph.read().await;
+
+        let result = backend.node_to_location(&graph, func_id);
+        assert!(result.is_ok());
+
+        let location = result.unwrap();
+        assert!(location.uri.to_string().contains("file.rs"));
+        // Line 10 (1-indexed) becomes 9 (0-indexed)
+        assert_eq!(location.range.start.line, 9);
+        assert_eq!(location.range.end.line, 19);
+    }
+
+    #[tokio::test]
+    async fn test_node_to_location_missing_path() {
+        use codegraph::PropertyValue;
+        let backend = create_test_backend();
+
+        let node_id = {
+            let mut graph = backend.graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("orphan_node".to_string()),
+            );
+            // No path property set
+            graph.add_node(NodeType::Function, props).unwrap()
+        };
+
+        let graph = backend.graph.read().await;
+        let result = backend.node_to_location(&graph, node_id);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_node_source_code_from_property() {
+        use codegraph::PropertyValue;
+        let backend = create_test_backend();
+
+        let node_id = {
+            let mut graph = backend.graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("test_func".to_string()),
+            );
+            props.insert(
+                "source".to_string(),
+                PropertyValue::String("fn test_func() { }".to_string()),
+            );
+            graph.add_node(NodeType::Function, props).unwrap()
+        };
+
+        let result = backend.get_node_source_code(node_id).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("fn test_func() { }".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_node_source_code_from_file() {
+        use codegraph::PropertyValue;
+        let backend = create_test_backend();
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+
+        // Write test file
+        std::fs::write(&file_path, "line 1\nline 2\nline 3\nline 4\nline 5").unwrap();
+
+        let node_id = {
+            let mut graph = backend.graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("test_func".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                PropertyValue::String(file_path.to_str().unwrap().to_string()),
+            );
+            props.insert("line_start".to_string(), PropertyValue::Int(2));
+            props.insert("line_end".to_string(), PropertyValue::Int(4));
+            graph.add_node(NodeType::Function, props).unwrap()
+        };
+
+        let result = backend.get_node_source_code(node_id).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("line 2\nline 3\nline 4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_node_id_from_item_valid() {
+        let backend = create_test_backend();
+
+        let item = CallHierarchyItem {
+            name: "test".to_string(),
+            kind: SymbolKind::FUNCTION,
+            tags: None,
+            detail: None,
+            uri: Url::parse("file:///test.rs").unwrap(),
+            range: Range::default(),
+            selection_range: Range::default(),
+            data: Some(serde_json::json!({ "nodeId": "123" })),
+        };
+
+        let result = backend.extract_node_id_from_item(&item);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 123);
+    }
+
+    #[tokio::test]
+    async fn test_extract_node_id_from_item_missing_data() {
+        let backend = create_test_backend();
+
+        let item = CallHierarchyItem {
+            name: "test".to_string(),
+            kind: SymbolKind::FUNCTION,
+            tags: None,
+            detail: None,
+            uri: Url::parse("file:///test.rs").unwrap(),
+            range: Range::default(),
+            selection_range: Range::default(),
+            data: None,
+        };
+
+        let result = backend.extract_node_id_from_item(&item);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_extract_node_id_from_item_invalid_node_id() {
+        let backend = create_test_backend();
+
+        let item = CallHierarchyItem {
+            name: "test".to_string(),
+            kind: SymbolKind::FUNCTION,
+            tags: None,
+            detail: None,
+            uri: Url::parse("file:///test.rs").unwrap(),
+            range: Range::default(),
+            selection_range: Range::default(),
+            data: Some(serde_json::json!({ "nodeId": "not_a_number" })),
+        };
+
+        let result = backend.extract_node_id_from_item(&item);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_cache_operations() {
+        let backend = create_test_backend();
+        let uri = Url::parse("file:///test.rs").unwrap();
+
+        assert!(backend.file_cache.is_empty());
+
+        // Simulate inserting a file info
+        let file_info = FileInfo {
+            file_path: "/test.rs".into(),
+            file_id: 1,
+            functions: vec![],
+            classes: vec![],
+            traits: vec![],
+            imports: vec![],
+            parse_time: std::time::Duration::from_millis(0),
+            line_count: 0,
+            byte_count: 0,
+        };
+        backend.file_cache.insert(uri.clone(), file_info);
+
+        assert!(!backend.file_cache.is_empty());
+        assert!(backend.file_cache.contains_key(&uri));
+
+        // Remove
+        backend.file_cache.remove(&uri);
+        assert!(backend.file_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_query_cache_invalidation() {
+        let backend = create_test_backend();
+
+        // Add something to cache
+        let path = PathBuf::from("/test/file.rs");
+        backend.query_cache.set_definition(path.clone(), 0, 0, 123);
+
+        // Verify it's cached
+        let cached = backend.query_cache.get_definition(&path, 0, 0);
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap(), 123);
+
+        // Invalidate
+        backend.query_cache.invalidate_file(&path);
+
+        // Verify it's gone
+        let cached = backend.query_cache.get_definition(&path, 0, 0);
+        assert!(cached.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_symbol_index_integration() {
+        let (backend, func_id, _) = create_backend_with_nodes().await;
+        let path = Path::new("/test/file.rs");
+
+        // Add to symbol index using test helper
+        add_func_to_index(&backend, path, func_id, "test_function", 10, 20);
+
+        // Search by name
+        let results = backend.symbol_index.search_by_name("test_function");
+        assert!(!results.is_empty());
+        assert!(results.contains(&func_id));
+
+        // Get file symbols
+        let file_symbols = backend.symbol_index.get_file_symbols(path);
+        assert!(!file_symbols.is_empty());
+
+        // Remove file
+        backend.symbol_index.remove_file(path);
+        let file_symbols = backend.symbol_index.get_file_symbols(path);
+        assert!(file_symbols.is_empty());
     }
 }

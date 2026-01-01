@@ -701,3 +701,1013 @@ fn symbol_info_to_response(info: &crate::ai_query::SymbolInfo) -> SymbolInfoResp
         is_public: info.is_public,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai_query::QueryEngine;
+    use codegraph::{CodeGraph, EdgeType, NodeType, PropertyMap, PropertyValue};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    /// Create a test backend with an in-memory graph
+    async fn create_test_backend() -> (CodeGraphBackend, Arc<RwLock<CodeGraph>>) {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create in-memory graph"),
+        ));
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+
+        let backend = CodeGraphBackend::new_for_test(Arc::clone(&graph), query_engine);
+        (backend, graph)
+    }
+
+    // ==========================================
+    // Symbol Search Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_symbol_search_basic() {
+        let (backend, graph) = create_test_backend().await;
+
+        // Add test data
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("findUser".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/users.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), PropertyValue::Int(10));
+            props.insert("line_end".to_string(), PropertyValue::Int(20));
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add node");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = SymbolSearchParams {
+            query: "find".to_string(),
+            scope: None,
+            symbol_types: None,
+            limit: None,
+            include_private: None,
+        };
+
+        let result = backend.handle_symbol_search(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].symbol.name, "findUser");
+    }
+
+    #[tokio::test]
+    async fn test_handle_symbol_search_with_type_filter() {
+        let (backend, graph) = create_test_backend().await;
+
+        // Add function and class
+        {
+            let mut g = graph.write().await;
+
+            let mut func_props = PropertyMap::new();
+            func_props.insert(
+                "name".to_string(),
+                PropertyValue::String("processData".to_string()),
+            );
+            func_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            func_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            g.add_node(NodeType::Function, func_props)
+                .expect("Failed to add function");
+
+            let mut class_props = PropertyMap::new();
+            class_props.insert(
+                "name".to_string(),
+                PropertyValue::String("DataProcessor".to_string()),
+            );
+            class_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            class_props.insert("line_start".to_string(), PropertyValue::Int(20));
+            g.add_node(NodeType::Class, class_props)
+                .expect("Failed to add class");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        // Search only for classes
+        let params = SymbolSearchParams {
+            query: "data".to_string(),
+            scope: None,
+            symbol_types: Some(vec!["class".to_string()]),
+            limit: None,
+            include_private: None,
+        };
+
+        let result = backend.handle_symbol_search(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].symbol.kind, "Class");
+    }
+
+    #[tokio::test]
+    async fn test_handle_symbol_search_with_limit() {
+        let (backend, graph) = create_test_backend().await;
+
+        // Add multiple functions
+        {
+            let mut g = graph.write().await;
+            for i in 0..10 {
+                let mut props = PropertyMap::new();
+                props.insert(
+                    "name".to_string(),
+                    PropertyValue::String(format!("processItem{i}")),
+                );
+                props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), PropertyValue::Int(i * 10));
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = SymbolSearchParams {
+            query: "process".to_string(),
+            scope: None,
+            symbol_types: None,
+            limit: Some(3),
+            include_private: None,
+        };
+
+        let result = backend.handle_symbol_search(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 3);
+    }
+
+    // ==========================================
+    // Find By Imports Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_find_by_imports() {
+        let (backend, graph) = create_test_backend().await;
+
+        // Add nodes with import relationship
+        {
+            let mut g = graph.write().await;
+
+            // Source file
+            let mut src_props = PropertyMap::new();
+            src_props.insert(
+                "name".to_string(),
+                PropertyValue::String("app.rs".to_string()),
+            );
+            src_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/app.rs".to_string()),
+            );
+            src_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            let src_id = g
+                .add_node(NodeType::Module, src_props)
+                .expect("Failed to add source");
+
+            // Imported module
+            let mut lib_props = PropertyMap::new();
+            lib_props.insert(
+                "name".to_string(),
+                PropertyValue::String("serde".to_string()),
+            );
+            lib_props.insert(
+                "path".to_string(),
+                PropertyValue::String("serde".to_string()),
+            );
+            lib_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            let lib_id = g
+                .add_node(NodeType::Module, lib_props)
+                .expect("Failed to add lib");
+
+            // Create import edge
+            g.add_edge(src_id, lib_id, EdgeType::Imports, PropertyMap::new())
+                .expect("Failed to add edge");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindByImportsParams {
+            libraries: vec!["serde".to_string()],
+            match_mode: Some("exact".to_string()),
+        };
+
+        let result = backend.handle_find_by_imports(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_by_imports_fuzzy() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+
+            let mut src_props = PropertyMap::new();
+            src_props.insert(
+                "name".to_string(),
+                PropertyValue::String("main.rs".to_string()),
+            );
+            src_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/main.rs".to_string()),
+            );
+            src_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            let src_id = g
+                .add_node(NodeType::Module, src_props)
+                .expect("Failed to add source");
+
+            let mut lib_props = PropertyMap::new();
+            lib_props.insert(
+                "name".to_string(),
+                PropertyValue::String("tokio_runtime".to_string()),
+            );
+            lib_props.insert(
+                "path".to_string(),
+                PropertyValue::String("tokio_runtime".to_string()),
+            );
+            lib_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            let lib_id = g
+                .add_node(NodeType::Module, lib_props)
+                .expect("Failed to add lib");
+
+            g.add_edge(src_id, lib_id, EdgeType::Imports, PropertyMap::new())
+                .expect("Failed to add edge");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindByImportsParams {
+            libraries: vec!["tokio".to_string()],
+            match_mode: Some("fuzzy".to_string()),
+        };
+
+        let result = backend.handle_find_by_imports(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 1);
+    }
+
+    // ==========================================
+    // Find Entry Points Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_find_entry_points_main() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("main".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/main.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), PropertyValue::Int(1));
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add main");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindEntryPointsParams {
+            entry_type: Some("main".to_string()),
+        };
+
+        let result = backend.handle_find_entry_points(params).await.unwrap();
+
+        assert_eq!(result.total_found, 1);
+        assert_eq!(result.entry_points[0].symbol.name, "main");
+        assert_eq!(result.entry_points[0].entry_type, "main");
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_entry_points_http_handler() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("get_users".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/api.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), PropertyValue::Int(1));
+            props.insert(
+                "route".to_string(),
+                PropertyValue::String("/api/users".to_string()),
+            );
+            props.insert(
+                "http_method".to_string(),
+                PropertyValue::String("GET".to_string()),
+            );
+            g.add_node(NodeType::Function, props)
+                .expect("Failed to add handler");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindEntryPointsParams {
+            entry_type: Some("http_handler".to_string()),
+        };
+
+        let result = backend.handle_find_entry_points(params).await.unwrap();
+
+        assert_eq!(result.total_found, 1);
+        assert_eq!(result.entry_points[0].route, Some("/api/users".to_string()));
+        assert_eq!(result.entry_points[0].method, Some("GET".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_entry_points_all() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Main
+            let mut main_props = PropertyMap::new();
+            main_props.insert(
+                "name".to_string(),
+                PropertyValue::String("main".to_string()),
+            );
+            main_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/main.rs".to_string()),
+            );
+            main_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            g.add_node(NodeType::Function, main_props)
+                .expect("Failed to add main");
+
+            // Test
+            let mut test_props = PropertyMap::new();
+            test_props.insert(
+                "name".to_string(),
+                PropertyValue::String("test_users".to_string()),
+            );
+            test_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/tests.rs".to_string()),
+            );
+            test_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            g.add_node(NodeType::Function, test_props)
+                .expect("Failed to add test");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        // Empty entry_type means find all
+        let params = FindEntryPointsParams { entry_type: None };
+
+        let result = backend.handle_find_entry_points(params).await.unwrap();
+
+        assert!(result.total_found >= 2);
+    }
+
+    // ==========================================
+    // Find By Signature Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_find_by_signature_name_pattern() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+
+            for name in ["getUserById", "getOrderById", "createUser"] {
+                let mut props = PropertyMap::new();
+                props.insert("name".to_string(), PropertyValue::String(name.to_string()));
+                props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/api.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), PropertyValue::Int(1));
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindBySignatureParams {
+            name_pattern: Some("get.*ById".to_string()),
+            return_type: None,
+            param_count: None,
+            modifiers: None,
+        };
+
+        let result = backend.handle_find_by_signature(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 2);
+        let names: Vec<&str> = result
+            .results
+            .iter()
+            .map(|r| r.symbol.name.as_str())
+            .collect();
+        assert!(names.contains(&"getUserById"));
+        assert!(names.contains(&"getOrderById"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_by_signature_with_modifiers() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+
+            // Async public function
+            let mut async_props = PropertyMap::new();
+            async_props.insert(
+                "name".to_string(),
+                PropertyValue::String("fetchData".to_string()),
+            );
+            async_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            async_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            async_props.insert("is_async".to_string(), PropertyValue::Bool(true));
+            async_props.insert("is_public".to_string(), PropertyValue::Bool(true));
+            g.add_node(NodeType::Function, async_props)
+                .expect("Failed to add async fn");
+
+            // Sync function
+            let mut sync_props = PropertyMap::new();
+            sync_props.insert(
+                "name".to_string(),
+                PropertyValue::String("processData".to_string()),
+            );
+            sync_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            sync_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            sync_props.insert("is_async".to_string(), PropertyValue::Bool(false));
+            g.add_node(NodeType::Function, sync_props)
+                .expect("Failed to add sync fn");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindBySignatureParams {
+            name_pattern: None,
+            return_type: None,
+            param_count: None,
+            modifiers: Some(vec!["async".to_string()]),
+        };
+
+        let result = backend.handle_find_by_signature(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].symbol.name, "fetchData");
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_by_signature_param_count() {
+        let (backend, graph) = create_test_backend().await;
+
+        {
+            let mut g = graph.write().await;
+
+            for (name, count) in [("noArgs", 0), ("oneArg", 1), ("twoArgs", 2)] {
+                let mut props = PropertyMap::new();
+                props.insert("name".to_string(), PropertyValue::String(name.to_string()));
+                props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/lib.rs".to_string()),
+                );
+                props.insert("line_start".to_string(), PropertyValue::Int(1));
+                props.insert("param_count".to_string(), PropertyValue::Int(count));
+                g.add_node(NodeType::Function, props)
+                    .expect("Failed to add node");
+            }
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = FindBySignatureParams {
+            name_pattern: None,
+            return_type: None,
+            param_count: Some(ParamCountRange { min: 1, max: 2 }),
+            modifiers: None,
+        };
+
+        let result = backend.handle_find_by_signature(params).await.unwrap();
+
+        assert_eq!(result.results.len(), 2);
+        let names: Vec<&str> = result
+            .results
+            .iter()
+            .map(|r| r.symbol.name.as_str())
+            .collect();
+        assert!(names.contains(&"oneArg"));
+        assert!(names.contains(&"twoArgs"));
+    }
+
+    // ==========================================
+    // Get Callers Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_get_callers() {
+        let (backend, graph) = create_test_backend().await;
+
+        let target_id;
+        {
+            let mut g = graph.write().await;
+
+            // Caller function
+            let mut caller_props = PropertyMap::new();
+            caller_props.insert(
+                "name".to_string(),
+                PropertyValue::String("caller".to_string()),
+            );
+            caller_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            caller_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            let caller_id = g
+                .add_node(NodeType::Function, caller_props)
+                .expect("Failed to add caller");
+
+            // Target function
+            let mut target_props = PropertyMap::new();
+            target_props.insert(
+                "name".to_string(),
+                PropertyValue::String("target".to_string()),
+            );
+            target_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            target_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            target_id = g
+                .add_node(NodeType::Function, target_props)
+                .expect("Failed to add target");
+
+            // Create call edge
+            g.add_edge(caller_id, target_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add call edge");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = GetCallersParams {
+            node_id: Some(target_id.to_string()),
+            uri: None,
+            line: None,
+            depth: Some(1),
+        };
+
+        let result = backend.handle_get_callers(params).await.unwrap();
+
+        assert_eq!(result.callers.len(), 1);
+        assert_eq!(result.callers[0].symbol.name, "caller");
+    }
+
+    // ==========================================
+    // Get Callees Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_get_callees() {
+        let (backend, graph) = create_test_backend().await;
+
+        let caller_id;
+        {
+            let mut g = graph.write().await;
+
+            // Caller function
+            let mut caller_props = PropertyMap::new();
+            caller_props.insert(
+                "name".to_string(),
+                PropertyValue::String("caller".to_string()),
+            );
+            caller_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            caller_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            caller_id = g
+                .add_node(NodeType::Function, caller_props)
+                .expect("Failed to add caller");
+
+            // First callee
+            let mut callee1_props = PropertyMap::new();
+            callee1_props.insert(
+                "name".to_string(),
+                PropertyValue::String("callee1".to_string()),
+            );
+            callee1_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            callee1_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            let callee1_id = g
+                .add_node(NodeType::Function, callee1_props)
+                .expect("Failed to add callee1");
+
+            // Second callee
+            let mut callee2_props = PropertyMap::new();
+            callee2_props.insert(
+                "name".to_string(),
+                PropertyValue::String("callee2".to_string()),
+            );
+            callee2_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            callee2_props.insert("line_start".to_string(), PropertyValue::Int(20));
+            let callee2_id = g
+                .add_node(NodeType::Function, callee2_props)
+                .expect("Failed to add callee2");
+
+            // Create call edges
+            g.add_edge(caller_id, callee1_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 1");
+            g.add_edge(caller_id, callee2_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 2");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = GetCallersParams {
+            node_id: Some(caller_id.to_string()),
+            uri: None,
+            line: None,
+            depth: Some(1),
+        };
+
+        let result = backend.handle_get_callees(params).await.unwrap();
+
+        assert_eq!(result.callers.len(), 2);
+        let names: Vec<&str> = result
+            .callers
+            .iter()
+            .map(|c| c.symbol.name.as_str())
+            .collect();
+        assert!(names.contains(&"callee1"));
+        assert!(names.contains(&"callee2"));
+    }
+
+    // ==========================================
+    // Traverse Graph Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_traverse_graph() {
+        let (backend, graph) = create_test_backend().await;
+
+        let start_id;
+        {
+            let mut g = graph.write().await;
+
+            // Start node
+            let mut start_props = PropertyMap::new();
+            start_props.insert(
+                "name".to_string(),
+                PropertyValue::String("start".to_string()),
+            );
+            start_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            start_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            start_id = g
+                .add_node(NodeType::Function, start_props)
+                .expect("Failed to add start");
+
+            // Middle node
+            let mut middle_props = PropertyMap::new();
+            middle_props.insert(
+                "name".to_string(),
+                PropertyValue::String("middle".to_string()),
+            );
+            middle_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            middle_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            let middle_id = g
+                .add_node(NodeType::Function, middle_props)
+                .expect("Failed to add middle");
+
+            // End node
+            let mut end_props = PropertyMap::new();
+            end_props.insert("name".to_string(), PropertyValue::String("end".to_string()));
+            end_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            end_props.insert("line_start".to_string(), PropertyValue::Int(20));
+            let end_id = g
+                .add_node(NodeType::Function, end_props)
+                .expect("Failed to add end");
+
+            // Create call chain
+            g.add_edge(start_id, middle_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 1");
+            g.add_edge(middle_id, end_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 2");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = TraverseGraphParams {
+            start_node_id: Some(start_id.to_string()),
+            uri: None,
+            line: None,
+            direction: Some("outgoing".to_string()),
+            depth: Some(2),
+            filter_symbol_types: None,
+            max_nodes: None,
+        };
+
+        let result = backend.handle_traverse_graph(params).await.unwrap();
+
+        assert_eq!(result.nodes.len(), 2);
+        let names: Vec<&str> = result
+            .nodes
+            .iter()
+            .map(|n| n.symbol.name.as_str())
+            .collect();
+        assert!(names.contains(&"middle"));
+        assert!(names.contains(&"end"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_traverse_graph_with_type_filter() {
+        let (backend, graph) = create_test_backend().await;
+
+        let start_id;
+        {
+            let mut g = graph.write().await;
+
+            // Start function
+            let mut start_props = PropertyMap::new();
+            start_props.insert(
+                "name".to_string(),
+                PropertyValue::String("startFn".to_string()),
+            );
+            start_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            start_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            start_id = g
+                .add_node(NodeType::Function, start_props)
+                .expect("Failed to add start");
+
+            // Connected function
+            let mut fn_props = PropertyMap::new();
+            fn_props.insert(
+                "name".to_string(),
+                PropertyValue::String("helperFn".to_string()),
+            );
+            fn_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            fn_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            let fn_id = g
+                .add_node(NodeType::Function, fn_props)
+                .expect("Failed to add function");
+
+            // Connected class
+            let mut class_props = PropertyMap::new();
+            class_props.insert(
+                "name".to_string(),
+                PropertyValue::String("MyClass".to_string()),
+            );
+            class_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            class_props.insert("line_start".to_string(), PropertyValue::Int(20));
+            let class_id = g
+                .add_node(NodeType::Class, class_props)
+                .expect("Failed to add class");
+
+            // Create edges
+            g.add_edge(start_id, fn_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 1");
+            g.add_edge(start_id, class_id, EdgeType::References, PropertyMap::new())
+                .expect("Failed to add edge 2");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = TraverseGraphParams {
+            start_node_id: Some(start_id.to_string()),
+            uri: None,
+            line: None,
+            direction: Some("outgoing".to_string()),
+            depth: Some(1),
+            filter_symbol_types: Some(vec!["function".to_string()]),
+            max_nodes: None,
+        };
+
+        let result = backend.handle_traverse_graph(params).await.unwrap();
+
+        assert_eq!(result.nodes.len(), 1);
+        assert_eq!(result.nodes[0].symbol.name, "helperFn");
+        assert_eq!(result.nodes[0].symbol.kind, "Function");
+    }
+
+    // ==========================================
+    // Get Detailed Symbol Info Handler Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_get_detailed_symbol_info() {
+        let (backend, graph) = create_test_backend().await;
+
+        let node_id;
+        {
+            let mut g = graph.write().await;
+            let mut props = PropertyMap::new();
+            props.insert(
+                "name".to_string(),
+                PropertyValue::String("myFunction".to_string()),
+            );
+            props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            props.insert("line_start".to_string(), PropertyValue::Int(10));
+            props.insert("line_end".to_string(), PropertyValue::Int(25));
+            props.insert("is_public".to_string(), PropertyValue::Bool(true));
+            props.insert(
+                "doc".to_string(),
+                PropertyValue::String("My documentation".to_string()),
+            );
+            props.insert("complexity".to_string(), PropertyValue::Int(5));
+            node_id = g
+                .add_node(NodeType::Function, props)
+                .expect("Failed to add node");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = GetDetailedInfoParams {
+            node_id: Some(node_id.to_string()),
+            uri: None,
+            line: None,
+            include_callers: Some(true),
+            include_callees: Some(true),
+        };
+
+        let result = backend
+            .handle_get_detailed_symbol_info(params)
+            .await
+            .unwrap();
+
+        assert_eq!(result.symbol.name, "myFunction");
+        assert!(result.is_public);
+        assert_eq!(result.lines_of_code, 16); // 25 - 10 + 1
+        assert_eq!(result.complexity, Some(5));
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_detailed_symbol_info_with_callers() {
+        let (backend, graph) = create_test_backend().await;
+
+        let target_id;
+        {
+            let mut g = graph.write().await;
+
+            // Caller
+            let mut caller_props = PropertyMap::new();
+            caller_props.insert(
+                "name".to_string(),
+                PropertyValue::String("caller".to_string()),
+            );
+            caller_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            caller_props.insert("line_start".to_string(), PropertyValue::Int(1));
+            let caller_id = g
+                .add_node(NodeType::Function, caller_props)
+                .expect("Failed to add caller");
+
+            // Target
+            let mut target_props = PropertyMap::new();
+            target_props.insert(
+                "name".to_string(),
+                PropertyValue::String("target".to_string()),
+            );
+            target_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            target_props.insert("line_start".to_string(), PropertyValue::Int(10));
+            target_id = g
+                .add_node(NodeType::Function, target_props)
+                .expect("Failed to add target");
+
+            // Callee
+            let mut callee_props = PropertyMap::new();
+            callee_props.insert(
+                "name".to_string(),
+                PropertyValue::String("callee".to_string()),
+            );
+            callee_props.insert(
+                "path".to_string(),
+                PropertyValue::String("/src/lib.rs".to_string()),
+            );
+            callee_props.insert("line_start".to_string(), PropertyValue::Int(20));
+            let callee_id = g
+                .add_node(NodeType::Function, callee_props)
+                .expect("Failed to add callee");
+
+            // Create edges
+            g.add_edge(caller_id, target_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 1");
+            g.add_edge(target_id, callee_id, EdgeType::Calls, PropertyMap::new())
+                .expect("Failed to add edge 2");
+        }
+
+        backend.query_engine.build_indexes().await;
+
+        let params = GetDetailedInfoParams {
+            node_id: Some(target_id.to_string()),
+            uri: None,
+            line: None,
+            include_callers: Some(true),
+            include_callees: Some(true),
+        };
+
+        let result = backend
+            .handle_get_detailed_symbol_info(params)
+            .await
+            .unwrap();
+
+        assert_eq!(result.symbol.name, "target");
+        assert_eq!(result.callers.len(), 1);
+        assert_eq!(result.callers[0].symbol.name, "caller");
+        assert_eq!(result.callees.len(), 1);
+        assert_eq!(result.callees[0].symbol.name, "callee");
+    }
+
+    // ==========================================
+    // Error Handling Tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_resolve_node_id_invalid() {
+        let (backend, _) = create_test_backend().await;
+
+        let params = GetCallersParams {
+            node_id: Some("invalid_id".to_string()),
+            uri: None,
+            line: None,
+            depth: None,
+        };
+
+        let result = backend.handle_get_callers(params).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_node_id_missing_params() {
+        let (backend, _) = create_test_backend().await;
+
+        let params = GetCallersParams {
+            node_id: None,
+            uri: None,
+            line: None,
+            depth: None,
+        };
+
+        let result = backend.handle_get_callers(params).await;
+
+        assert!(result.is_err());
+    }
+}
