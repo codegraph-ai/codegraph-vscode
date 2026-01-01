@@ -9,7 +9,7 @@ All notable changes to the CodeGraph extension will be documented in this file.
 - **AI Agent Query Engine**: Fast, composable query primitives for AI agents to explore codebases
   - BM25-based text index with intelligent tokenization (camelCase, snake_case, acronyms)
   - Sub-10ms query performance for symbol search
-  - 7 new Language Model Tools (now 16 total):
+  - 8 new Language Model Tools (now 17 total):
     - `codegraph_symbol_search` - Fast text-based symbol search with BM25 ranking
     - `codegraph_find_by_imports` - Discover code by imported libraries/modules
     - `codegraph_find_entry_points` - Detect architectural entry points (HTTP handlers, CLI, main, etc.)
@@ -17,6 +17,7 @@ All notable changes to the CodeGraph extension will be documented in this file.
     - `codegraph_get_callers` - Find all callers of a function
     - `codegraph_get_callees` - Find all functions called by a function
     - `codegraph_get_detailed_symbol` - Rich metadata retrieval for any symbol
+    - `codegraph_find_by_signature` - Find functions by signature pattern (name, params, return type, modifiers)
 
 ### Changed
 
