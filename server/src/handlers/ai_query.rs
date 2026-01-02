@@ -164,6 +164,12 @@ pub struct TraverseGraphParams {
 pub struct TraverseGraphResponse {
     pub nodes: Vec<TraversalNodeResponse>,
     pub query_time_ms: u64,
+    /// Whether a fallback to nearest symbol was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    /// Message explaining fallback behavior if used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +206,12 @@ pub struct GetCallersParams {
 pub struct GetCallersResponse {
     pub callers: Vec<CallInfoResponse>,
     pub query_time_ms: u64,
+    /// Whether a fallback to nearest symbol was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    /// Message explaining fallback behavior if used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -242,6 +254,12 @@ pub struct DetailedSymbolResponse {
     pub is_public: bool,
     pub is_deprecated: bool,
     pub reference_count: usize,
+    /// Whether a fallback to nearest symbol was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    /// Message explaining fallback behavior if used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
 }
 
 // ==========================================
@@ -424,9 +442,9 @@ impl CodeGraphBackend {
     ) -> Result<TraverseGraphResponse> {
         let start = std::time::Instant::now();
 
-        // Resolve start node
-        let start_node = self
-            .resolve_node_id(&params.start_node_id, &params.uri, &params.line)
+        // Resolve start node with fallback support
+        let (start_node, used_fallback, fallback_message) = self
+            .resolve_node_id_with_fallback(&params.start_node_id, &params.uri, &params.line)
             .await?;
 
         let direction = match params.direction.as_deref() {
@@ -476,6 +494,8 @@ impl CodeGraphBackend {
         Ok(TraverseGraphResponse {
             nodes,
             query_time_ms: start.elapsed().as_millis() as u64,
+            used_fallback: if used_fallback { Some(true) } else { None },
+            fallback_message,
         })
     }
 
@@ -483,8 +503,8 @@ impl CodeGraphBackend {
     pub async fn handle_get_callers(&self, params: GetCallersParams) -> Result<GetCallersResponse> {
         let start = std::time::Instant::now();
 
-        let node_id = self
-            .resolve_node_id(&params.node_id, &params.uri, &params.line)
+        let (node_id, used_fallback, fallback_message) = self
+            .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
             .await?;
         let depth = params.depth.unwrap_or(1);
 
@@ -509,6 +529,8 @@ impl CodeGraphBackend {
         Ok(GetCallersResponse {
             callers,
             query_time_ms: start.elapsed().as_millis() as u64,
+            used_fallback: if used_fallback { Some(true) } else { None },
+            fallback_message,
         })
     }
 
@@ -516,8 +538,8 @@ impl CodeGraphBackend {
     pub async fn handle_get_callees(&self, params: GetCallersParams) -> Result<GetCallersResponse> {
         let start = std::time::Instant::now();
 
-        let node_id = self
-            .resolve_node_id(&params.node_id, &params.uri, &params.line)
+        let (node_id, used_fallback, fallback_message) = self
+            .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
             .await?;
         let depth = params.depth.unwrap_or(1);
 
@@ -542,6 +564,8 @@ impl CodeGraphBackend {
         Ok(GetCallersResponse {
             callers,
             query_time_ms: start.elapsed().as_millis() as u64,
+            used_fallback: if used_fallback { Some(true) } else { None },
+            fallback_message,
         })
     }
 
@@ -550,8 +574,8 @@ impl CodeGraphBackend {
         &self,
         params: GetDetailedInfoParams,
     ) -> Result<DetailedSymbolResponse> {
-        let node_id = self
-            .resolve_node_id(&params.node_id, &params.uri, &params.line)
+        let (node_id, used_fallback, fallback_message) = self
+            .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
             .await?;
 
         let info = self
@@ -612,6 +636,8 @@ impl CodeGraphBackend {
             is_public: info.is_public,
             is_deprecated: info.is_deprecated,
             reference_count: info.reference_count,
+            used_fallback: if used_fallback { Some(true) } else { None },
+            fallback_message,
         })
     }
 
@@ -649,16 +675,18 @@ impl CodeGraphBackend {
     }
 
     /// Helper to resolve a node ID from either direct ID or uri+line
-    async fn resolve_node_id(
+    /// Returns (NodeId, used_fallback, fallback_message)
+    async fn resolve_node_id_with_fallback(
         &self,
         node_id: &Option<String>,
         uri: &Option<String>,
         line: &Option<u32>,
-    ) -> Result<NodeId> {
+    ) -> Result<(NodeId, bool, Option<String>)> {
         if let Some(id_str) = node_id {
-            return id_str
+            let node_id = id_str
                 .parse::<NodeId>()
-                .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid node ID"));
+                .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid node ID"))?;
+            return Ok((node_id, false, None));
         }
 
         let uri_str = uri.as_ref().ok_or_else(|| {
@@ -679,8 +707,34 @@ impl CodeGraphBackend {
         };
 
         let graph = self.graph.read().await;
-        self.find_node_at_position(&graph, &path, position)?
-            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("No symbol found at position"))
+
+        // Use find_nearest_node which falls back to nearest symbol if exact position not found
+        let (node_id, used_fallback) = self
+            .find_nearest_node(&graph, &path, position)?
+            .ok_or_else(|| {
+                tower_lsp::jsonrpc::Error::invalid_params(
+                    "No symbols found in file. Try indexing the workspace first.",
+                )
+            })?;
+
+        let fallback_message = if used_fallback {
+            // Get the symbol name to include in the message
+            let name = if let Ok(node) = graph.get_node(node_id) {
+                node.properties
+                    .get_string("name")
+                    .unwrap_or("unknown")
+                    .to_string()
+            } else {
+                "unknown".to_string()
+            };
+            Some(format!(
+                "No symbol at line {line_num}. Using nearest symbol '{name}' instead."
+            ))
+        } else {
+            None
+        };
+
+        Ok((node_id, used_fallback, fallback_message))
     }
 }
 
