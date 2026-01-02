@@ -50,7 +50,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +82,7 @@ jobs:
       - name: Test
         run: cargo test --all-features
 
-  # Build binaries for release
+  # Build binaries for release (macOS binaries built locally)
   build-binaries:
     name: Build Binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -93,14 +93,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: codegraph-lsp
             artifact: codegraph-lsp-linux-x64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: codegraph-lsp
-            artifact: codegraph-lsp-darwin-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: codegraph-lsp
-            artifact: codegraph-lsp-darwin-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: codegraph-lsp.exe
@@ -175,8 +167,6 @@ jobs:
         run: |
           mkdir -p bin
           mv bin/codegraph-lsp-linux-x64/codegraph-lsp-linux-x64 bin/
-          mv bin/codegraph-lsp-darwin-x64/codegraph-lsp-darwin-x64 bin/
-          mv bin/codegraph-lsp-darwin-arm64/codegraph-lsp-darwin-arm64 bin/
           mv bin/codegraph-lsp-win32-x64.exe/codegraph-lsp-win32-x64.exe bin/
           chmod +x bin/codegraph-lsp-*
           ls -la bin/

@@ -1,63 +1,44 @@
 #!/bin/bash
-# Build LSP server binaries for all platforms
+# Build LSP server binaries for macOS (both architectures)
+# Linux and Windows binaries are built via GitHub Actions
 
 set -e
 
-echo "Building CodeGraph LSP server binaries..."
+echo "Building CodeGraph LSP server binaries for macOS..."
 
-# Check if cross is installed
-if ! command -v cross &> /dev/null; then
-    echo "Installing cross for cross-compilation..."
-    cargo install cross
+# Ensure we're on macOS
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "This script is for macOS only. Linux/Windows binaries are built via GitHub Actions."
+    exit 1
 fi
 
-TARGETS=(
-    "x86_64-unknown-linux-gnu"
-    "x86_64-apple-darwin"
-    "aarch64-apple-darwin"
-    "x86_64-pc-windows-msvc"
-)
+# Install Rust targets if needed
+echo "Ensuring Rust targets are installed..."
+rustup target add x86_64-apple-darwin aarch64-apple-darwin 2>/dev/null || true
 
-# Create server directory for binaries
-mkdir -p server/bin
+# Create bin directory
+mkdir -p bin
 
-cd server
+echo ""
+echo "Building for aarch64-apple-darwin (Apple Silicon)..."
+cargo build --release --target aarch64-apple-darwin
+cp target/aarch64-apple-darwin/release/codegraph-lsp bin/codegraph-lsp-darwin-arm64
+chmod +x bin/codegraph-lsp-darwin-arm64
+echo "✓ Built bin/codegraph-lsp-darwin-arm64"
 
-for target in "${TARGETS[@]}"; do
-    echo "Building for $target..."
+echo ""
+echo "Building for x86_64-apple-darwin (Intel)..."
+cargo build --release --target x86_64-apple-darwin
+cp target/x86_64-apple-darwin/release/codegraph-lsp bin/codegraph-lsp-darwin-x64
+chmod +x bin/codegraph-lsp-darwin-x64
+echo "✓ Built bin/codegraph-lsp-darwin-x64"
 
-    # Use cross for cross-compilation, or cargo for native
-    if [[ "$(uname -s)-$(uname -m)" == "Darwin-arm64" && "$target" == "aarch64-apple-darwin" ]]; then
-        cargo build --release --target "$target"
-    elif [[ "$(uname -s)-$(uname -m)" == "Darwin-x86_64" && "$target" == "x86_64-apple-darwin" ]]; then
-        cargo build --release --target "$target"
-    elif [[ "$(uname -s)" == "Linux" && "$target" == "x86_64-unknown-linux-gnu" ]]; then
-        cargo build --release --target "$target"
-    else
-        cross build --release --target "$target" || {
-            echo "Warning: Failed to build for $target (may require additional setup)"
-            continue
-        }
-    fi
+echo ""
+echo "============================================"
+echo "Build complete! macOS binaries are in bin/"
+echo "============================================"
+ls -la bin/codegraph-lsp-darwin-*
 
-    # Copy to bin directory with platform-specific name
-    case "$target" in
-        *linux*)
-            cp "../target/$target/release/codegraph-lsp" "bin/codegraph-lsp-linux-x64" 2>/dev/null || true
-            ;;
-        x86_64*darwin*)
-            cp "../target/$target/release/codegraph-lsp" "bin/codegraph-lsp-darwin-x64" 2>/dev/null || true
-            ;;
-        aarch64*darwin*)
-            cp "../target/$target/release/codegraph-lsp" "bin/codegraph-lsp-darwin-arm64" 2>/dev/null || true
-            ;;
-        *windows*)
-            cp "../target/$target/release/codegraph-lsp.exe" "bin/codegraph-lsp-win32-x64.exe" 2>/dev/null || true
-            ;;
-    esac
-done
-
-cd ..
-
-echo "Build complete! Binaries are in server/bin/"
-ls -la server/bin/ 2>/dev/null || echo "No binaries built yet"
+echo ""
+echo "Note: Linux and Windows binaries are built via GitHub Actions."
+echo "Download them from the CI artifacts after a successful build."

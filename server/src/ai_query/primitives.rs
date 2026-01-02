@@ -13,21 +13,16 @@ use codegraph::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// Search scope for queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchScope {
     /// Search entire workspace
+    #[default]
     Workspace,
     /// Search within a single module/directory
     Module,
     /// Search within a single file
     File,
-}
-
-impl Default for SearchScope {
-    fn default() -> Self {
-        Self::Workspace
-    }
 }
 
 /// Symbol types to filter by.
@@ -174,21 +169,16 @@ pub struct SymbolSearchResult {
 }
 
 /// Import match mode for find_by_imports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ImportMatchMode {
     /// Exact library name match (e.g., "re" matches only "re")
+    #[default]
     Exact,
     /// Prefix match (e.g., "email" matches "email", "email.utils")
     Prefix,
     /// Fuzzy match for related libraries (e.g., "regex" matches "re", "regex")
     Fuzzy,
-}
-
-impl Default for ImportMatchMode {
-    fn default() -> Self {
-        Self::Exact
-    }
 }
 
 /// Options for find_by_imports query.
