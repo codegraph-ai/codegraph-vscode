@@ -1,9 +1,17 @@
 # CodeGraph AI Agent Query Architecture
 
-**Document Version:** 1.0  
-**Created:** December 31, 2024  
-**Author:** CodeGraph Team  
-**Status:** Design Document - Approved for Implementation
+> **Note:** This document has been split into two parts for easier navigation:
+> - **[Part 1: Core Implementation](./ai_agent_query_architecture_part1.md)** - Phases 1-3, fully implemented (query primitives, LSP integration, Language Model tools)
+> - **[Part 2: Advanced Features & Roadmap](./ai_agent_query_architecture_part2.md)** - Phases 4-5, testing strategy, metrics, future plans
+>
+> This original document is preserved for reference.
+
+---
+
+**Document Version:** 1.0
+**Created:** December 31, 2024
+**Author:** CodeGraph Team
+**Status:** ✅ Phases 1-3 Implemented | Phases 4-5 Planning
 
 ---
 

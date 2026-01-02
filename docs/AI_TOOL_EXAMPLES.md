@@ -15,6 +15,35 @@ CodeGraph tools provide **semantic understanding** rather than text matching. Th
 
 ---
 
+## Tool Overview (17 Tools)
+
+### Core Analysis Tools (9)
+| Tool | Purpose |
+|------|---------|
+| `codegraph_get_dependency_graph` | Understand file/module dependencies |
+| `codegraph_get_call_graph` | Trace function call relationships |
+| `codegraph_analyze_impact` | Assess change impact before modifying code |
+| `codegraph_get_ai_context` | Get intent-aware code context |
+| `codegraph_find_related_tests` | Find tests covering code |
+| `codegraph_get_symbol_info` | Get symbol metadata and documentation |
+| `codegraph_analyze_complexity` | Measure code complexity metrics |
+| `codegraph_find_unused_code` | Detect dead code |
+| `codegraph_analyze_coupling` | Analyze module coupling/cohesion |
+
+### AI Agent Query Tools (8)
+| Tool | Purpose |
+|------|---------|
+| `codegraph_symbol_search` | Fast text-based symbol search with BM25 ranking |
+| `codegraph_find_by_imports` | Find code by imported libraries |
+| `codegraph_find_entry_points` | Discover HTTP handlers, CLI commands, etc. |
+| `codegraph_traverse_graph` | Custom graph traversal with filters |
+| `codegraph_get_callers` | Find all callers of a function |
+| `codegraph_get_callees` | Find all functions called by a function |
+| `codegraph_get_detailed_symbol` | Rich metadata for any symbol |
+| `codegraph_find_by_signature` | Find functions by signature pattern |
+
+---
+
 ## Tool Reference
 
 ### 1. `codegraph_get_dependency_graph`
@@ -532,6 +561,768 @@ Location: file:///project/src/pricing/discounts.ts:35:16
 
 ---
 
+### 7. `codegraph_analyze_complexity`
+
+**Purpose:** Analyze cyclomatic and cognitive complexity of code to identify areas needing refactoring.
+
+**When to use:**
+- Assessing code quality
+- Finding complex functions that need simplification
+- Before refactoring efforts
+- Code review preparation
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Required: file to analyze
+  "line": 45,                           // Optional: specific function line (0-indexed)
+  "threshold": 10,                      // Optional: complexity threshold for flagging
+  "summary": false                      // Optional: return condensed summary
+}
+```
+
+**Example — "Find complex functions in PaymentService"**
+
+```
+Tool: codegraph_analyze_complexity
+Input: {
+  "uri": "file:///project/src/services/PaymentService.ts",
+  "threshold": 10
+}
+```
+
+**Output:**
+```markdown
+# Complexity Analysis
+
+File: src/services/PaymentService.ts
+
+## Summary
+- Total functions: 12
+- High complexity (>10): 3
+- Average complexity: 7.2
+
+## High Complexity Functions
+
+### 1. processPayment (line 45)
+- Cyclomatic complexity: 15
+- Cognitive complexity: 22
+- Recommendation: Consider breaking into smaller functions
+
+### 2. validateTransaction (line 120)
+- Cyclomatic complexity: 12
+- Cognitive complexity: 18
+- Recommendation: Extract validation rules into separate functions
+
+### 3. handleRefund (line 200)
+- Cyclomatic complexity: 11
+- Cognitive complexity: 14
+- Recommendation: Simplify conditional logic
+```
+
+---
+
+### 8. `codegraph_find_unused_code`
+
+**Purpose:** Detect unused functions, variables, and imports that can be safely removed.
+
+**When to use:**
+- Code cleanup efforts
+- Reducing bundle size
+- Removing dead code
+- Maintenance and refactoring
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Optional: specific file
+  "scope": "file",                      // Optional: "file", "module", or "workspace"
+  "includeTests": false,                // Optional: include test files
+  "confidence": 0.7                     // Optional: minimum confidence threshold (0-1)
+}
+```
+
+**Example — "Find unused code in the utils module"**
+
+```
+Tool: codegraph_find_unused_code
+Input: {
+  "uri": "file:///project/src/utils",
+  "scope": "module",
+  "confidence": 0.8
+}
+```
+
+**Output:**
+```markdown
+# Unused Code Analysis
+
+Scope: src/utils/ (module)
+Confidence threshold: 80%
+
+## Unused Functions (4)
+🔴 **formatCurrency** at utils/formatters.ts:34 (confidence: 95%)
+   - No references found in codebase
+   - Recommendation: Safe to remove
+
+🔴 **deprecated_helper** at utils/legacy.ts:12 (confidence: 98%)
+   - Marked as deprecated, no usages
+   - Recommendation: Safe to remove
+
+🟡 **validateInput** at utils/validation.ts:78 (confidence: 82%)
+   - Only used in test files
+   - Recommendation: Move to test utilities or remove
+
+🟡 **parseConfig** at utils/config.ts:45 (confidence: 80%)
+   - Referenced dynamically (uncertain)
+   - Recommendation: Verify before removing
+
+## Unused Imports (6)
+- lodash (utils/formatters.ts:1)
+- moment (utils/dates.ts:2)
+- ...and 4 more
+```
+
+**Cross-File Resolution (v0.3.1+):**
+
+The tool now properly detects when symbols are used across files:
+- ✅ Exported classes/functions that are imported elsewhere
+- ✅ Cross-file function calls
+- ✅ Framework entry points (VS Code `activate`/`deactivate`)
+- ✅ Trait implementations and LSP protocol methods
+
+**Known Limitations:**
+- Instance method calls (e.g., `obj.method()`) are not tracked through object instances
+- Dynamic dispatch and reflection-based calls cannot be detected
+- Class methods are only detected as "used" if the class itself is imported
+
+---
+
+### 9. `codegraph_analyze_coupling`
+
+**Purpose:** Analyze module coupling and cohesion to improve architecture.
+
+**When to use:**
+- Architecture reviews
+- Planning refactoring
+- Identifying tightly coupled modules
+- Improving code organization
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Required: file to analyze
+  "includeExternal": false,             // Optional: include external dependencies
+  "depth": 2,                           // Optional: depth of analysis
+  "summary": false                      // Optional: return condensed summary
+}
+```
+
+**Example — "Analyze coupling for UserService"**
+
+```
+Tool: codegraph_analyze_coupling
+Input: {
+  "uri": "file:///project/src/services/UserService.ts",
+  "depth": 2
+}
+```
+
+**Output:**
+```markdown
+# Coupling Analysis
+
+Module: src/services/UserService.ts
+
+## Metrics
+- Afferent Coupling (Ca): 8 (modules that depend on this)
+- Efferent Coupling (Ce): 5 (modules this depends on)
+- Instability (I): 0.38 (Ce / (Ca + Ce))
+- Abstractness (A): 0.2
+
+## Incoming Dependencies (8)
+Modules that depend on UserService:
+- AuthController.ts
+- ProfileController.ts
+- AdminService.ts
+- NotificationService.ts
+- ...and 4 more
+
+## Outgoing Dependencies (5)
+Modules that UserService depends on:
+- DatabaseClient.ts
+- Logger.ts
+- EmailService.ts
+- CacheService.ts
+- ValidationUtils.ts
+
+## Recommendations
+⚠️ High afferent coupling - changes here may have wide impact
+✅ Moderate instability - reasonable balance
+💡 Consider abstracting shared interfaces to reduce coupling
+```
+
+---
+
+### 10. `codegraph_symbol_search`
+
+**Purpose:** Fast text-based symbol search with BM25 ranking. Ideal for finding code by name or keyword.
+
+**When to use:**
+- Finding functions by name
+- Exploring unfamiliar codebases
+- Locating specific implementations
+- Searching for patterns in symbol names
+
+**Parameters:**
+```json
+{
+  "query": "validate email",            // Required: search keywords
+  "symbolType": "any",                  // Optional: "function", "class", "method", "variable", etc.
+  "limit": 20,                          // Optional: max results
+  "includePrivate": true                // Optional: include private symbols
+}
+```
+
+**Example — "Find email validation functions"**
+
+```
+Tool: codegraph_symbol_search
+Input: {
+  "query": "validate email",
+  "symbolType": "function",
+  "limit": 10
+}
+```
+
+**Output:**
+```markdown
+# Symbol Search Results
+
+Query: "validate email"
+Found: 5 functions
+
+## Results
+
+### 1. validateEmail (score: 9.5)
+- Location: src/utils/validators.ts:45
+- Signature: `function validateEmail(email: string): boolean`
+- Type: function
+
+### 2. isValidEmail (score: 8.2)
+- Location: src/auth/validation.ts:23
+- Signature: `function isValidEmail(input: string): ValidationResult`
+- Type: function
+
+### 3. validateEmailFormat (score: 7.8)
+- Location: src/forms/validators.ts:67
+- Signature: `function validateEmailFormat(email: string, strict?: boolean): boolean`
+- Type: function
+
+### 4. checkEmailValid (score: 6.5)
+- Location: src/api/handlers.ts:112
+- Signature: `async function checkEmailValid(email: string): Promise<boolean>`
+- Type: function
+
+### 5. emailValidator (score: 5.2)
+- Location: src/shared/validation.ts:34
+- Signature: `const emailValidator: Validator<string>`
+- Type: variable
+```
+
+---
+
+### 11. `codegraph_find_by_imports`
+
+**Purpose:** Find all code that imports or uses specific modules or packages.
+
+**When to use:**
+- Understanding library usage patterns
+- Planning migrations (e.g., replacing a library)
+- Finding consumers of internal modules
+- Auditing dependency usage
+
+**Parameters:**
+```json
+{
+  "moduleName": "lodash",              // Required: module/package name
+  "matchMode": "contains",              // Optional: "exact", "prefix", "contains", "fuzzy"
+  "limit": 50                           // Optional: max results
+}
+```
+
+**Example — "Find all code using lodash"**
+
+```
+Tool: codegraph_find_by_imports
+Input: {
+  "moduleName": "lodash",
+  "matchMode": "prefix"
+}
+```
+
+**Output:**
+```markdown
+# Import Search Results
+
+Module: lodash (prefix match)
+Found: 12 files
+
+## Files Importing lodash
+
+### src/utils/helpers.ts
+```typescript
+import { debounce, throttle } from 'lodash';
+import _ from 'lodash';
+```
+Used symbols: debounce, throttle, _
+
+### src/services/DataProcessor.ts
+```typescript
+import { groupBy, sortBy, uniqBy } from 'lodash';
+```
+Used symbols: groupBy, sortBy, uniqBy
+
+### src/components/Table.tsx
+```typescript
+import { orderBy } from 'lodash/orderBy';
+```
+Used symbols: orderBy
+
+...and 9 more files
+```
+
+---
+
+### 12. `codegraph_find_entry_points`
+
+**Purpose:** Discover application entry points — main functions, HTTP handlers, CLI commands, event handlers.
+
+**When to use:**
+- Understanding application architecture
+- Tracing request flow
+- Finding all API endpoints
+- Mapping CLI commands
+
+**Parameters:**
+```json
+{
+  "entryType": "all",                   // Optional: "main", "http_handler", "cli_command", "event_handler", "test", "all"
+  "framework": "express",               // Optional: filter by framework
+  "limit": 50                           // Optional: max results
+}
+```
+
+**Example — "Find all HTTP endpoints"**
+
+```
+Tool: codegraph_find_entry_points
+Input: {
+  "entryType": "http_handler"
+}
+```
+
+**Output:**
+```markdown
+# Entry Points
+
+Type: HTTP Handlers
+Found: 15 endpoints
+
+## Endpoints
+
+### Authentication
+| Method | Route | Handler | Location |
+|--------|-------|---------|----------|
+| POST | /api/login | loginHandler | src/api/auth.ts:23 |
+| POST | /api/register | registerHandler | src/api/auth.ts:45 |
+| POST | /api/logout | logoutHandler | src/api/auth.ts:67 |
+
+### Users
+| Method | Route | Handler | Location |
+|--------|-------|---------|----------|
+| GET | /api/users | listUsers | src/api/users.ts:12 |
+| GET | /api/users/:id | getUser | src/api/users.ts:34 |
+| PUT | /api/users/:id | updateUser | src/api/users.ts:56 |
+| DELETE | /api/users/:id | deleteUser | src/api/users.ts:78 |
+
+### Orders
+| Method | Route | Handler | Location |
+|--------|-------|---------|----------|
+| GET | /api/orders | listOrders | src/api/orders.ts:15 |
+| POST | /api/orders | createOrder | src/api/orders.ts:45 |
+...and 6 more
+```
+
+---
+
+### 13. `codegraph_traverse_graph`
+
+**Purpose:** Advanced code exploration by traversing the code graph with custom filters.
+
+**When to use:**
+- Tracing execution flow
+- Finding all code reachable from a function
+- Custom relationship exploration
+- Complex dependency analysis
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Preferred: file URI
+  "line": 45,                           // Preferred: line number (0-indexed)
+  "startNodeId": "abc123",              // Alternative: node ID from symbol_search
+  "direction": "outgoing",              // Optional: "outgoing", "incoming", "both"
+  "edgeTypes": ["calls", "imports"],    // Optional: filter edge types
+  "nodeTypes": ["function"],            // Optional: filter node types
+  "maxDepth": 3,                        // Optional: traversal depth
+  "limit": 100                          // Optional: max nodes
+}
+```
+
+**Example — "Trace all functions called by authenticate"**
+
+```
+Tool: codegraph_traverse_graph
+Input: {
+  "uri": "file:///project/src/auth/middleware.ts",
+  "line": 25,
+  "direction": "outgoing",
+  "edgeTypes": ["calls"],
+  "maxDepth": 3
+}
+```
+
+**Output:**
+```markdown
+# Graph Traversal
+
+Starting from: authenticate (src/auth/middleware.ts:25)
+Direction: outgoing
+Edge types: calls
+Max depth: 3
+
+## Traversal Results (12 nodes)
+
+### Depth 1
+- **extractToken** at src/auth/middleware.ts:45
+- **verifyToken** at src/auth/tokens.ts:23
+- **logRequest** at src/utils/logger.ts:12
+
+### Depth 2
+- **decodeJWT** at src/auth/jwt.ts:34 (via verifyToken)
+- **validateSignature** at src/auth/jwt.ts:67 (via verifyToken)
+- **getUserById** at src/db/users.ts:23 (via verifyToken)
+
+### Depth 3
+- **queryDatabase** at src/db/client.ts:45 (via getUserById)
+- **formatUser** at src/db/users.ts:89 (via getUserById)
+- **checkExpiry** at src/auth/jwt.ts:90 (via decodeJWT)
+...and 3 more
+```
+
+---
+
+### 14. `codegraph_get_callers`
+
+**Purpose:** Find all functions that call a specific function.
+
+**When to use:**
+- Understanding function usage
+- Before modifying function signature
+- Impact analysis
+- Debugging call chains
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Preferred: file URI
+  "line": 45,                           // Preferred: line number (0-indexed)
+  "nodeId": "abc123",                   // Alternative: node ID from symbol_search
+  "depth": 1                            // Optional: caller chain depth
+}
+```
+
+**Example — "Who calls validatePayment?"**
+
+```
+Tool: codegraph_get_callers
+Input: {
+  "uri": "file:///project/src/payments/validator.ts",
+  "line": 34,
+  "depth": 2
+}
+```
+
+**Output:**
+```markdown
+# Callers of validatePayment
+
+Function: validatePayment (src/payments/validator.ts:34)
+
+## Direct Callers (Depth 1)
+| Caller | Location | Context |
+|--------|----------|---------|
+| processPayment | src/payments/processor.ts:67 | `if (validatePayment(order)) { ... }` |
+| checkoutHandler | src/api/checkout.ts:45 | `await validatePayment(cart.payment)` |
+| retryPayment | src/payments/retry.ts:23 | `validatePayment(failedOrder)` |
+
+## Indirect Callers (Depth 2)
+| Caller | Via | Location |
+|--------|-----|----------|
+| handleCheckout | processPayment | src/api/checkout.ts:12 |
+| scheduleRetry | retryPayment | src/jobs/payments.ts:34 |
+| adminRefund | processPayment | src/admin/refunds.ts:56 |
+```
+
+---
+
+### 15. `codegraph_get_callees`
+
+**Purpose:** Find all functions that a specific function calls.
+
+**When to use:**
+- Understanding function behavior
+- Tracing execution flow
+- Debugging
+- Analyzing dependencies
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Preferred: file URI
+  "line": 45,                           // Preferred: line number (0-indexed)
+  "nodeId": "abc123",                   // Alternative: node ID from symbol_search
+  "depth": 1                            // Optional: callee chain depth
+}
+```
+
+**Example — "What does processOrder call?"**
+
+```
+Tool: codegraph_get_callees
+Input: {
+  "uri": "file:///project/src/orders/service.ts",
+  "line": 78,
+  "depth": 2
+}
+```
+
+**Output:**
+```markdown
+# Callees of processOrder
+
+Function: processOrder (src/orders/service.ts:78)
+
+## Direct Callees (Depth 1)
+| Function | Location | Call Site |
+|----------|----------|-----------|
+| validateOrder | src/orders/validator.ts:12 | Line 82 |
+| calculateTotal | src/orders/pricing.ts:45 | Line 85 |
+| chargePayment | src/payments/processor.ts:23 | Line 90 |
+| sendConfirmation | src/notifications/email.ts:67 | Line 95 |
+| updateInventory | src/inventory/service.ts:34 | Line 100 |
+
+## Indirect Callees (Depth 2)
+| Function | Via | Location |
+|----------|-----|----------|
+| applyDiscount | calculateTotal | src/orders/pricing.ts:78 |
+| validateCard | chargePayment | src/payments/validator.ts:45 |
+| renderTemplate | sendConfirmation | src/notifications/templates.ts:23 |
+```
+
+---
+
+### 16. `codegraph_get_detailed_symbol`
+
+**Purpose:** Get comprehensive information about a symbol including source code, documentation, and relationships.
+
+**When to use:**
+- Deep dive into a specific function/class
+- Understanding implementation details
+- Getting full context for code review
+- Documentation lookup
+
+**Parameters:**
+```json
+{
+  "uri": "file:///path/to/file.ts",    // Preferred: file URI
+  "line": 45,                           // Preferred: line number (0-indexed)
+  "nodeId": "abc123",                   // Alternative: node ID from symbol_search
+  "includeSource": true,                // Optional: include full source code
+  "includeCallers": true,               // Optional: include callers list
+  "includeCallees": true                // Optional: include callees list
+}
+```
+
+**Example — "Get full details for UserService.createUser"**
+
+```
+Tool: codegraph_get_detailed_symbol
+Input: {
+  "uri": "file:///project/src/services/UserService.ts",
+  "line": 45,
+  "includeSource": true,
+  "includeCallers": true,
+  "includeCallees": true
+}
+```
+
+**Output:**
+```markdown
+# Symbol Details
+
+## createUser
+- **Type:** async method
+- **Location:** src/services/UserService.ts:45-78
+- **Signature:** `async createUser(data: CreateUserInput): Promise<User>`
+- **Visibility:** public
+- **Modifiers:** async
+
+## Documentation
+```typescript
+/**
+ * Creates a new user account.
+ * @param data - User creation input containing email, password, and profile
+ * @returns The created user object
+ * @throws ValidationError if input is invalid
+ * @throws DuplicateError if email already exists
+ */
+```
+
+## Source Code
+```typescript
+async createUser(data: CreateUserInput): Promise<User> {
+  // Validate input
+  const validated = await this.validator.validate(data);
+
+  // Check for existing user
+  const existing = await this.repository.findByEmail(validated.email);
+  if (existing) {
+    throw new DuplicateError('Email already registered');
+  }
+
+  // Hash password
+  const hashedPassword = await this.hasher.hash(validated.password);
+
+  // Create user
+  const user = await this.repository.create({
+    ...validated,
+    password: hashedPassword,
+  });
+
+  // Send welcome email
+  await this.emailService.sendWelcome(user);
+
+  return user;
+}
+```
+
+## Callers (3)
+- registerHandler (src/api/auth.ts:34)
+- adminCreateUser (src/admin/users.ts:56)
+- importUsers (src/jobs/import.ts:78)
+
+## Callees (5)
+- validator.validate (src/validation/UserValidator.ts:12)
+- repository.findByEmail (src/db/UserRepository.ts:45)
+- hasher.hash (src/utils/password.ts:23)
+- repository.create (src/db/UserRepository.ts:67)
+- emailService.sendWelcome (src/email/EmailService.ts:89)
+```
+
+---
+
+### 17. `codegraph_find_by_signature`
+
+**Purpose:** Find functions by their signature pattern — parameter count, return type, or modifiers.
+
+**When to use:**
+- Finding all async functions
+- Finding functions with specific return types
+- Finding functions with certain parameter counts
+- Pattern-based code search
+
+**Parameters:**
+```json
+{
+  "namePattern": "get*",                // Optional: function name pattern (wildcards)
+  "paramCount": 2,                      // Optional: exact parameter count
+  "minParams": 1,                       // Optional: minimum parameters
+  "maxParams": 3,                       // Optional: maximum parameters
+  "returnType": "Promise",              // Optional: return type to match
+  "modifiers": ["async"],               // Optional: required modifiers
+  "limit": 50                           // Optional: max results
+}
+```
+
+**Example — "Find all async functions returning Promise"**
+
+```
+Tool: codegraph_find_by_signature
+Input: {
+  "modifiers": ["async"],
+  "returnType": "Promise",
+  "limit": 20
+}
+```
+
+**Output:**
+```markdown
+# Signature Search Results
+
+Criteria:
+- Modifiers: async
+- Return type: Promise
+
+Found: 45 functions (showing first 20)
+
+## Results
+
+| Function | Signature | Location |
+|----------|-----------|----------|
+| fetchUsers | `async fetchUsers(): Promise<User[]>` | src/api/users.ts:12 |
+| createOrder | `async createOrder(data: OrderInput): Promise<Order>` | src/orders/service.ts:34 |
+| authenticate | `async authenticate(token: string): Promise<AuthResult>` | src/auth/service.ts:23 |
+| sendEmail | `async sendEmail(to: string, template: string): Promise<void>` | src/email/service.ts:45 |
+| processPayment | `async processPayment(order: Order): Promise<Receipt>` | src/payments/processor.ts:67 |
+| validateInput | `async validateInput<T>(data: T): Promise<ValidationResult>` | src/validation/validator.ts:12 |
+...and 14 more
+```
+
+**Example — "Find handlers with 2-3 parameters"**
+
+```
+Tool: codegraph_find_by_signature
+Input: {
+  "namePattern": "*Handler",
+  "minParams": 2,
+  "maxParams": 3
+}
+```
+
+**Output:**
+```markdown
+# Signature Search Results
+
+Criteria:
+- Name pattern: *Handler
+- Parameters: 2-3
+
+Found: 8 functions
+
+## Results
+
+| Function | Signature | Location |
+|----------|-----------|----------|
+| loginHandler | `loginHandler(req: Request, res: Response)` | src/api/auth.ts:23 |
+| errorHandler | `errorHandler(err: Error, req: Request, res: Response)` | src/middleware/error.ts:12 |
+| webhookHandler | `webhookHandler(event: WebhookEvent, context: Context)` | src/webhooks/handler.ts:34 |
+...
+```
+
+---
+
 ## Best Practices for AI Agents
 
 ### 1. Start with Context, Then Narrow Down
@@ -607,8 +1398,11 @@ Based on real-world benchmarks:
 | Impact analysis | 6 tool calls, 5K tokens | 1 call, 1.2K tokens | 83% fewer tools, 76% fewer tokens |
 | Debug investigation | 7 tool calls, 8K tokens | 1 call, 3K tokens | 86% fewer tools, 62% fewer tokens |
 | Check for circular deps | 12 tool calls, 10K tokens | 1 call, 800 tokens | 92% fewer tools, 92% fewer tokens |
+| Find all async functions | 15 tool calls, 12K tokens | 1 call, 600 tokens | 93% fewer tools, 95% fewer tokens |
+| Find all API endpoints | 8 tool calls, 6K tokens | 1 call, 400 tokens | 87% fewer tools, 93% fewer tokens |
+| Find unused code | 20+ tool calls, 15K tokens | 1 call, 1K tokens | 95% fewer tools, 93% fewer tokens |
 
-**Overall: 75-80% reduction in tool calls and tokens consumed.**
+**Overall: 75-95% reduction in tool calls and tokens consumed.**
 
 ---
 
