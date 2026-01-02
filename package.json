@@ -2,7 +2,7 @@
     "name": "codegraph",
     "displayName": "CodeGraph",
     "description": "Cross-language code intelligence powered by graph analysis",
-    "version": "0.2.0",
+    "version": "0.3.1",
     "publisher": "aStudioPlus",
     "license": "Apache-2.0",
     "repository": {
@@ -623,6 +623,339 @@
                     "required": [
                         "uri"
                     ]
+                }
+            },
+            {
+                "name": "codegraph_symbol_search",
+                "displayName": "Search Symbols",
+                "description": "Search for symbols (functions, classes, variables) in the codebase using natural language or pattern matching",
+                "modelDescription": "Use this tool to find code symbols by name, description, or pattern. Supports fuzzy matching and filters by symbol type. Returns ranked results with relevance scores. Ideal for finding implementations, exploring unfamiliar codebases, or locating specific functionality.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "symbol_search",
+                "userDescription": "Search for functions, classes, and variables by name or description",
+                "tags": [
+                    "search",
+                    "symbols",
+                    "code-navigation"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query - can be a symbol name, partial name, or descriptive text"
+                        },
+                        "symbolType": {
+                            "type": "string",
+                            "enum": ["function", "class", "method", "variable", "interface", "type", "module", "any"],
+                            "description": "Filter results by symbol type",
+                            "default": "any"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results to return",
+                            "default": 20
+                        },
+                        "includePrivate": {
+                            "type": "boolean",
+                            "description": "Include private/internal symbols in results",
+                            "default": true
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "codegraph_find_by_imports",
+                "displayName": "Find By Imports",
+                "description": "Find code that imports or uses specific modules, packages, or libraries",
+                "modelDescription": "Use this tool to find all code that depends on a specific module or package. Useful for understanding library usage patterns, planning migrations, or finding all consumers of an internal module. Supports exact and fuzzy matching.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "find_imports",
+                "userDescription": "Find all code that imports or uses a specific module or package",
+                "tags": [
+                    "search",
+                    "imports",
+                    "dependencies"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "moduleName": {
+                            "type": "string",
+                            "description": "Name of the module/package to search for (e.g., 'lodash', 'react', './utils')"
+                        },
+                        "matchMode": {
+                            "type": "string",
+                            "enum": ["exact", "prefix", "contains", "fuzzy"],
+                            "description": "How to match the module name",
+                            "default": "contains"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results",
+                            "default": 50
+                        }
+                    },
+                    "required": ["moduleName"]
+                }
+            },
+            {
+                "name": "codegraph_find_entry_points",
+                "displayName": "Find Entry Points",
+                "description": "Find application entry points like main functions, HTTP handlers, CLI commands, and event handlers",
+                "modelDescription": "Use this tool to discover where code execution begins. Finds main() functions, HTTP route handlers (Express, FastAPI, etc.), CLI commands, event handlers, and other entry points. Essential for understanding application architecture and request flow.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "entry_points",
+                "userDescription": "Discover main functions, HTTP handlers, CLI commands, and other entry points",
+                "tags": [
+                    "architecture",
+                    "entry-points",
+                    "code-navigation"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "entryType": {
+                            "type": "string",
+                            "enum": ["main", "http_handler", "cli_command", "event_handler", "test", "all"],
+                            "description": "Type of entry point to find",
+                            "default": "all"
+                        },
+                        "framework": {
+                            "type": "string",
+                            "description": "Filter by framework (e.g., 'express', 'fastapi', 'actix')"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results",
+                            "default": 50
+                        }
+                    }
+                }
+            },
+            {
+                "name": "codegraph_traverse_graph",
+                "displayName": "Traverse Code Graph",
+                "description": "Traverse the code graph from a starting point following specific relationship types",
+                "modelDescription": "Advanced code exploration by traversing relationships. Use uri+line (preferred) or startNodeId from symbol_search. Follow calls, imports, inheritance, or references. Filter by node/edge types.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "traverse",
+                "userDescription": "Explore code relationships by traversing the code graph",
+                "tags": [
+                    "graph",
+                    "traversal",
+                    "code-analysis"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "uri": {
+                            "type": "string",
+                            "description": "File URI (e.g., file:///path/to/file.ts). Use with line to identify the starting symbol."
+                        },
+                        "line": {
+                            "type": "number",
+                            "description": "0-based line number of the symbol. Use with uri to identify the starting symbol."
+                        },
+                        "startNodeId": {
+                            "type": "string",
+                            "description": "Internal node ID from symbol_search. Alternative to uri+line."
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["outgoing", "incoming", "both"],
+                            "description": "Direction to traverse edges",
+                            "default": "outgoing"
+                        },
+                        "edgeTypes": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Types of edges to follow (e.g., ['calls', 'imports'])"
+                        },
+                        "nodeTypes": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Filter results to specific node types"
+                        },
+                        "maxDepth": {
+                            "type": "number",
+                            "description": "Maximum traversal depth",
+                            "default": 3
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of nodes to return",
+                            "default": 100
+                        }
+                    }
+                }
+            },
+            {
+                "name": "codegraph_get_callers",
+                "displayName": "Get Function Callers",
+                "description": "Get all functions that call a specific function",
+                "modelDescription": "Find all functions that call a target function. You can identify the target by uri+line (preferred) or by nodeId from symbol_search. Returns callers with file locations and context.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "callers",
+                "userDescription": "Find all functions that call a specific function",
+                "tags": [
+                    "call-graph",
+                    "functions",
+                    "references"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "uri": {
+                            "type": "string",
+                            "description": "File URI (e.g., file:///path/to/file.ts). Use with line to identify the function."
+                        },
+                        "line": {
+                            "type": "number",
+                            "description": "0-based line number of the function. Use with uri to identify the function."
+                        },
+                        "nodeId": {
+                            "type": "string",
+                            "description": "Internal node ID from symbol_search. Alternative to uri+line."
+                        },
+                        "depth": {
+                            "type": "number",
+                            "description": "Depth of caller chain to traverse (default: 1)",
+                            "default": 1
+                        }
+                    }
+                }
+            },
+            {
+                "name": "codegraph_get_callees",
+                "displayName": "Get Function Callees",
+                "description": "Get all functions that a specific function calls",
+                "modelDescription": "Find all functions called by a target function. You can identify the target by uri+line (preferred) or by nodeId from symbol_search. Returns called functions with file locations.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "callees",
+                "userDescription": "Find all functions that a specific function calls",
+                "tags": [
+                    "call-graph",
+                    "functions",
+                    "dependencies"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "uri": {
+                            "type": "string",
+                            "description": "File URI (e.g., file:///path/to/file.ts). Use with line to identify the function."
+                        },
+                        "line": {
+                            "type": "number",
+                            "description": "0-based line number of the function. Use with uri to identify the function."
+                        },
+                        "nodeId": {
+                            "type": "string",
+                            "description": "Internal node ID from symbol_search. Alternative to uri+line."
+                        },
+                        "depth": {
+                            "type": "number",
+                            "description": "Depth of callee chain to traverse (default: 1)",
+                            "default": 1
+                        }
+                    }
+                }
+            },
+            {
+                "name": "codegraph_get_detailed_symbol",
+                "displayName": "Get Detailed Symbol Info",
+                "description": "Get comprehensive information about a specific symbol including source code, documentation, and relationships",
+                "modelDescription": "Get complete details about a symbol. Use uri+line (preferred) or nodeId from symbol_search to identify it. Returns source code, documentation, signature, type information, callers, and callees.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "symbol_details",
+                "userDescription": "Get complete details about a function, class, or variable",
+                "tags": [
+                    "symbols",
+                    "documentation",
+                    "code-analysis"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "uri": {
+                            "type": "string",
+                            "description": "File URI (e.g., file:///path/to/file.ts). Use with line to identify the symbol."
+                        },
+                        "line": {
+                            "type": "number",
+                            "description": "0-based line number of the symbol. Use with uri to identify the symbol."
+                        },
+                        "nodeId": {
+                            "type": "string",
+                            "description": "Internal node ID from symbol_search. Alternative to uri+line."
+                        },
+                        "includeSource": {
+                            "type": "boolean",
+                            "description": "Include full source code of the symbol",
+                            "default": true
+                        },
+                        "includeCallers": {
+                            "type": "boolean",
+                            "description": "Include list of callers",
+                            "default": true
+                        },
+                        "includeCallees": {
+                            "type": "boolean",
+                            "description": "Include list of callees",
+                            "default": true
+                        }
+                    }
+                }
+            },
+            {
+                "name": "codegraph_find_by_signature",
+                "displayName": "Find By Signature",
+                "description": "Find functions by their signature pattern - parameter count, return type, or modifiers",
+                "modelDescription": "Use this tool to find functions matching specific signature patterns. Search by number of parameters, return type (e.g., 'Promise', 'Result'), or modifiers (async, static, public). Useful for finding similar functions or specific patterns like 'all async functions returning Promise'.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "find_signature",
+                "userDescription": "Find functions by parameter count, return type, or modifiers",
+                "tags": [
+                    "search",
+                    "functions",
+                    "signatures"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "namePattern": {
+                            "type": "string",
+                            "description": "Pattern to match function names (supports wildcards like 'get*', '*Handler')"
+                        },
+                        "paramCount": {
+                            "type": "number",
+                            "description": "Exact number of parameters"
+                        },
+                        "minParams": {
+                            "type": "number",
+                            "description": "Minimum number of parameters"
+                        },
+                        "maxParams": {
+                            "type": "number",
+                            "description": "Maximum number of parameters"
+                        },
+                        "returnType": {
+                            "type": "string",
+                            "description": "Return type to match (e.g., 'Promise', 'Result<T>', 'void')"
+                        },
+                        "modifiers": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Required modifiers (e.g., ['async'], ['static', 'public'])"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results",
+                            "default": 50
+                        }
+                    }
                 }
             }
         ],

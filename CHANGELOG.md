@@ -2,7 +2,51 @@
 
 All notable changes to the CodeGraph extension will be documented in this file.
 
-## [0.2.0] - 2024-12-30
+## [0.3.1] - 2026-01-01
+
+### Fixed
+
+- **Cross-file import resolution**: Exported classes and functions are now correctly detected as "used" when imported by other files
+- **Cross-file call resolution**: Function calls to symbols in other files now create proper call edges in the dependency graph
+- **Reindex workspace command**: Now properly re-parses all workspace files and resolves cross-file relationships
+- **`codegraph_find_unused_code` false positives**: Fixed issue where exported symbols that were imported elsewhere were incorrectly flagged as unused
+- **Framework entry points**: VS Code extension entry points (`activate`/`deactivate`) are no longer flagged as unused
+- **Trait implementations**: Rust trait methods and LSP protocol handlers are now excluded from unused code detection
+
+### Changed
+
+- TypeScript parser now stores unresolved calls for post-processing cross-file resolution
+- LSP document handlers (`did_open`, `did_change`, `did_save`) now trigger cross-file resolution after parsing
+- All language parsers (Python, Rust, Go, C) now support cross-file call resolution
+
+## [0.3.0] - 2025-12-31
+
+### Added
+
+- **AI Agent Query Engine**: Fast, composable query primitives for AI agents to explore codebases
+  - BM25-based text index with intelligent tokenization (camelCase, snake_case, acronyms)
+  - Sub-10ms query performance for symbol search
+  - 8 new Language Model Tools (now 17 total):
+    - `codegraph_symbol_search` - Fast text-based symbol search with BM25 ranking
+    - `codegraph_find_by_imports` - Discover code by imported libraries/modules
+    - `codegraph_find_entry_points` - Detect architectural entry points (HTTP handlers, CLI, main, etc.)
+    - `codegraph_traverse_graph` - Custom graph traversal with filters and depth control
+    - `codegraph_get_callers` - Find all callers of a function
+    - `codegraph_get_callees` - Find all functions called by a function
+    - `codegraph_get_detailed_symbol` - Rich metadata retrieval for any symbol
+    - `codegraph_find_by_signature` - Find functions by signature pattern (name, params, return type, modifiers)
+
+### Changed
+
+- Improved query engine architecture for better composability
+
+## [0.2.1] - 2025-12-31
+
+### Changed
+
+- Minor documentation fixes.
+
+## [0.2.0] - 2025-12-30
 
 ### Added
 
@@ -15,22 +59,3 @@ All notable changes to the CodeGraph extension will be documented in this file.
   - `codegraph_analyze_complexity` - Measure cyclomatic and cognitive complexity
   - `codegraph_find_unused_code` - Detect dead code for cleanup
   - `codegraph_analyze_coupling` - Analyze module coupling and cohesion
-
-### Changed
-
-- Improved symbol index with O(1) node-to-file reverse lookup
-- Enhanced path resolution in handlers with fallback to symbol index
-- Updated build script with `--all-platforms` and `--sync-binaries` options
-
-## [0.1.0] - 2024-12-11
-
-### Added
-
-- Initial release
-- Cross-language code intelligence for TypeScript, JavaScript, Python, Rust, and Go
-- Dependency graph visualization
-- Call graph analysis
-- Impact analysis for refactoring
-- AI integration via Language Model Tools (6 tools for AI agents)
-- `@codegraph` chat participant for VS Code AI chats
-- Rust LSP server powered by codegraph crates

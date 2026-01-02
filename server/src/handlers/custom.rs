@@ -956,3 +956,746 @@ impl CodeGraphBackend {
         Ok(ParserMetricsResponse { metrics, totals })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai_query::QueryEngine;
+    use crate::backend::CodeGraphBackend;
+    use codegraph::{CodeGraph, NodeType, PropertyMap, PropertyValue};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    /// Helper to add a node to the symbol index
+    fn add_node_to_index(
+        backend: &CodeGraphBackend,
+        path: &std::path::Path,
+        node_id: NodeId,
+        name: &str,
+        node_type: &str,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        backend.symbol_index.add_node_for_test(
+            path.to_path_buf(),
+            node_id,
+            name,
+            node_type,
+            start_line,
+            end_line,
+        );
+    }
+
+    /// Helper to create a test backend with a graph containing test nodes
+    async fn create_test_backend() -> CodeGraphBackend {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create graph"),
+        ));
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        CodeGraphBackend::new_for_test(graph, query_engine)
+    }
+
+    /// Helper to create a backend with nodes for dependency graph testing
+    async fn create_backend_with_imports() -> (CodeGraphBackend, NodeId, NodeId) {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create graph"),
+        ));
+
+        let (file1_id, file2_id) = {
+            let mut g = graph.write().await;
+
+            // Create file 1
+            let mut props1 = PropertyMap::new();
+            props1.insert(
+                "name".to_string(),
+                PropertyValue::String("main.rs".to_string()),
+            );
+            props1.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/main.rs".to_string()),
+            );
+            props1.insert(
+                "language".to_string(),
+                PropertyValue::String("rust".to_string()),
+            );
+            props1.insert("line_start".to_string(), PropertyValue::Int(1));
+            props1.insert("line_end".to_string(), PropertyValue::Int(100));
+            let file1_id = g.add_node(NodeType::CodeFile, props1).unwrap();
+
+            // Create file 2
+            let mut props2 = PropertyMap::new();
+            props2.insert(
+                "name".to_string(),
+                PropertyValue::String("utils.rs".to_string()),
+            );
+            props2.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/utils.rs".to_string()),
+            );
+            props2.insert(
+                "language".to_string(),
+                PropertyValue::String("rust".to_string()),
+            );
+            props2.insert("line_start".to_string(), PropertyValue::Int(1));
+            props2.insert("line_end".to_string(), PropertyValue::Int(50));
+            let file2_id = g.add_node(NodeType::CodeFile, props2).unwrap();
+
+            // Create import edge from file1 to file2
+            g.add_edge(file1_id, file2_id, EdgeType::Imports, PropertyMap::new())
+                .unwrap();
+
+            (file1_id, file2_id)
+        };
+
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        let backend = CodeGraphBackend::new_for_test(graph, query_engine);
+
+        (backend, file1_id, file2_id)
+    }
+
+    /// Helper to create a backend with function nodes for call graph testing
+    async fn create_backend_with_calls() -> (CodeGraphBackend, NodeId, NodeId) {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create graph"),
+        ));
+
+        let (func1_id, func2_id) = {
+            let mut g = graph.write().await;
+
+            // Create function 1
+            let mut props1 = PropertyMap::new();
+            props1.insert(
+                "name".to_string(),
+                PropertyValue::String("main".to_string()),
+            );
+            props1.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/main.rs".to_string()),
+            );
+            props1.insert(
+                "signature".to_string(),
+                PropertyValue::String("fn main()".to_string()),
+            );
+            props1.insert(
+                "language".to_string(),
+                PropertyValue::String("rust".to_string()),
+            );
+            props1.insert("line_start".to_string(), PropertyValue::Int(1));
+            props1.insert("line_end".to_string(), PropertyValue::Int(10));
+            let func1_id = g.add_node(NodeType::Function, props1).unwrap();
+
+            // Create function 2
+            let mut props2 = PropertyMap::new();
+            props2.insert(
+                "name".to_string(),
+                PropertyValue::String("helper".to_string()),
+            );
+            props2.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/main.rs".to_string()),
+            );
+            props2.insert(
+                "signature".to_string(),
+                PropertyValue::String("fn helper() -> i32".to_string()),
+            );
+            props2.insert(
+                "language".to_string(),
+                PropertyValue::String("rust".to_string()),
+            );
+            props2.insert("line_start".to_string(), PropertyValue::Int(15));
+            props2.insert("line_end".to_string(), PropertyValue::Int(25));
+            let func2_id = g.add_node(NodeType::Function, props2).unwrap();
+
+            // Create call edge from func1 to func2
+            g.add_edge(func1_id, func2_id, EdgeType::Calls, PropertyMap::new())
+                .unwrap();
+
+            (func1_id, func2_id)
+        };
+
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        let backend = CodeGraphBackend::new_for_test(graph, query_engine);
+
+        // Add to symbol index
+        let path = std::path::Path::new("/test/main.rs");
+        add_node_to_index(&backend, path, func1_id, "main", "Function", 1, 10);
+        add_node_to_index(&backend, path, func2_id, "helper", "Function", 15, 25);
+
+        (backend, func1_id, func2_id)
+    }
+
+    // ==========================================
+    // Helper function tests
+    // ==========================================
+
+    #[test]
+    fn test_get_line_start() {
+        let mut props = PropertyMap::new();
+        props.insert("line_start".to_string(), PropertyValue::Int(42));
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert_eq!(get_line_start(&node), 42);
+    }
+
+    #[test]
+    fn test_get_line_start_fallback() {
+        let mut props = PropertyMap::new();
+        props.insert("start_line".to_string(), PropertyValue::Int(42));
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert_eq!(get_line_start(&node), 42);
+    }
+
+    #[test]
+    fn test_get_line_start_default() {
+        let props = PropertyMap::new();
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert_eq!(get_line_start(&node), 1);
+    }
+
+    #[test]
+    fn test_get_line_end() {
+        let mut props = PropertyMap::new();
+        props.insert("line_end".to_string(), PropertyValue::Int(100));
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert_eq!(get_line_end(&node, 50), 100);
+    }
+
+    #[test]
+    fn test_get_col_start() {
+        let mut props = PropertyMap::new();
+        props.insert("col_start".to_string(), PropertyValue::Int(5));
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert_eq!(get_col_start(&node), 5);
+    }
+
+    #[test]
+    fn test_get_col_end() {
+        let mut props = PropertyMap::new();
+        props.insert("col_end".to_string(), PropertyValue::Int(80));
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert_eq!(get_col_end(&node), 80);
+    }
+
+    #[test]
+    fn test_is_test_node_by_name() {
+        let mut props = PropertyMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("test_something".to_string()),
+        );
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert!(CodeGraphBackend::is_test_node(&node));
+    }
+
+    #[test]
+    fn test_is_test_node_by_path() {
+        let mut props = PropertyMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("something".to_string()),
+        );
+        props.insert(
+            "path".to_string(),
+            PropertyValue::String("/project/tests/my_test.rs".to_string()),
+        );
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert!(CodeGraphBackend::is_test_node(&node));
+    }
+
+    #[test]
+    fn test_is_not_test_node() {
+        let mut props = PropertyMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("regular_function".to_string()),
+        );
+        props.insert(
+            "path".to_string(),
+            PropertyValue::String("/project/src/lib.rs".to_string()),
+        );
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+        assert!(!CodeGraphBackend::is_test_node(&node));
+    }
+
+    #[test]
+    fn test_node_to_range() {
+        let mut props = PropertyMap::new();
+        props.insert("line_start".to_string(), PropertyValue::Int(10));
+        props.insert("line_end".to_string(), PropertyValue::Int(20));
+        props.insert("col_start".to_string(), PropertyValue::Int(4));
+        props.insert("col_end".to_string(), PropertyValue::Int(50));
+        let node = Node {
+            id: 1,
+            node_type: NodeType::Function,
+            properties: props,
+        };
+
+        let range = CodeGraphBackend::node_to_range(&node);
+        assert!(range.is_some());
+        let range = range.unwrap();
+        // Line 10 -> 9 (0-indexed)
+        assert_eq!(range.start.line, 9);
+        assert_eq!(range.start.character, 4);
+        // Line 20 -> 19 (0-indexed)
+        assert_eq!(range.end.line, 19);
+        assert_eq!(range.end.character, 50);
+    }
+
+    // ==========================================
+    // Dependency Graph tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_get_dependency_graph_invalid_uri() {
+        let backend = create_test_backend().await;
+
+        let params = DependencyGraphParams {
+            uri: "not_a_valid_uri".to_string(),
+            depth: None,
+            include_external: None,
+            direction: None,
+        };
+
+        let result = backend.handle_get_dependency_graph(params).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_dependency_graph_no_file_node() {
+        let backend = create_test_backend().await;
+
+        let params = DependencyGraphParams {
+            uri: "file:///nonexistent/file.rs".to_string(),
+            depth: Some(2),
+            include_external: Some(false),
+            direction: None,
+        };
+
+        let result = backend.handle_get_dependency_graph(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.nodes.is_empty());
+        assert!(response.edges.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_dependency_graph_with_imports() {
+        let (backend, _file1_id, _file2_id) = create_backend_with_imports().await;
+
+        let params = DependencyGraphParams {
+            uri: "file:///test/main.rs".to_string(),
+            depth: Some(3),
+            include_external: Some(false),
+            direction: None,
+        };
+
+        let result = backend.handle_get_dependency_graph(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        // Should have at least the starting node
+        assert!(!response.nodes.is_empty());
+    }
+
+    // ==========================================
+    // Call Graph tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_get_call_graph_invalid_uri() {
+        let backend = create_test_backend().await;
+
+        let params = CallGraphParams {
+            uri: "not_a_valid_uri".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            direction: None,
+            depth: None,
+            include_external: None,
+        };
+
+        let result = backend.handle_get_call_graph(params).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_call_graph_no_node_at_position() {
+        let backend = create_test_backend().await;
+
+        let params = CallGraphParams {
+            uri: "file:///test/main.rs".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            direction: None,
+            depth: Some(2),
+            include_external: Some(false),
+        };
+
+        let result = backend.handle_get_call_graph(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.root.is_none());
+        assert!(response.nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_call_graph_with_calls() {
+        let (backend, _func1_id, _func2_id) = create_backend_with_calls().await;
+
+        // Position at line 1 (0-indexed = 0) which is within func1 (lines 1-10)
+        let params = CallGraphParams {
+            uri: "file:///test/main.rs".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            direction: Some("both".to_string()),
+            depth: Some(3),
+            include_external: Some(false),
+        };
+
+        let result = backend.handle_get_call_graph(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        // If we found the node, we should have nodes and potentially edges
+        if response.root.is_some() {
+            assert!(!response.nodes.is_empty());
+        }
+    }
+
+    // ==========================================
+    // Impact Analysis tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_analyze_impact_invalid_uri() {
+        let backend = create_test_backend().await;
+
+        let params = ImpactAnalysisParams {
+            uri: "not_a_valid_uri".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            analysis_type: "modify".to_string(),
+        };
+
+        let result = backend.handle_analyze_impact(params).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_analyze_impact_no_node() {
+        let backend = create_test_backend().await;
+
+        let params = ImpactAnalysisParams {
+            uri: "file:///test/main.rs".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            analysis_type: "modify".to_string(),
+        };
+
+        let result = backend.handle_analyze_impact(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.direct_impact.is_empty());
+        assert!(response.indirect_impact.is_empty());
+        assert_eq!(response.summary.files_affected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_analyze_impact_with_references() {
+        let (backend, _func1_id, _func2_id) = create_backend_with_calls().await;
+
+        // Analyze impact on func2 which is called by func1
+        // Position within func2 (lines 15-25, so 0-indexed = 14-24)
+        let params = ImpactAnalysisParams {
+            uri: "file:///test/main.rs".to_string(),
+            position: Position {
+                line: 14,
+                character: 0,
+            },
+            analysis_type: "delete".to_string(),
+        };
+
+        let result = backend.handle_analyze_impact(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        // func2 is called by func1, so there should be direct impact
+        if !response.direct_impact.is_empty() {
+            // Verify severity is correct for delete operation
+            assert!(response
+                .direct_impact
+                .iter()
+                .any(|i| i.severity == "breaking"));
+        }
+    }
+
+    // ==========================================
+    // Related Tests tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_find_related_tests_invalid_uri() {
+        let backend = create_test_backend().await;
+
+        let params = RelatedTestsParams {
+            uri: "not_a_valid_uri".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            limit: None,
+        };
+
+        let result = backend.handle_find_related_tests(params).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_related_tests_no_node() {
+        let backend = create_test_backend().await;
+
+        let params = RelatedTestsParams {
+            uri: "file:///test/main.rs".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            limit: Some(10),
+        };
+
+        let result = backend.handle_find_related_tests(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.tests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_find_related_tests_with_test_caller() {
+        let graph = Arc::new(RwLock::new(
+            CodeGraph::in_memory().expect("Failed to create graph"),
+        ));
+
+        let (func_id, test_id) = {
+            let mut g = graph.write().await;
+
+            // Create a regular function
+            let mut props1 = PropertyMap::new();
+            props1.insert(
+                "name".to_string(),
+                PropertyValue::String("my_function".to_string()),
+            );
+            props1.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/lib.rs".to_string()),
+            );
+            props1.insert("line_start".to_string(), PropertyValue::Int(1));
+            props1.insert("line_end".to_string(), PropertyValue::Int(10));
+            let func_id = g.add_node(NodeType::Function, props1).unwrap();
+
+            // Create a test function that calls the regular function
+            let mut props2 = PropertyMap::new();
+            props2.insert(
+                "name".to_string(),
+                PropertyValue::String("test_my_function".to_string()),
+            );
+            props2.insert(
+                "path".to_string(),
+                PropertyValue::String("/test/tests/lib_test.rs".to_string()),
+            );
+            props2.insert("line_start".to_string(), PropertyValue::Int(1));
+            props2.insert("line_end".to_string(), PropertyValue::Int(10));
+            let test_id = g.add_node(NodeType::Function, props2).unwrap();
+
+            // Test calls the function
+            g.add_edge(test_id, func_id, EdgeType::Calls, PropertyMap::new())
+                .unwrap();
+
+            (func_id, test_id)
+        };
+
+        let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        let backend = CodeGraphBackend::new_for_test(graph, query_engine);
+
+        // Add to symbol index
+        let func_path = std::path::Path::new("/test/lib.rs");
+        let test_path = std::path::Path::new("/test/tests/lib_test.rs");
+        add_node_to_index(
+            &backend,
+            func_path,
+            func_id,
+            "my_function",
+            "Function",
+            1,
+            10,
+        );
+        add_node_to_index(
+            &backend,
+            test_path,
+            test_id,
+            "test_my_function",
+            "Function",
+            1,
+            10,
+        );
+
+        let params = RelatedTestsParams {
+            uri: "file:///test/lib.rs".to_string(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            limit: Some(10),
+        };
+
+        let result = backend.handle_find_related_tests(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        // Should find the test that calls my_function
+        assert!(!response.tests.is_empty());
+        assert!(response.tests.iter().any(|t| t.test_name.contains("test")));
+    }
+
+    // ==========================================
+    // Parser Metrics tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_handle_get_parser_metrics_all() {
+        let backend = create_test_backend().await;
+
+        let params = ParserMetricsParams { language: None };
+
+        let result = backend.handle_get_parser_metrics(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        // Should have metrics for supported languages
+        assert!(response.totals.success_rate >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_parser_metrics_filtered() {
+        let backend = create_test_backend().await;
+
+        let params = ParserMetricsParams {
+            language: Some("rust".to_string()),
+        };
+
+        let result = backend.handle_get_parser_metrics(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        // All metrics should be for rust only
+        for metric in &response.metrics {
+            assert_eq!(metric.language, "rust");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_parser_metrics_unknown_language() {
+        let backend = create_test_backend().await;
+
+        let params = ParserMetricsParams {
+            language: Some("unknown_language_xyz".to_string()),
+        };
+
+        let result = backend.handle_get_parser_metrics(params).await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.metrics.is_empty());
+    }
+
+    // ==========================================
+    // Edge collection helper tests
+    // ==========================================
+
+    #[tokio::test]
+    async fn test_collect_edges_for_direction_both() {
+        let (backend, func1_id, _func2_id) = create_backend_with_calls().await;
+        let graph = backend.graph.read().await;
+
+        let edges = CodeGraphBackend::collect_edges_for_direction(
+            &graph, func1_id, "both", "callers", "callees",
+        );
+
+        // func1 calls func2, so there should be an outgoing edge
+        assert!(!edges.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_collect_edges_for_direction_callees_only() {
+        let (backend, func1_id, _func2_id) = create_backend_with_calls().await;
+        let graph = backend.graph.read().await;
+
+        // Test func1 with direction = "callers" which matches skip_outgoing, so only incoming checked
+        // func1 (main) has no incoming edges (nothing calls it)
+        let edges = CodeGraphBackend::collect_edges_for_direction(
+            &graph, func1_id, "callers", "callers", "callees",
+        );
+
+        // func1 has no incoming edges (nothing calls main), so should be empty
+        assert!(edges.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_incoming_edges() {
+        let (backend, func1_id, func2_id) = create_backend_with_calls().await;
+        let graph = backend.graph.read().await;
+
+        // func2 is called by func1, so incoming edges to func2 should have func1
+        let edges = CodeGraphBackend::get_incoming_edges(&graph, func2_id);
+        assert!(!edges.is_empty());
+        assert!(edges.iter().any(|(src, _, _)| *src == func1_id));
+    }
+}

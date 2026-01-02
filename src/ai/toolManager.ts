@@ -9,6 +9,13 @@ import {
     ComplexityResponse,
     UnusedCodeResponse,
     CouplingResponse,
+    SymbolSearchResponse,
+    FindByImportsResponse,
+    FindEntryPointsResponse,
+    TraverseGraphResponse,
+    GetCallersResponse,
+    DetailedSymbolResponse,
+    FindBySignatureResponse,
 } from '../types';
 
 /**
@@ -578,6 +585,346 @@ export class CodeGraphToolManager {
             })
         );
 
+        // ==========================================
+        // AI Agent Query Primitives (Tools 10-16)
+        // Fast, composable queries for AI code exploration
+        // ==========================================
+
+        // Tool 10: Symbol Search (BM25-based text search)
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_symbol_search', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        query: string;
+                        symbolTypes?: string[];
+                        limit?: number;
+                        includePrivate?: boolean;
+                    };
+                    const { query, symbolTypes, limit = 20, includePrivate = false } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<SymbolSearchResponse>(
+                            'codegraph.symbolSearch',
+                            { query, symbolTypes, limit, includePrivate },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatSymbolSearch(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'symbol search', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { query: string; limit?: number };
+                    const { query, limit = 20 } = input;
+
+                    return {
+                        invocationMessage: `Searching for symbols matching "${query}" (limit: ${limit})...`
+                    };
+                }
+            })
+        );
+
+        // Tool 11: Find By Imports
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_find_by_imports', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        moduleName?: string;
+                        libraries?: string[];
+                        matchMode?: 'exact' | 'prefix' | 'contains' | 'fuzzy';
+                    };
+                    // Support both moduleName (from package.json) and libraries (legacy)
+                    const libraries = input.libraries || (input.moduleName ? [input.moduleName] : []);
+                    const matchMode = input.matchMode || 'contains';
+
+                    if (libraries.length === 0) {
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart('Error: No module name provided. Please specify a moduleName to search for.')
+                        ]);
+                    }
+
+                    try {
+                        const response = await this.sendRequestWithRetry<FindByImportsResponse>(
+                            'codegraph.findByImports',
+                            { libraries, matchMode },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatFindByImports(response, libraries))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'find by imports', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { moduleName?: string; libraries?: string[] };
+                    const libraries = input.libraries || (input.moduleName ? [input.moduleName] : []);
+                    const displayNames = libraries.length > 0 ? libraries.join(', ') : 'modules';
+
+                    return {
+                        invocationMessage: `Finding code that imports ${displayNames}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 12: Find Entry Points
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_find_entry_points', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        entryType?: 'http_handler' | 'cli_command' | 'public_api' | 'event_handler' | 'test_entry' | 'main';
+                    };
+                    const { entryType } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<FindEntryPointsResponse>(
+                            'codegraph.findEntryPoints',
+                            { entryType },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatEntryPoints(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'find entry points', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { entryType?: string };
+                    const { entryType } = input;
+                    const typeLabel = entryType ? ` of type "${entryType}"` : '';
+
+                    return {
+                        invocationMessage: `Finding entry points${typeLabel}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 13: Traverse Graph
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_traverse_graph', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        startNodeId?: string;
+                        uri?: string;
+                        line?: number;
+                        direction?: 'outgoing' | 'incoming' | 'both';
+                        depth?: number;
+                        filterSymbolTypes?: string[];
+                        maxNodes?: number;
+                    };
+                    const {
+                        startNodeId, uri, line, direction = 'outgoing',
+                        depth = 3, filterSymbolTypes, maxNodes = 50
+                    } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<TraverseGraphResponse>(
+                            'codegraph.traverseGraph',
+                            { startNodeId, uri, line, direction, depth, filterSymbolTypes, maxNodes },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatTraverseGraph(response, direction))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'traverse graph', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri?: string; line?: number; direction?: string; depth?: number };
+                    const { uri, line, direction = 'outgoing', depth = 3 } = input;
+                    const fileName = uri ? vscode.Uri.parse(uri).path.split('/').pop() : 'node';
+                    const lineInfo = line !== undefined ? `:${line + 1}` : '';
+
+                    return {
+                        invocationMessage: `Traversing ${direction} from ${fileName}${lineInfo} (depth: ${depth})...`
+                    };
+                }
+            })
+        );
+
+        // Tool 14: Get Callers
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_get_callers', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        nodeId?: string;
+                        uri?: string;
+                        line?: number;
+                        depth?: number;
+                    };
+                    const { nodeId, uri, line, depth = 1 } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<GetCallersResponse>(
+                            'codegraph.getCallers',
+                            { nodeId, uri, line, depth },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatCallers(response, 'callers'))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'get callers', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri?: string; line?: number; depth?: number };
+                    const { uri, line, depth = 1 } = input;
+                    const fileName = uri ? vscode.Uri.parse(uri).path.split('/').pop() : 'symbol';
+                    const lineInfo = line !== undefined ? `:${line + 1}` : '';
+
+                    return {
+                        invocationMessage: `Finding callers of ${fileName}${lineInfo} (depth: ${depth})...`
+                    };
+                }
+            })
+        );
+
+        // Tool 15: Get Callees
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_get_callees', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        nodeId?: string;
+                        uri?: string;
+                        line?: number;
+                        depth?: number;
+                    };
+                    const { nodeId, uri, line, depth = 1 } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<GetCallersResponse>(
+                            'codegraph.getCallees',
+                            { nodeId, uri, line, depth },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatCallers(response, 'callees'))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'get callees', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri?: string; line?: number; depth?: number };
+                    const { uri, line, depth = 1 } = input;
+                    const fileName = uri ? vscode.Uri.parse(uri).path.split('/').pop() : 'symbol';
+                    const lineInfo = line !== undefined ? `:${line + 1}` : '';
+
+                    return {
+                        invocationMessage: `Finding callees of ${fileName}${lineInfo} (depth: ${depth})...`
+                    };
+                }
+            })
+        );
+
+        // Tool 16: Get Detailed Symbol Info
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_get_detailed_symbol', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        nodeId?: string;
+                        uri?: string;
+                        line?: number;
+                        includeCallers?: boolean;
+                        includeCallees?: boolean;
+                    };
+                    const { nodeId, uri, line, includeCallers = true, includeCallees = true } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<DetailedSymbolResponse>(
+                            'codegraph.getDetailedSymbolInfo',
+                            { nodeId, uri, line, includeCallers, includeCallees },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatDetailedSymbol(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'get detailed symbol', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri?: string; line?: number };
+                    const { uri, line } = input;
+                    const fileName = uri ? vscode.Uri.parse(uri).path.split('/').pop() : 'symbol';
+                    const lineInfo = line !== undefined ? `:${line + 1}` : '';
+
+                    return {
+                        invocationMessage: `Getting detailed info for ${fileName}${lineInfo}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 17: Find By Signature
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_find_by_signature', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        namePattern?: string;
+                        returnType?: string;
+                        paramCount?: { min: number; max: number };
+                        modifiers?: ('public' | 'private' | 'static' | 'async' | 'const')[];
+                    };
+                    const { namePattern, returnType, paramCount, modifiers } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<FindBySignatureResponse>(
+                            'codegraph.findBySignature',
+                            { namePattern, returnType, paramCount, modifiers },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatFindBySignature(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'find by signature', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as {
+                        namePattern?: string;
+                        returnType?: string;
+                        modifiers?: string[];
+                    };
+                    const { namePattern, returnType, modifiers } = input;
+
+                    const parts: string[] = [];
+                    if (namePattern) {parts.push(`name: "${namePattern}"`);}
+                    if (returnType) {parts.push(`returns: ${returnType}`);}
+                    if (modifiers?.length) {parts.push(`modifiers: ${modifiers.join(', ')}`);}
+                    const criteria = parts.length > 0 ? parts.join(', ') : 'all functions';
+
+                    return {
+                        invocationMessage: `Finding functions by signature (${criteria})...`
+                    };
+                }
+            })
+        );
+
         console.log(`[CodeGraph] Registered ${this.disposables.length} Language Model tools`);
     }
 
@@ -1063,6 +1410,234 @@ export class CodeGraphToolManager {
                 output += `- ${rec}\n`;
             });
         }
+
+        return output;
+    }
+
+    // ==========================================
+    // AI Agent Query Primitives Formatters
+    // ==========================================
+
+    /**
+     * Format symbol search results for AI consumption
+     */
+    private formatSymbolSearch(response: SymbolSearchResponse): string {
+        let output = '# Symbol Search Results\n\n';
+        output += `Found ${response.totalMatches} matches in ${response.queryTimeMs}ms.\n\n`;
+
+        if (response.results.length === 0) {
+            output += 'No symbols found matching the query.\n';
+            return output;
+        }
+
+        response.results.forEach((match, i) => {
+            const visibility = match.symbol.isPublic ? '🔓' : '🔒';
+            output += `## ${i + 1}. ${match.symbol.name} ${visibility}\n`;
+            output += `- **Kind**: ${match.symbol.kind}\n`;
+            output += `- **Score**: ${match.score.toFixed(2)}\n`;
+            output += `- **Location**: ${match.symbol.location.file}:${match.symbol.location.line}\n`;
+            output += `- **Match Reason**: ${match.matchReason}\n`;
+            if (match.symbol.signature) {
+                output += `- **Signature**: \`${match.symbol.signature}\`\n`;
+            }
+            if (match.symbol.docstring) {
+                output += `- **Documentation**: ${match.symbol.docstring.slice(0, 200)}${match.symbol.docstring.length > 200 ? '...' : ''}\n`;
+            }
+            output += '\n';
+        });
+
+        return output;
+    }
+
+    /**
+     * Format find by imports results for AI consumption
+     */
+    private formatFindByImports(response: FindByImportsResponse, libraries: string[]): string {
+        let output = '# Code Importing Libraries\n\n';
+        output += `Libraries searched: ${libraries.join(', ')}\n`;
+        output += `Found ${response.results.length} symbols in ${response.queryTimeMs}ms.\n\n`;
+
+        if (response.results.length === 0) {
+            output += 'No code found importing these libraries.\n';
+            return output;
+        }
+
+        response.results.forEach((match, i) => {
+            output += `## ${i + 1}. ${match.symbol.name}\n`;
+            output += `- **Kind**: ${match.symbol.kind}\n`;
+            output += `- **Location**: ${match.symbol.location.file}:${match.symbol.location.line}\n`;
+            output += `- **Match Reason**: ${match.matchReason}\n`;
+            output += '\n';
+        });
+
+        return output;
+    }
+
+    /**
+     * Format entry points for AI consumption
+     */
+    private formatEntryPoints(response: FindEntryPointsResponse): string {
+        let output = '# Entry Points\n\n';
+        output += `Found ${response.totalFound} entry points.\n\n`;
+
+        if (response.entryPoints.length === 0) {
+            output += 'No entry points found.\n';
+            return output;
+        }
+
+        response.entryPoints.forEach((ep, i) => {
+            output += `## ${i + 1}. ${ep.symbol.name}\n`;
+            output += `- **Type**: ${ep.entryType}\n`;
+            output += `- **Location**: ${ep.symbol.location.file}:${ep.symbol.location.line}\n`;
+            if (ep.route) {
+                output += `- **Route**: ${ep.method || 'ANY'} ${ep.route}\n`;
+            }
+            if (ep.description) {
+                output += `- **Description**: ${ep.description}\n`;
+            }
+            output += '\n';
+        });
+
+        return output;
+    }
+
+    /**
+     * Format graph traversal results for AI consumption
+     */
+    private formatTraverseGraph(response: TraverseGraphResponse, direction: string): string {
+        let output = `# Graph Traversal (${direction})\n\n`;
+        output += `Found ${response.nodes.length} nodes in ${response.queryTimeMs}ms.\n\n`;
+
+        if (response.nodes.length === 0) {
+            output += 'No connected nodes found.\n';
+            return output;
+        }
+
+        // Group by depth
+        const byDepth = new Map<number, typeof response.nodes>();
+        response.nodes.forEach(node => {
+            if (!byDepth.has(node.depth)) {
+                byDepth.set(node.depth, []);
+            }
+            byDepth.get(node.depth)!.push(node);
+        });
+
+        byDepth.forEach((nodes, depth) => {
+            output += `## Depth ${depth}\n`;
+            nodes.forEach(node => {
+                output += `- **${node.symbol.name}** (${node.symbol.kind})\n`;
+                output += `  Location: ${node.symbol.location.file}:${node.symbol.location.line}\n`;
+                output += `  Edge type: ${node.edgeType}\n`;
+            });
+            output += '\n';
+        });
+
+        return output;
+    }
+
+    /**
+     * Format callers/callees for AI consumption
+     */
+    private formatCallers(response: GetCallersResponse, type: 'callers' | 'callees'): string {
+        const title = type === 'callers' ? 'Callers' : 'Callees';
+        let output = `# ${title}\n\n`;
+        output += `Found ${response.callers.length} ${type} in ${response.queryTimeMs}ms.\n\n`;
+
+        if (response.callers.length === 0) {
+            output += `No ${type} found.\n`;
+            return output;
+        }
+
+        response.callers.forEach((call, i) => {
+            output += `## ${i + 1}. ${call.symbol.name}\n`;
+            output += `- **Kind**: ${call.symbol.kind}\n`;
+            output += `- **Location**: ${call.symbol.location.file}:${call.symbol.location.line}\n`;
+            output += `- **Call Site**: ${call.callSite.file}:${call.callSite.line}\n`;
+            output += `- **Depth**: ${call.depth}\n`;
+            output += '\n';
+        });
+
+        return output;
+    }
+
+    /**
+     * Format detailed symbol info for AI consumption
+     */
+    private formatDetailedSymbol(response: DetailedSymbolResponse): string {
+        let output = '# Detailed Symbol Information\n\n';
+
+        const { symbol } = response;
+        const visibility = response.isPublic ? '🔓 Public' : '🔒 Private';
+        const deprecated = response.isDeprecated ? '⚠️ DEPRECATED' : '';
+
+        output += `## ${symbol.name} ${visibility} ${deprecated}\n\n`;
+        output += `- **Kind**: ${symbol.kind}\n`;
+        output += `- **Location**: ${symbol.location.file}:${symbol.location.line}\n`;
+        output += `- **Lines of Code**: ${response.linesOfCode}\n`;
+        output += `- **Reference Count**: ${response.referenceCount}\n`;
+
+        if (response.complexity !== undefined) {
+            output += `- **Complexity**: ${response.complexity}\n`;
+        }
+
+        if (symbol.signature) {
+            output += `- **Signature**: \`${symbol.signature}\`\n`;
+        }
+
+        if (symbol.docstring) {
+            output += `\n### Documentation\n${symbol.docstring}\n`;
+        }
+
+        if (response.callers.length > 0) {
+            output += `\n### Callers (${response.callers.length})\n`;
+            response.callers.slice(0, 10).forEach(caller => {
+                output += `- **${caller.symbol.name}** at ${caller.symbol.location.file}:${caller.symbol.location.line}\n`;
+            });
+            if (response.callers.length > 10) {
+                output += `... and ${response.callers.length - 10} more\n`;
+            }
+        }
+
+        if (response.callees.length > 0) {
+            output += `\n### Callees (${response.callees.length})\n`;
+            response.callees.slice(0, 10).forEach(callee => {
+                output += `- **${callee.symbol.name}** at ${callee.symbol.location.file}:${callee.symbol.location.line}\n`;
+            });
+            if (response.callees.length > 10) {
+                output += `... and ${response.callees.length - 10} more\n`;
+            }
+        }
+
+        return output;
+    }
+
+    /**
+     * Format find by signature results for AI consumption
+     */
+    private formatFindBySignature(response: FindBySignatureResponse): string {
+        let output = '# Functions By Signature\n\n';
+        output += `Found ${response.results.length} matches in ${response.queryTimeMs}ms.\n\n`;
+
+        if (response.results.length === 0) {
+            output += 'No functions found matching the signature criteria.\n';
+            return output;
+        }
+
+        response.results.forEach((match, i) => {
+            const visibility = match.symbol.isPublic ? '🔓' : '🔒';
+            output += `## ${i + 1}. ${match.symbol.name} ${visibility}\n`;
+            output += `- **Kind**: ${match.symbol.kind}\n`;
+            output += `- **Score**: ${match.score.toFixed(2)}\n`;
+            output += `- **Location**: ${match.symbol.location.file}:${match.symbol.location.line}\n`;
+            output += `- **Match Reason**: ${match.matchReason}\n`;
+            if (match.symbol.signature) {
+                output += `- **Signature**: \`${match.symbol.signature}\`\n`;
+            }
+            if (match.symbol.docstring) {
+                output += `- **Documentation**: ${match.symbol.docstring.slice(0, 200)}${match.symbol.docstring.length > 200 ? '...' : ''}\n`;
+            }
+            output += '\n';
+        });
 
         return output;
     }

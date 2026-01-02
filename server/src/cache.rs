@@ -30,6 +30,12 @@ pub struct QueryCache {
 
     /// LRU cache for AI context results.
     ai_contexts: Mutex<LruCache<(NodeId, String), AIContextCache>>,
+
+    /// LRU cache for AI agent symbol search results.
+    symbol_searches: Mutex<LruCache<String, SymbolSearchCache>>,
+
+    /// LRU cache for AI agent graph traversal results.
+    traversals: Mutex<LruCache<(NodeId, String, u32), TraversalCache>>,
 }
 
 /// Cached call hierarchy data.
@@ -53,6 +59,21 @@ pub struct AIContextCache {
     pub related_symbols: Vec<(NodeId, String, f64)>,
 }
 
+/// Cached AI query symbol search results.
+#[derive(Clone)]
+pub struct SymbolSearchCache {
+    pub results: Vec<(NodeId, f32, String)>, // (node_id, score, match_reason)
+    pub total_matches: usize,
+    pub query_time_ms: u64,
+}
+
+/// Cached AI query traversal results.
+#[derive(Clone)]
+pub struct TraversalCache {
+    pub nodes: Vec<(NodeId, u32, String)>, // (node_id, depth, edge_type)
+    pub query_time_ms: u64,
+}
+
 impl QueryCache {
     /// Create a new cache with the specified capacity.
     pub fn new(capacity: usize) -> Self {
@@ -66,6 +87,8 @@ impl QueryCache {
                 NonZeroUsize::new(capacity.get() / 2).unwrap_or(NonZeroUsize::new(50).unwrap()),
             )),
             ai_contexts: Mutex::new(LruCache::new(capacity)),
+            symbol_searches: Mutex::new(LruCache::new(capacity)),
+            traversals: Mutex::new(LruCache::new(capacity)),
         }
     }
 
@@ -156,6 +179,55 @@ impl QueryCache {
     }
 
     // ==========================================
+    // AI Agent Symbol Search Cache
+    // ==========================================
+
+    /// Get cached symbol search results.
+    /// The key is a normalized query string (e.g., "query:user scope:workspace limit:10").
+    pub fn get_symbol_search(&self, query_key: &str) -> Option<SymbolSearchCache> {
+        self.symbol_searches.lock().ok()?.get(query_key).cloned()
+    }
+
+    /// Store symbol search results in cache.
+    pub fn set_symbol_search(&self, query_key: String, cache: SymbolSearchCache) {
+        if let Ok(mut guard) = self.symbol_searches.lock() {
+            guard.put(query_key, cache);
+        }
+    }
+
+    // ==========================================
+    // AI Agent Traversal Cache
+    // ==========================================
+
+    /// Get cached traversal results.
+    /// Key is (start_node_id, direction, depth).
+    pub fn get_traversal(
+        &self,
+        node_id: NodeId,
+        direction: &str,
+        depth: u32,
+    ) -> Option<TraversalCache> {
+        self.traversals
+            .lock()
+            .ok()?
+            .get(&(node_id, direction.to_string(), depth))
+            .cloned()
+    }
+
+    /// Store traversal results in cache.
+    pub fn set_traversal(
+        &self,
+        node_id: NodeId,
+        direction: String,
+        depth: u32,
+        cache: TraversalCache,
+    ) {
+        if let Ok(mut guard) = self.traversals.lock() {
+            guard.put((node_id, direction, depth), cache);
+        }
+    }
+
+    // ==========================================
     // Invalidation
     // ==========================================
 
@@ -196,6 +268,14 @@ impl QueryCache {
         if let Ok(mut guard) = self.ai_contexts.lock() {
             guard.clear();
         }
+
+        if let Ok(mut guard) = self.symbol_searches.lock() {
+            guard.clear();
+        }
+
+        if let Ok(mut guard) = self.traversals.lock() {
+            guard.clear();
+        }
     }
 
     /// Get cache statistics.
@@ -206,6 +286,8 @@ impl QueryCache {
             call_hierarchies_count: self.call_hierarchies.lock().map(|g| g.len()).unwrap_or(0),
             dependency_graphs_count: self.dependency_graphs.lock().map(|g| g.len()).unwrap_or(0),
             ai_contexts_count: self.ai_contexts.lock().map(|g| g.len()).unwrap_or(0),
+            symbol_searches_count: self.symbol_searches.lock().map(|g| g.len()).unwrap_or(0),
+            traversals_count: self.traversals.lock().map(|g| g.len()).unwrap_or(0),
         }
     }
 }
@@ -217,6 +299,8 @@ pub struct CacheStats {
     pub call_hierarchies_count: usize,
     pub dependency_graphs_count: usize,
     pub ai_contexts_count: usize,
+    pub symbol_searches_count: usize,
+    pub traversals_count: usize,
 }
 
 impl Default for QueryCache {

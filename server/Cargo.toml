@@ -30,6 +30,7 @@ notify.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 lru.workspace = true
+regex.workspace = true
 
 # CodeGraph ecosystem
 codegraph.workspace = true

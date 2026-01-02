@@ -3,6 +3,7 @@
 //! This crate implements a Language Server Protocol (LSP) server for CodeGraph,
 //! providing cross-language code intelligence through graph-based analysis.
 
+pub mod ai_query;
 pub mod backend;
 pub mod cache;
 pub mod custom_requests;

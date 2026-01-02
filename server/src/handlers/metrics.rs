@@ -423,13 +423,19 @@ impl CodeGraphBackend {
                     continue;
                 }
 
-                // Check if node has any incoming calls
+                // Check if node has any incoming calls OR is imported by another file
                 let incoming = self.get_connected_edges(&graph, node_id, Direction::Incoming);
                 let has_callers = incoming
                     .iter()
                     .any(|(_, _, edge_type)| *edge_type == EdgeType::Calls);
+                let is_imported = incoming
+                    .iter()
+                    .any(|(_, _, edge_type)| *edge_type == EdgeType::Imports);
 
-                if !has_callers {
+                // A symbol is "used" if it's called OR imported
+                let is_used = has_callers || is_imported;
+
+                if !is_used {
                     // Determine if this might be exported or an entry point
                     let is_exported = node.properties.get_bool("exported").unwrap_or(false)
                         || node
@@ -439,12 +445,20 @@ impl CodeGraphBackend {
                             .unwrap_or(false);
 
                     let is_entry = Self::is_entry_point(&name);
+                    let is_vscode_entry = Self::is_vscode_entry_point(&name);
+                    let is_trait_method = Self::is_trait_or_protocol_method(&name);
                     let is_handler = name.contains("handle")
                         || name.contains("Handler")
                         || name.starts_with("on");
                     let is_lifecycle = ["init", "setup", "teardown", "cleanup", "main", "run"]
                         .iter()
                         .any(|k| name.to_lowercase().contains(k));
+
+                    // Skip VS Code entry points and trait implementations entirely
+                    // These are called by the runtime/framework, not by user code
+                    if is_vscode_entry || is_trait_method {
+                        continue;
+                    }
 
                     // Calculate confidence
                     let confidence = if is_exported {
@@ -463,11 +477,11 @@ impl CodeGraphBackend {
                         };
 
                         let reason = if is_exported {
-                            "Exported but no internal callers found"
+                            "Exported but no internal callers or importers found"
                         } else if is_entry {
-                            "Possible entry point with no callers"
+                            "Possible entry point with no callers or importers"
                         } else {
-                            "No callers found in codebase"
+                            "No callers or importers found in codebase"
                         };
 
                         let start_line = node.properties.get_int("line_start").unwrap_or(0) as u32;
@@ -539,6 +553,88 @@ impl CodeGraphBackend {
             || lower.ends_with("handler")
             || lower.ends_with("listener")
             || lower.ends_with("callback")
+    }
+
+    /// Check if a function is a VS Code extension entry point
+    fn is_vscode_entry_point(name: &str) -> bool {
+        name == "activate" || name == "deactivate"
+    }
+
+    /// Check if a function is likely a trait implementation or protocol method
+    fn is_trait_or_protocol_method(name: &str) -> bool {
+        // LSP protocol methods (tower-lsp trait implementations)
+        let lsp_methods = [
+            "initialize",
+            "initialized",
+            "shutdown",
+            "did_open",
+            "did_change",
+            "did_save",
+            "did_close",
+            "completion",
+            "hover",
+            "goto_definition",
+            "references",
+            "document_symbol",
+            "formatting",
+            "rename",
+            "code_action",
+            "code_lens",
+            "folding_range",
+            "semantic_tokens_full",
+            "inlay_hint",
+            "signature_help",
+            "document_highlight",
+            "will_save",
+            "will_save_wait_until",
+            "goto_declaration",
+            "goto_type_definition",
+            "goto_implementation",
+            "prepare_rename",
+            "workspace_symbol",
+            "execute_command",
+        ];
+
+        // Common Rust trait method names
+        let trait_methods = [
+            "new",
+            "default",
+            "clone",
+            "fmt",
+            "from",
+            "into",
+            "try_from",
+            "try_into",
+            "as_ref",
+            "as_mut",
+            "deref",
+            "deref_mut",
+            "drop",
+            "eq",
+            "ne",
+            "partial_cmp",
+            "cmp",
+            "hash",
+            "index",
+            "index_mut",
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "neg",
+            "not",
+            "borrow",
+            "borrow_mut",
+            "serialize",
+            "deserialize",
+            "next",
+            "size_hint",
+            "poll",
+            "call",
+        ];
+
+        let lower = name.to_lowercase();
+        lsp_methods.contains(&lower.as_str()) || trait_methods.contains(&lower.as_str())
     }
 
     /// Analyze module coupling and cohesion
@@ -730,5 +826,323 @@ mod tests {
         assert!(CodeGraphBackend::is_entry_point("onClickCallback"));
         assert!(!CodeGraphBackend::is_entry_point("calculateSum"));
         assert!(!CodeGraphBackend::is_entry_point("processData"));
+    }
+
+    // ==========================================
+    // Unused Code Detection Tests
+    // ==========================================
+
+    mod unused_code_tests {
+        use super::*;
+        use codegraph::{CodeGraph, PropertyMap, PropertyValue};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        /// Create a minimal backend for testing
+        fn create_test_backend_with_graph(graph: Arc<RwLock<CodeGraph>>) -> CodeGraphBackend {
+            use crate::ai_query::QueryEngine;
+            let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+            CodeGraphBackend::new_for_test(graph, query_engine)
+        }
+
+        #[tokio::test]
+        async fn test_function_with_call_edge_is_not_unused() {
+            // Create a graph with two functions where one calls the other
+            let graph = Arc::new(RwLock::new(
+                CodeGraph::in_memory().expect("Failed to create graph"),
+            ));
+
+            let (called_func_id, _caller_func_id) = {
+                let mut g = graph.write().await;
+
+                // Create a function that will be called
+                let mut called_props = PropertyMap::new();
+                called_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("myFunction".to_string()),
+                );
+                called_props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/utils.ts".to_string()),
+                );
+                called_props.insert("line_start".to_string(), PropertyValue::Int(10));
+                called_props.insert("line_end".to_string(), PropertyValue::Int(20));
+                let called_id = g.add_node(NodeType::Function, called_props).unwrap();
+
+                // Create a function that calls myFunction
+                let mut caller_props = PropertyMap::new();
+                caller_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("caller".to_string()),
+                );
+                caller_props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/main.ts".to_string()),
+                );
+                caller_props.insert("line_start".to_string(), PropertyValue::Int(5));
+                caller_props.insert("line_end".to_string(), PropertyValue::Int(15));
+                let caller_id = g.add_node(NodeType::Function, caller_props).unwrap();
+
+                // Create call edge: caller -> called
+                g.add_edge(caller_id, called_id, EdgeType::Calls, PropertyMap::new())
+                    .unwrap();
+
+                (called_id, caller_id)
+            };
+
+            let backend = create_test_backend_with_graph(graph.clone());
+
+            // Add the called function to the symbol index
+            backend.symbol_index.add_node_for_test(
+                std::path::PathBuf::from("/src/utils.ts"),
+                called_func_id,
+                "myFunction",
+                "Function",
+                10,
+                20,
+            );
+
+            // Query for unused code
+            let params = UnusedCodeParams {
+                uri: Some("file:///src/utils.ts".to_string()),
+                scope: "file".to_string(),
+                include_tests: Some(false),
+                confidence: Some(0.0), // Accept all confidence levels
+            };
+
+            let result = backend.handle_find_unused_code(params).await.unwrap();
+
+            // myFunction should NOT be in unused items since it's called
+            let unused_names: Vec<&str> = result
+                .unused_items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect();
+            assert!(
+                !unused_names.contains(&"myFunction"),
+                "Called function should not be reported as unused"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_function_with_import_edge_is_not_unused() {
+            // Create a graph where a class is imported by another file
+            let graph = Arc::new(RwLock::new(
+                CodeGraph::in_memory().expect("Failed to create graph"),
+            ));
+
+            let imported_class_id = {
+                let mut g = graph.write().await;
+
+                // Create a class that will be imported
+                let mut class_props = PropertyMap::new();
+                class_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("MyClass".to_string()),
+                );
+                class_props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/myClass.ts".to_string()),
+                );
+                class_props.insert("line_start".to_string(), PropertyValue::Int(1));
+                class_props.insert("line_end".to_string(), PropertyValue::Int(50));
+                let class_id = g.add_node(NodeType::Class, class_props).unwrap();
+
+                // Create a file node that imports the class
+                let mut file_props = PropertyMap::new();
+                file_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("extension".to_string()),
+                );
+                file_props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/extension.ts".to_string()),
+                );
+                let file_id = g.add_node(NodeType::CodeFile, file_props).unwrap();
+
+                // Create import edge: extension.ts -> MyClass
+                let mut import_props = PropertyMap::new();
+                import_props.insert(
+                    "imported_symbol".to_string(),
+                    PropertyValue::String("MyClass".to_string()),
+                );
+                g.add_edge(file_id, class_id, EdgeType::Imports, import_props)
+                    .unwrap();
+
+                class_id
+            };
+
+            let backend = create_test_backend_with_graph(graph.clone());
+
+            // Add the class to the symbol index
+            backend.symbol_index.add_node_for_test(
+                std::path::PathBuf::from("/src/myClass.ts"),
+                imported_class_id,
+                "MyClass",
+                "Class",
+                1,
+                50,
+            );
+
+            // Query for unused code
+            let params = UnusedCodeParams {
+                uri: Some("file:///src/myClass.ts".to_string()),
+                scope: "file".to_string(),
+                include_tests: Some(false),
+                confidence: Some(0.0), // Accept all confidence levels
+            };
+
+            let result = backend.handle_find_unused_code(params).await.unwrap();
+
+            // MyClass should NOT be in unused items since it's imported
+            let unused_names: Vec<&str> = result
+                .unused_items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect();
+            assert!(
+                !unused_names.contains(&"MyClass"),
+                "Imported class should not be reported as unused. Found: {unused_names:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_truly_unused_function_is_reported() {
+            // Create a graph with a function that has no incoming edges
+            let graph = Arc::new(RwLock::new(
+                CodeGraph::in_memory().expect("Failed to create graph"),
+            ));
+
+            let unused_func_id = {
+                let mut g = graph.write().await;
+
+                // Create a function with no callers or importers
+                let mut func_props = PropertyMap::new();
+                func_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("unusedHelper".to_string()),
+                );
+                func_props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/helpers.ts".to_string()),
+                );
+                func_props.insert("line_start".to_string(), PropertyValue::Int(5));
+                func_props.insert("line_end".to_string(), PropertyValue::Int(15));
+                g.add_node(NodeType::Function, func_props).unwrap()
+            };
+
+            let backend = create_test_backend_with_graph(graph.clone());
+
+            // Add the function to the symbol index
+            backend.symbol_index.add_node_for_test(
+                std::path::PathBuf::from("/src/helpers.ts"),
+                unused_func_id,
+                "unusedHelper",
+                "Function",
+                5,
+                15,
+            );
+
+            // Query for unused code
+            let params = UnusedCodeParams {
+                uri: Some("file:///src/helpers.ts".to_string()),
+                scope: "file".to_string(),
+                include_tests: Some(false),
+                confidence: Some(0.0), // Accept all confidence levels
+            };
+
+            let result = backend.handle_find_unused_code(params).await.unwrap();
+
+            // unusedHelper SHOULD be in unused items since it has no edges
+            let unused_names: Vec<&str> = result
+                .unused_items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect();
+            assert!(
+                unused_names.contains(&"unusedHelper"),
+                "Truly unused function should be reported as unused. Found: {unused_names:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_function_with_both_call_and_import_is_not_unused() {
+            // Create a graph where a function is both called and imported
+            let graph = Arc::new(RwLock::new(
+                CodeGraph::in_memory().expect("Failed to create graph"),
+            ));
+
+            let popular_func_id = {
+                let mut g = graph.write().await;
+
+                // Create a popular function
+                let mut func_props = PropertyMap::new();
+                func_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("popularFunction".to_string()),
+                );
+                func_props.insert(
+                    "path".to_string(),
+                    PropertyValue::String("/src/utils.ts".to_string()),
+                );
+                func_props.insert("line_start".to_string(), PropertyValue::Int(1));
+                func_props.insert("line_end".to_string(), PropertyValue::Int(10));
+                let func_id = g.add_node(NodeType::Function, func_props).unwrap();
+
+                // Create a file that imports it
+                let mut file_props = PropertyMap::new();
+                file_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("consumer1".to_string()),
+                );
+                let file_id = g.add_node(NodeType::CodeFile, file_props).unwrap();
+                g.add_edge(file_id, func_id, EdgeType::Imports, PropertyMap::new())
+                    .unwrap();
+
+                // Create another function that calls it
+                let mut caller_props = PropertyMap::new();
+                caller_props.insert(
+                    "name".to_string(),
+                    PropertyValue::String("caller".to_string()),
+                );
+                let caller_id = g.add_node(NodeType::Function, caller_props).unwrap();
+                g.add_edge(caller_id, func_id, EdgeType::Calls, PropertyMap::new())
+                    .unwrap();
+
+                func_id
+            };
+
+            let backend = create_test_backend_with_graph(graph.clone());
+
+            // Add the function to the symbol index
+            backend.symbol_index.add_node_for_test(
+                std::path::PathBuf::from("/src/utils.ts"),
+                popular_func_id,
+                "popularFunction",
+                "Function",
+                1,
+                10,
+            );
+
+            // Query for unused code
+            let params = UnusedCodeParams {
+                uri: Some("file:///src/utils.ts".to_string()),
+                scope: "file".to_string(),
+                include_tests: Some(false),
+                confidence: Some(0.0),
+            };
+
+            let result = backend.handle_find_unused_code(params).await.unwrap();
+
+            let unused_names: Vec<&str> = result
+                .unused_items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect();
+            assert!(
+                !unused_names.contains(&"popularFunction"),
+                "Function with both call and import edges should not be unused"
+            );
+        }
     }
 }

@@ -365,3 +365,149 @@ export interface CouplingResponse {
     violations: ArchViolation[];
     recommendations: string[];
 }
+
+// ==========================================
+// AI Agent Query Primitives Types
+// ==========================================
+
+export interface SymbolSearchParams {
+    query: string;
+    scope?: 'workspace' | 'module' | 'file';
+    symbolTypes?: ('function' | 'class' | 'variable' | 'module' | 'interface' | 'type')[];
+    limit?: number;
+    includePrivate?: boolean;
+}
+
+export interface SymbolLocation {
+    file: string;
+    line: number;
+    column: number;
+    endLine: number;
+    endColumn: number;
+}
+
+export interface SymbolInfo {
+    name: string;
+    kind: string;
+    location: SymbolLocation;
+    signature?: string;
+    docstring?: string;
+    isPublic: boolean;
+}
+
+export interface SymbolMatch {
+    nodeId: string;
+    symbol: SymbolInfo;
+    score: number;
+    matchReason: string;
+}
+
+export interface SymbolSearchResponse {
+    results: SymbolMatch[];
+    totalMatches: number;
+    queryTimeMs: number;
+}
+
+export interface FindByImportsParams {
+    libraries: string[];
+    matchMode?: 'exact' | 'prefix' | 'fuzzy';
+}
+
+export interface FindByImportsResponse {
+    results: SymbolMatch[];
+    queryTimeMs: number;
+}
+
+export interface FindEntryPointsParams {
+    entryType?: 'http_handler' | 'cli_command' | 'public_api' | 'event_handler' | 'test_entry' | 'main';
+}
+
+export interface EntryPoint {
+    nodeId: string;
+    entryType: string;
+    route?: string;
+    method?: string;
+    description?: string;
+    symbol: SymbolInfo;
+}
+
+export interface FindEntryPointsResponse {
+    entryPoints: EntryPoint[];
+    totalFound: number;
+}
+
+export interface TraverseGraphParams {
+    startNodeId?: string;
+    uri?: string;
+    line?: number;
+    direction?: 'outgoing' | 'incoming' | 'both';
+    depth?: number;
+    filterSymbolTypes?: ('function' | 'class' | 'variable' | 'module' | 'interface' | 'type')[];
+    maxNodes?: number;
+}
+
+export interface TraversalNode {
+    nodeId: string;
+    depth: number;
+    path: string[];
+    edgeType: string;
+    symbol: SymbolInfo;
+}
+
+export interface TraverseGraphResponse {
+    nodes: TraversalNode[];
+    queryTimeMs: number;
+}
+
+export interface GetCallersParams {
+    nodeId?: string;
+    uri?: string;
+    line?: number;
+    depth?: number;
+}
+
+export interface CallInfo {
+    nodeId: string;
+    symbol: SymbolInfo;
+    callSite: SymbolLocation;
+    depth: number;
+}
+
+export interface GetCallersResponse {
+    callers: CallInfo[];
+    queryTimeMs: number;
+}
+
+export interface GetDetailedInfoParams {
+    nodeId?: string;
+    uri?: string;
+    line?: number;
+    includeCallers?: boolean;
+    includeCallees?: boolean;
+}
+
+export interface DetailedSymbolResponse {
+    symbol: SymbolInfo;
+    callers: CallInfo[];
+    callees: CallInfo[];
+    complexity?: number;
+    linesOfCode: number;
+    isPublic: boolean;
+    isDeprecated: boolean;
+    referenceCount: number;
+}
+
+export interface FindBySignatureParams {
+    namePattern?: string;
+    returnType?: string;
+    paramCount?: {
+        min: number;
+        max: number;
+    };
+    modifiers?: ('public' | 'private' | 'static' | 'async' | 'const')[];
+}
+
+export interface FindBySignatureResponse {
+    results: SymbolMatch[];
+    queryTimeMs: number;
+}
