@@ -38,8 +38,17 @@ Before you refactor, know exactly what will break. See direct impacts, indirect 
 ### 🤖 AI Integration
 CodeGraph provides tools for AI assistants (GitHub Copilot, Claude, etc.) to understand your code more efficiently:
 - **@codegraph chat participant** — Ask questions in any AI chat
-- **Language Model Tools** — AI agents can autonomously query code structure
+- **26 Language Model Tools** — AI agents can autonomously query code structure
 - **Intent-aware context** — Get relevant code based on what you're trying to do (explain, modify, debug, test)
+- **Memory layer** — AI agents can persist and recall debugging context, decisions, and project knowledge
+
+### 🧠 Memory Layer (NEW)
+Persistent memory system for AI agents:
+- **RocksDB storage** with semantic search (model2vec embeddings)
+- **5 memory types**: DebugContext, ArchitecturalDecision, KnownIssue, Convention, ProjectContext
+- **Auto-invalidation** when linked code changes
+- **Git mining** to extract memories from commit history
+- Enables AI agents to learn from past debugging sessions and architectural decisions
 
 ### 🌐 Multi-Language Support
 Works with **TypeScript**, **JavaScript**, **Python**, **Rust**, **Go**, and **C** in the same project.
@@ -82,8 +91,9 @@ In any VS Code AI chat, mention `@codegraph` to get code intelligence:
 
 ### Language Model Tools
 
-CodeGraph registers 9 tools that AI agents can use autonomously:
+CodeGraph registers **26 tools** that AI agents can use autonomously:
 
+**Code Analysis** (9 tools)
 | Tool | Purpose |
 |------|---------|
 | `codegraph_get_dependency_graph` | Analyze file/module dependencies |
@@ -91,10 +101,32 @@ CodeGraph registers 9 tools that AI agents can use autonomously:
 | `codegraph_analyze_impact` | Assess change impact before refactoring |
 | `codegraph_get_ai_context` | Get intent-aware code context |
 | `codegraph_find_related_tests` | Discover tests for a code location |
-| `codegraph_get_symbol_info` | Get symbol metadata and usage |
+| `codegraph_symbol_search` | Search for symbols by name or pattern |
 | `codegraph_analyze_complexity` | Measure cyclomatic and cognitive complexity |
 | `codegraph_find_unused_code` | Detect dead code for cleanup |
 | `codegraph_analyze_coupling` | Analyze module coupling and cohesion |
+
+**Graph Traversal** (10 tools)
+- `codegraph_get_callers` - Find who calls a function
+- `codegraph_get_callees` - Find what a function calls
+- `codegraph_traverse_graph` - Advanced graph traversal with filters
+- `codegraph_get_detailed_symbol_info` - Complete symbol information
+- `codegraph_find_by_imports` - Find code by imported libraries
+- `codegraph_find_by_signature` - Search functions by signature patterns
+- `codegraph_find_entry_points` - Discover entry points (main, handlers, tests)
+- Plus 3 more specialized tools
+
+**Memory Layer** (7 tools) 🆕
+- `codegraph_memory_store` - Create memories with code links
+- `codegraph_memory_search` - Hybrid BM25 + semantic + graph search
+- `codegraph_memory_list` - Browse memories with filters
+- `codegraph_memory_get` - Retrieve by ID
+- `codegraph_memory_invalidate` - Mark memories as outdated
+- `codegraph_memory_context` - Find relevant memories for code location
+- `codegraph_memory_stats` - Store statistics
+- `codegraph_mine_git_history` - Auto-create memories from git commits
+
+The **Memory Layer** enables AI agents to persist and recall context from debugging sessions, architectural decisions, and project history.
 
 See [AI_TOOL_EXAMPLES.md](docs/AI_TOOL_EXAMPLES.md) for detailed usage examples and best practices.
 
@@ -143,6 +175,7 @@ A high-performance LSP server built with [tower-lsp](https://github.com/ebkalder
 | `codegraph-rust` | Rust parser (syn + tree-sitter) |
 | `codegraph-go` | Go parser (tree-sitter) |
 | `codegraph-c` | C parser (tree-sitter) with kernel code support |
+| `codegraph-memory` | Memory layer with RocksDB and HNSW vector search |
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
