@@ -6,6 +6,7 @@ use crate::ai_query::QueryEngine;
 use crate::cache::QueryCache;
 use crate::error::{LspError, LspResult};
 use crate::index::SymbolIndex;
+use crate::memory::MemoryManager;
 use crate::parser_registry::ParserRegistry;
 use crate::watcher::{FileWatcher, GraphUpdater};
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
@@ -41,6 +42,9 @@ pub struct CodeGraphBackend {
     /// AI Agent Query Engine for fast code exploration.
     pub query_engine: Arc<QueryEngine>,
 
+    /// Memory manager for persistent AI context.
+    pub memory_manager: Arc<MemoryManager>,
+
     /// Workspace folders
     pub workspace_folders: Arc<RwLock<Vec<std::path::PathBuf>>>,
 
@@ -63,6 +67,7 @@ impl CodeGraphBackend {
             file_cache: Arc::new(DashMap::new()),
             query_cache: Arc::new(QueryCache::new(1000)),
             symbol_index: Arc::new(SymbolIndex::new()),
+            memory_manager: Arc::new(MemoryManager::new(None)),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             file_watcher: Arc::new(Mutex::new(None)),
         }
@@ -86,6 +91,7 @@ impl CodeGraphBackend {
             file_cache: Arc::new(DashMap::new()),
             query_cache: Arc::new(QueryCache::new(1000)),
             symbol_index: Arc::new(SymbolIndex::new()),
+            memory_manager: Arc::new(MemoryManager::new(None)),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             file_watcher: Arc::new(Mutex::new(None)),
         }
@@ -98,6 +104,7 @@ impl CodeGraphBackend {
             Arc::clone(&self.graph),
             Arc::clone(&self.parsers),
             self.client.clone(),
+            Arc::clone(&self.memory_manager),
         ) {
             Ok(mut watcher) => {
                 // Start watching each folder
@@ -134,14 +141,39 @@ impl CodeGraphBackend {
     }
 
     /// Remove all nodes associated with a file from the graph.
+    ///
+    /// Also auto-invalidates any memories linked to the removed nodes.
     async fn remove_file_from_graph(&self, path: &std::path::Path) {
-        let mut graph = self.graph.write().await;
         let path_str = path.to_string_lossy().to_string();
+        let node_id_strings: Vec<String>;
 
-        // Query for all nodes with this file path using the query builder
-        if let Ok(nodes) = graph.query().property("path", path_str).execute() {
-            for node_id in nodes {
-                let _ = graph.delete_node(node_id);
+        // Scope the graph lock to avoid holding it across await
+        {
+            let mut graph = self.graph.write().await;
+
+            // Query for all nodes with this file path using the query builder
+            if let Ok(nodes) = graph.query().property("path", path_str.clone()).execute() {
+                // Collect node IDs as strings for memory invalidation
+                node_id_strings = nodes.iter().map(|n| n.to_string()).collect();
+
+                // Delete the nodes from the graph
+                for node_id in nodes {
+                    let _ = graph.delete_node(node_id);
+                }
+            } else {
+                node_id_strings = Vec::new();
+            }
+        }
+
+        // Auto-invalidate memories linked to these nodes (after releasing graph lock)
+        if !node_id_strings.is_empty() {
+            let reason = format!("Code changed: {}", path_str);
+            if let Err(e) = self
+                .memory_manager
+                .invalidate_for_code_nodes(&node_id_strings, &reason)
+                .await
+            {
+                tracing::warn!("Failed to invalidate memories for {}: {}", path_str, e);
             }
         }
 
@@ -588,6 +620,27 @@ impl LanguageServer for CodeGraphBackend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         tracing::info!("Initializing CodeGraph LSP server");
 
+        // Extract extension path from initialization options
+        let extension_path = params.initialization_options.and_then(|opts| {
+            opts.get("extensionPath")
+                .and_then(|v| v.as_str())
+                .map(std::path::PathBuf::from)
+        });
+
+        if let Some(path) = extension_path {
+            tracing::info!("Extension path received: {}", path.display());
+
+            // Update memory manager with extension path by replacing it
+            // Safety: We're replacing the Arc contents during initialization before any use
+            let new_manager = Arc::new(MemoryManager::new(Some(path)));
+            let self_mut = self as *const Self as *mut Self;
+            unsafe {
+                (*self_mut).memory_manager = new_manager;
+            }
+        } else {
+            tracing::warn!("No extension path provided in initialization options. Memory features will require MODEL2VEC_PATH or ~/.codegraph/models/model2vec");
+        }
+
         // Store workspace folders
         if let Some(folders) = params.workspace_folders {
             let mut workspace_folders = self.workspace_folders.write().await;
@@ -639,6 +692,18 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.getCallees".to_string(),
                         "codegraph.getDetailedSymbolInfo".to_string(),
                         "codegraph.findBySignature".to_string(),
+                        // Memory Layer Commands
+                        "codegraph.memoryStore".to_string(),
+                        "codegraph.memorySearch".to_string(),
+                        "codegraph.memoryGet".to_string(),
+                        "codegraph.memoryInvalidate".to_string(),
+                        "codegraph.memoryList".to_string(),
+                        "codegraph.memoryUpdate".to_string(),
+                        "codegraph.memoryContext".to_string(),
+                        "codegraph.memoryStats".to_string(),
+                        // Git mining commands
+                        "codegraph.mineGitHistory".to_string(),
+                        "codegraph.mineGitHistoryForFile".to_string(),
                     ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
@@ -689,6 +754,25 @@ impl LanguageServer for CodeGraphBackend {
         self.client
             .log_message(MessageType::INFO, "AI query engine indexes built")
             .await;
+
+        // Initialize memory store for persistent AI context
+        if let Some(first_folder) = folders.first() {
+            match self.memory_manager.initialize(first_folder).await {
+                Ok(_) => {
+                    self.client
+                        .log_message(MessageType::INFO, "Memory store initialized")
+                        .await;
+                }
+                Err(e) => {
+                    self.client
+                        .log_message(
+                            MessageType::WARNING,
+                            format!("Failed to initialize memory store: {}. Memory features will be disabled.", e),
+                        )
+                        .await;
+                }
+            }
+        }
 
         // Start file watcher for incremental updates
         if !folders.is_empty() {
@@ -1412,6 +1496,119 @@ impl LanguageServer for CodeGraphBackend {
                 Ok(Some(serde_json::to_value(response).unwrap()))
             }
 
+            // Memory Layer Commands
+            "codegraph.memoryStore" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::MemoryStoreParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_store(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memorySearch" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::MemorySearchParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_search(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memoryGet" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::MemoryGetParams = serde_json::from_value(args.clone())
+                    .map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_get(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memoryInvalidate" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::MemoryInvalidateParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_invalidate(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memoryList" => {
+                let args = params
+                    .arguments
+                    .first()
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                let params: crate::handlers::MemoryListParams = serde_json::from_value(args)
+                    .map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_list(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memoryUpdate" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::MemoryUpdateParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_update(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memoryContext" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: crate::handlers::MemoryContextParams =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid params: {e}"))
+                    })?;
+                let response = self.handle_memory_context(params).await?;
+                Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.memoryStats" => {
+                let response = self.handle_memory_stats().await?;
+                Ok(Some(response))
+            }
+
+            // Git mining commands
+            "codegraph.mineGitHistory" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let params: serde_json::Value = serde_json::from_value(args.clone())
+                    .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+                let response = self.handle_mine_git_history(params).await?;
+                Ok(Some(response))
+            }
+
+            "codegraph.mineGitHistoryForFile" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let file_params: serde_json::Value = serde_json::from_value(args.clone())
+                    .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+                let response = self.handle_mine_git_history_for_file(file_params).await?;
+                Ok(Some(response))
+            }
+
             _ => Err(tower_lsp::jsonrpc::Error::method_not_found()),
         }
     }
@@ -1433,6 +1630,994 @@ impl CodeGraphBackend {
         node_id_str
             .parse::<NodeId>()
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid nodeId"))
+    }
+}
+
+// ==========================================
+// Memory Layer Handlers
+// ==========================================
+
+impl CodeGraphBackend {
+    /// Store a new memory in the memory layer.
+    pub async fn handle_memory_store(
+        &self,
+        params: crate::handlers::MemoryStoreParams,
+    ) -> Result<crate::handlers::MemoryStoreResponse> {
+        use crate::memory::{LinkedNodeType, MemoryNode};
+
+        // Parse the memory kind using the builder pattern for convenience
+        let mut builder = MemoryNode::builder();
+
+        builder = match params.kind.as_str() {
+            "debug_context" => {
+                let problem = params
+                    .kind_data
+                    .get("problem")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let solution = params
+                    .kind_data
+                    .get("solution")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                builder.debug_context(problem, solution)
+            }
+            "architectural_decision" => {
+                let decision = params
+                    .kind_data
+                    .get("decision")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let rationale = params
+                    .kind_data
+                    .get("rationale")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                builder.architectural_decision(decision, rationale)
+            }
+            "known_issue" => {
+                let description = params
+                    .kind_data
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let severity = match params
+                    .kind_data
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("medium")
+                {
+                    "critical" => crate::memory::IssueSeverity::Critical,
+                    "high" => crate::memory::IssueSeverity::High,
+                    "medium" => crate::memory::IssueSeverity::Medium,
+                    "low" => crate::memory::IssueSeverity::Low,
+                    _ => crate::memory::IssueSeverity::Medium,
+                };
+                builder.known_issue(description, severity)
+            }
+            "convention" => {
+                let name = params
+                    .kind_data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let description = params
+                    .kind_data
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                builder.convention(name, description)
+            }
+            "project_context" => {
+                let topic = params
+                    .kind_data
+                    .get("topic")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let description = params
+                    .kind_data
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                builder.project_context(topic, description)
+            }
+            _ => {
+                return Err(tower_lsp::jsonrpc::Error::invalid_params(format!(
+                    "Unknown memory kind: {}",
+                    params.kind
+                )))
+            }
+        };
+
+        // Set title and content
+        builder = builder.title(&params.title).content(&params.content);
+
+        // Add tags
+        for tag in params.tags {
+            builder = builder.tag(&tag);
+        }
+
+        // Add code links
+        for link in params.code_links {
+            let node_type = match link.node_type.as_str() {
+                "function" => LinkedNodeType::Function,
+                "class" => LinkedNodeType::Class,
+                "module" => LinkedNodeType::Module,
+                "file" => LinkedNodeType::File,
+                "variable" => LinkedNodeType::Variable,
+                "import" => LinkedNodeType::Import,
+                "interface" => LinkedNodeType::Interface,
+                "trait" => LinkedNodeType::Trait,
+                _ => LinkedNodeType::Function, // Default fallback
+            };
+            builder = builder.link_to_code(link.node_id, node_type);
+        }
+
+        // Set confidence if provided
+        if let Some(conf) = params.confidence {
+            builder = builder.confidence(conf);
+        }
+
+        let memory = builder.build().map_err(|e| {
+            tower_lsp::jsonrpc::Error::invalid_params(format!("Failed to build memory: {e}"))
+        })?;
+
+        // Store the memory
+        let id = self
+            .memory_manager
+            .put(memory)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        Ok(crate::handlers::MemoryStoreResponse { id, success: true })
+    }
+
+    /// Search memories using hybrid search.
+    pub async fn handle_memory_search(
+        &self,
+        params: crate::handlers::MemorySearchParams,
+    ) -> Result<crate::handlers::MemorySearchResponse> {
+        use crate::memory::{MemoryKindFilter, SearchConfig};
+
+        // Build search config
+        let mut config = SearchConfig {
+            limit: params.limit,
+            current_only: params.current_only,
+            ..Default::default()
+        };
+
+        // Set tag filter (tags is Vec, not Option)
+        if !params.tags.is_empty() {
+            config.tags = params.tags;
+        }
+
+        // Set kind filter (kinds is Vec, not Option)
+        if !params.kinds.is_empty() {
+            config.kinds = params
+                .kinds
+                .iter()
+                .filter_map(|k| match k.as_str() {
+                    "debug_context" => Some(MemoryKindFilter::DebugContext),
+                    "architectural_decision" => Some(MemoryKindFilter::ArchitecturalDecision),
+                    "known_issue" => Some(MemoryKindFilter::KnownIssue),
+                    "convention" => Some(MemoryKindFilter::Convention),
+                    "project_context" => Some(MemoryKindFilter::ProjectContext),
+                    _ => None,
+                })
+                .collect();
+        }
+
+        // Perform search
+        let results = self
+            .memory_manager
+            .search(&params.query, &config, &params.code_context)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        let total = results.len();
+        let search_results: Vec<crate::handlers::MemorySearchResult> = results
+            .into_iter()
+            .map(|r| {
+                let kind_str = match &r.memory.kind {
+                    crate::memory::MemoryKind::DebugContext { .. } => "debug_context",
+                    crate::memory::MemoryKind::ArchitecturalDecision { .. } => {
+                        "architectural_decision"
+                    }
+                    crate::memory::MemoryKind::KnownIssue { .. } => "known_issue",
+                    crate::memory::MemoryKind::Convention { .. } => "convention",
+                    crate::memory::MemoryKind::ProjectContext { .. } => "project_context",
+                };
+
+                crate::handlers::MemorySearchResult {
+                    id: r.memory.id.to_string(),
+                    kind: kind_str.to_string(),
+                    title: r.memory.title.clone(),
+                    content: r.memory.content.clone(),
+                    tags: r.memory.tags.clone(),
+                    score: r.score,
+                    is_current: r.memory.is_current(),
+                }
+            })
+            .collect();
+
+        Ok(crate::handlers::MemorySearchResponse {
+            results: search_results,
+            total,
+        })
+    }
+
+    /// Get a memory by ID.
+    pub async fn handle_memory_get(
+        &self,
+        params: crate::handlers::MemoryGetParams,
+    ) -> Result<Option<crate::handlers::MemoryGetResponse>> {
+        let memory = self
+            .memory_manager
+            .get(&params.id)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        let response = memory.map(|m| {
+            let kind_json = match &m.kind {
+                crate::memory::MemoryKind::DebugContext {
+                    problem_description,
+                    root_cause,
+                    solution,
+                    symptoms,
+                    related_errors,
+                } => {
+                    serde_json::json!({
+                        "type": "debug_context",
+                        "problem_description": problem_description,
+                        "root_cause": root_cause,
+                        "solution": solution,
+                        "symptoms": symptoms,
+                        "related_errors": related_errors
+                    })
+                }
+                crate::memory::MemoryKind::ArchitecturalDecision {
+                    decision,
+                    rationale,
+                    alternatives_considered,
+                    stakeholders,
+                } => {
+                    serde_json::json!({
+                        "type": "architectural_decision",
+                        "decision": decision,
+                        "rationale": rationale,
+                        "alternatives_considered": alternatives_considered,
+                        "stakeholders": stakeholders
+                    })
+                }
+                crate::memory::MemoryKind::KnownIssue {
+                    description,
+                    severity,
+                    workaround,
+                    tracking_id,
+                } => {
+                    serde_json::json!({
+                        "type": "known_issue",
+                        "description": description,
+                        "severity": format!("{:?}", severity).to_lowercase(),
+                        "workaround": workaround,
+                        "tracking_id": tracking_id
+                    })
+                }
+                crate::memory::MemoryKind::Convention {
+                    name,
+                    description,
+                    pattern,
+                    anti_pattern,
+                } => {
+                    serde_json::json!({
+                        "type": "convention",
+                        "name": name,
+                        "description": description,
+                        "pattern": pattern,
+                        "anti_pattern": anti_pattern
+                    })
+                }
+                crate::memory::MemoryKind::ProjectContext {
+                    topic,
+                    description,
+                    tags,
+                } => {
+                    serde_json::json!({
+                        "type": "project_context",
+                        "topic": topic,
+                        "description": description,
+                        "tags": tags
+                    })
+                }
+            };
+
+            let code_links: Vec<crate::handlers::CodeLinkResponse> = m
+                .code_links
+                .iter()
+                .map(|link| crate::handlers::CodeLinkResponse {
+                    node_id: link.node_id.clone(),
+                    node_type: format!("{:?}", link.node_type).to_lowercase(),
+                })
+                .collect();
+
+            crate::handlers::MemoryGetResponse {
+                id: m.id.to_string(),
+                kind: kind_json,
+                title: m.title.clone(),
+                content: m.content.clone(),
+                tags: m.tags.clone(),
+                code_links,
+                confidence: m.confidence,
+                is_current: m.is_current(),
+                created_at: m.temporal.created_at.to_rfc3339(),
+                valid_from: m.temporal.valid_at.to_rfc3339().into(),
+            }
+        });
+
+        Ok(response)
+    }
+
+    /// Invalidate a memory by ID.
+    pub async fn handle_memory_invalidate(
+        &self,
+        params: crate::handlers::MemoryInvalidateParams,
+    ) -> Result<crate::handlers::MemoryInvalidateResponse> {
+        self.memory_manager
+            .invalidate(&params.id, "Invalidated via LSP command")
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        Ok(crate::handlers::MemoryInvalidateResponse { success: true })
+    }
+
+    /// List memories with optional filters.
+    pub async fn handle_memory_list(
+        &self,
+        params: crate::handlers::MemoryListParams,
+    ) -> Result<crate::handlers::MemoryListResponse> {
+        // Get all current memories
+        let all_memories = self
+            .memory_manager
+            .get_all_current()
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        // Apply filters
+        let filtered: Vec<_> = all_memories
+            .into_iter()
+            .filter(|m| {
+                // Filter by current_only
+                if params.current_only && !m.is_current() {
+                    return false;
+                }
+
+                // Filter by kinds
+                if !params.kinds.is_empty() {
+                    let kind_str = match &m.kind {
+                        crate::memory::MemoryKind::DebugContext { .. } => "debug_context",
+                        crate::memory::MemoryKind::ArchitecturalDecision { .. } => {
+                            "architectural_decision"
+                        }
+                        crate::memory::MemoryKind::KnownIssue { .. } => "known_issue",
+                        crate::memory::MemoryKind::Convention { .. } => "convention",
+                        crate::memory::MemoryKind::ProjectContext { .. } => "project_context",
+                    };
+                    if !params.kinds.contains(&kind_str.to_string()) {
+                        return false;
+                    }
+                }
+
+                // Filter by tags
+                if !params.tags.is_empty() && !params.tags.iter().any(|t| m.tags.contains(t)) {
+                    return false;
+                }
+
+                true
+            })
+            .collect();
+
+        let total = filtered.len();
+        let has_more = params.offset + params.limit < total;
+
+        // Apply pagination
+        let paginated: Vec<crate::handlers::MemorySearchResult> = filtered
+            .into_iter()
+            .skip(params.offset)
+            .take(params.limit)
+            .map(|m| {
+                let kind_str = match &m.kind {
+                    crate::memory::MemoryKind::DebugContext { .. } => "debug_context",
+                    crate::memory::MemoryKind::ArchitecturalDecision { .. } => {
+                        "architectural_decision"
+                    }
+                    crate::memory::MemoryKind::KnownIssue { .. } => "known_issue",
+                    crate::memory::MemoryKind::Convention { .. } => "convention",
+                    crate::memory::MemoryKind::ProjectContext { .. } => "project_context",
+                };
+
+                crate::handlers::MemorySearchResult {
+                    id: m.id.to_string(),
+                    kind: kind_str.to_string(),
+                    title: m.title.clone(),
+                    content: m.content.clone(),
+                    tags: m.tags.clone(),
+                    score: m.confidence,
+                    is_current: m.is_current(),
+                }
+            })
+            .collect();
+
+        Ok(crate::handlers::MemoryListResponse {
+            memories: paginated,
+            total,
+            has_more,
+        })
+    }
+
+    /// Update an existing memory.
+    pub async fn handle_memory_update(
+        &self,
+        params: crate::handlers::MemoryUpdateParams,
+    ) -> Result<crate::handlers::MemoryUpdateResponse> {
+        use crate::memory::{CodeLink, LinkedNodeType};
+
+        // Get existing memory
+        let existing = self
+            .memory_manager
+            .get(&params.id)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        let Some(mut memory) = existing else {
+            return Ok(crate::handlers::MemoryUpdateResponse {
+                success: false,
+                memory: None,
+            });
+        };
+
+        // Apply updates
+        if let Some(title) = params.title {
+            memory.title = title;
+        }
+        if let Some(content) = params.content {
+            memory.content = content;
+        }
+        if let Some(tags) = params.tags {
+            memory.tags = tags;
+        }
+        if let Some(confidence) = params.confidence {
+            memory.confidence = confidence;
+        }
+
+        // Handle code link additions
+        for link_param in params.add_code_links {
+            let node_type = match link_param.node_type.as_str() {
+                "function" => LinkedNodeType::Function,
+                "class" => LinkedNodeType::Class,
+                "module" => LinkedNodeType::Module,
+                "file" => LinkedNodeType::File,
+                "variable" => LinkedNodeType::Variable,
+                "import" => LinkedNodeType::Import,
+                "interface" => LinkedNodeType::Interface,
+                "trait" => LinkedNodeType::Trait,
+                _ => LinkedNodeType::Function, // Default fallback
+            };
+            memory
+                .code_links
+                .push(CodeLink::new(link_param.node_id, node_type));
+        }
+
+        // Handle code link removals
+        for node_id in params.remove_code_links {
+            memory.code_links.retain(|link| link.node_id != node_id);
+        }
+
+        // Clear embeddings so they get regenerated
+        memory.embedding = None;
+
+        // Store updated memory
+        let id = self
+            .memory_manager
+            .put(memory)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        // Get the updated memory for response
+        let updated = self
+            .memory_manager
+            .get(&id)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        let response_memory = updated.map(|m| {
+            let kind_json = match &m.kind {
+                crate::memory::MemoryKind::DebugContext {
+                    problem_description,
+                    root_cause,
+                    solution,
+                    symptoms,
+                    related_errors,
+                } => {
+                    serde_json::json!({
+                        "type": "debug_context",
+                        "problem_description": problem_description,
+                        "root_cause": root_cause,
+                        "solution": solution,
+                        "symptoms": symptoms,
+                        "related_errors": related_errors
+                    })
+                }
+                crate::memory::MemoryKind::ArchitecturalDecision {
+                    decision,
+                    rationale,
+                    alternatives_considered,
+                    stakeholders,
+                } => {
+                    serde_json::json!({
+                        "type": "architectural_decision",
+                        "decision": decision,
+                        "rationale": rationale,
+                        "alternatives_considered": alternatives_considered,
+                        "stakeholders": stakeholders
+                    })
+                }
+                crate::memory::MemoryKind::KnownIssue {
+                    description,
+                    severity,
+                    workaround,
+                    tracking_id,
+                } => {
+                    serde_json::json!({
+                        "type": "known_issue",
+                        "description": description,
+                        "severity": format!("{:?}", severity).to_lowercase(),
+                        "workaround": workaround,
+                        "tracking_id": tracking_id
+                    })
+                }
+                crate::memory::MemoryKind::Convention {
+                    name,
+                    description,
+                    pattern,
+                    anti_pattern,
+                } => {
+                    serde_json::json!({
+                        "type": "convention",
+                        "name": name,
+                        "description": description,
+                        "pattern": pattern,
+                        "anti_pattern": anti_pattern
+                    })
+                }
+                crate::memory::MemoryKind::ProjectContext {
+                    topic,
+                    description,
+                    tags,
+                } => {
+                    serde_json::json!({
+                        "type": "project_context",
+                        "topic": topic,
+                        "description": description,
+                        "tags": tags
+                    })
+                }
+            };
+
+            let code_links: Vec<crate::handlers::CodeLinkResponse> = m
+                .code_links
+                .iter()
+                .map(|link| crate::handlers::CodeLinkResponse {
+                    node_id: link.node_id.clone(),
+                    node_type: format!("{:?}", link.node_type).to_lowercase(),
+                })
+                .collect();
+
+            crate::handlers::MemoryGetResponse {
+                id: m.id.to_string(),
+                kind: kind_json,
+                title: m.title.clone(),
+                content: m.content.clone(),
+                tags: m.tags.clone(),
+                code_links,
+                confidence: m.confidence,
+                is_current: m.is_current(),
+                created_at: m.temporal.created_at.to_rfc3339(),
+                valid_from: m.temporal.valid_at.to_rfc3339().into(),
+            }
+        });
+
+        Ok(crate::handlers::MemoryUpdateResponse {
+            success: true,
+            memory: response_memory,
+        })
+    }
+
+    /// Get memories relevant to a code context.
+    pub async fn handle_memory_context(
+        &self,
+        params: crate::handlers::MemoryContextParams,
+    ) -> Result<crate::handlers::MemoryContextResponse> {
+        use crate::memory::SearchConfig;
+
+        // Parse URI and find code context
+        let uri = Url::parse(&params.uri)
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid URI"))?;
+
+        let path = uri
+            .to_file_path()
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
+
+        // Build code context from the graph
+        let mut code_context = Vec::new();
+        let graph = self.graph.read().await;
+
+        // Get file node
+        let path_str = path.to_string_lossy().to_string();
+        if let Ok(file_nodes) = graph.query().property("path", path_str).execute() {
+            for node_id in file_nodes {
+                code_context.push(node_id.to_string());
+            }
+        }
+
+        // If position provided, find node at position
+        if let Some(pos) = params.position {
+            let position = Position {
+                line: pos.line,
+                character: pos.character,
+            };
+            if let Ok(Some(node_id)) = self.find_node_at_position(&graph, &path, position) {
+                code_context.push(node_id.to_string());
+            }
+        }
+
+        drop(graph);
+
+        // Search with code context for graph proximity scoring
+        let mut config = SearchConfig {
+            limit: params.limit,
+            current_only: true,
+            ..Default::default()
+        };
+
+        // Set kind filter if provided (kinds is Vec, not Option)
+        if !params.kinds.is_empty() {
+            config.kinds = params
+                .kinds
+                .iter()
+                .filter_map(|k| match k.as_str() {
+                    "debug_context" => Some(crate::memory::MemoryKindFilter::DebugContext),
+                    "architectural_decision" => {
+                        Some(crate::memory::MemoryKindFilter::ArchitecturalDecision)
+                    }
+                    "known_issue" => Some(crate::memory::MemoryKindFilter::KnownIssue),
+                    "convention" => Some(crate::memory::MemoryKindFilter::Convention),
+                    "project_context" => Some(crate::memory::MemoryKindFilter::ProjectContext),
+                    _ => None,
+                })
+                .collect();
+        }
+
+        // Use file name as query for semantic relevance
+        let query = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let results = self
+            .memory_manager
+            .search(&query, &config, &code_context)
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        let memories: Vec<crate::handlers::ContextMemory> = results
+            .into_iter()
+            .map(|r| {
+                let kind_str = match &r.memory.kind {
+                    crate::memory::MemoryKind::DebugContext { .. } => "debug_context",
+                    crate::memory::MemoryKind::ArchitecturalDecision { .. } => {
+                        "architectural_decision"
+                    }
+                    crate::memory::MemoryKind::KnownIssue { .. } => "known_issue",
+                    crate::memory::MemoryKind::Convention { .. } => "convention",
+                    crate::memory::MemoryKind::ProjectContext { .. } => "project_context",
+                };
+
+                let reason = r
+                    .match_reasons
+                    .first()
+                    .map(|mr| format!("{:?}", mr))
+                    .unwrap_or_else(|| "Related to code context".to_string());
+
+                crate::handlers::ContextMemory {
+                    id: r.memory.id.to_string(),
+                    kind: kind_str.to_string(),
+                    title: r.memory.title.clone(),
+                    content: r.memory.content.clone(),
+                    tags: r.memory.tags.clone(),
+                    relevance_score: r.score,
+                    relevance_reason: reason,
+                }
+            })
+            .collect();
+
+        Ok(crate::handlers::MemoryContextResponse { memories })
+    }
+
+    /// Get memory store statistics.
+    pub async fn handle_memory_stats(&self) -> Result<serde_json::Value> {
+        let stats = self
+            .memory_manager
+            .stats()
+            .await
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+        Ok(stats)
+    }
+
+    /// Mine git history and create memories from relevant commits.
+    pub async fn handle_mine_git_history(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use crate::git_mining::{GitMiner, MiningConfig};
+
+        // Get workspace folder
+        let workspace_folders = self.workspace_folders.read().await;
+        let workspace_path = workspace_folders
+            .first()
+            .ok_or_else(tower_lsp::jsonrpc::Error::invalid_request)?;
+
+        // Parse configuration from params
+        let max_commits = params
+            .get("maxCommits")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(500);
+
+        let min_confidence = params
+            .get("minConfidence")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(0.7);
+
+        let mine_bug_fixes = params
+            .get("mineBugFixes")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let mine_arch_decisions = params
+            .get("mineArchDecisions")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let mine_breaking_changes = params
+            .get("mineBreakingChanges")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let mine_reverts = params
+            .get("mineReverts")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let mine_features = params
+            .get("mineFeatures")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let mine_deprecations = params
+            .get("mineDeprecations")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let include_hotspots = params
+            .get("includeHotspots")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let include_coupling = params
+            .get("includeCoupling")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let config = MiningConfig {
+            max_commits,
+            min_confidence,
+            mine_bug_fixes,
+            mine_arch_decisions,
+            mine_breaking_changes,
+            mine_reverts,
+            mine_features,
+            mine_deprecations,
+            grep_patterns: vec![
+                "fix:".to_string(),
+                "bug:".to_string(),
+                "BREAKING".to_string(),
+                "revert".to_string(),
+                "arch:".to_string(),
+                "adr:".to_string(),
+                "feat:".to_string(),
+                "deprecate".to_string(),
+            ],
+        };
+
+        // Create miner and run
+        let miner = GitMiner::new(workspace_path)
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_request())?;
+
+        let mut result = miner
+            .mine_repository(&self.memory_manager, &self.graph, &config)
+            .await
+            .map_err(|e| {
+                tracing::error!("Git mining failed: {}", e);
+                tower_lsp::jsonrpc::Error::internal_error()
+            })?;
+
+        // Detect hotspots if requested
+        let mut hotspots_created = 0;
+        if include_hotspots {
+            match miner.detect_hotspots(10).await {
+                Ok(hotspots) => {
+                    for hotspot in hotspots.iter().take(20) {
+                        // Create memory for each hotspot
+                        let memory = codegraph_memory::MemoryNode::builder()
+                            .project_context(
+                                format!("High-activity file: {}", hotspot.file_path),
+                                format!(
+                                    "Modified {} times across {} commits. This file shows high churn, \
+                                     indicating active development or potential complexity.",
+                                    hotspot.change_count, hotspot.unique_commits
+                                ),
+                            )
+                            .title(format!("Hotspot: {}", hotspot.file_path))
+                            .content(format!(
+                                "**Change Count:** {}\n**Unique Commits:** {}\n**Recent Changes:**\n{}",
+                                hotspot.change_count,
+                                hotspot.unique_commits,
+                                hotspot.recent_changes.join("\n- ")
+                            ))
+                            .tag("hotspot")
+                            .tag("git-mined")
+                            .confidence(0.7)
+                            .build()
+                            .ok();
+
+                        if let Some(m) = memory {
+                            if let Ok(id) = self.memory_manager.put(m).await {
+                                result.memory_ids.push(id);
+                                hotspots_created += 1;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    result
+                        .warnings
+                        .push(format!("Failed to detect hotspots: {}", e));
+                }
+            }
+        }
+
+        // Detect coupling if requested
+        let mut couplings_created = 0;
+        if include_coupling {
+            match miner.detect_coupling(0.7).await {
+                Ok(couplings) => {
+                    for coupling in couplings.iter().take(15) {
+                        // Create convention memory for strong couplings
+                        let memory = codegraph_memory::MemoryNode::builder()
+                            .convention(
+                                format!("Co-change: {} ↔ {}", coupling.file_a, coupling.file_b),
+                                format!(
+                                    "These files change together {:.0}% of the time ({} of {} changes). \
+                                     When modifying one, consider checking the other.",
+                                    coupling.coupling_strength * 100.0,
+                                    coupling.co_change_count,
+                                    coupling.total_changes
+                                ),
+                            )
+                            .title(format!("Coupling: {} ↔ {}", 
+                                coupling.file_a.split('/').next_back().unwrap_or(&coupling.file_a),
+                                coupling.file_b.split('/').next_back().unwrap_or(&coupling.file_b)))
+                            .content(format!(
+                                "**File A:** {}\n**File B:** {}\n**Coupling Strength:** {:.1}%\n\
+                                 **Co-changes:** {} out of {} total changes",
+                                coupling.file_a,
+                                coupling.file_b,
+                                coupling.coupling_strength * 100.0,
+                                coupling.co_change_count,
+                                coupling.total_changes
+                            ))
+                            .tag("coupling")
+                            .tag("git-mined")
+                            .confidence(coupling.coupling_strength)
+                            .build()
+                            .ok();
+
+                        if let Some(m) = memory {
+                            if let Ok(id) = self.memory_manager.put(m).await {
+                                result.memory_ids.push(id);
+                                couplings_created += 1;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    result
+                        .warnings
+                        .push(format!("Failed to detect coupling: {}", e));
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "commitsProcessed": result.commits_processed,
+            "memoriesCreated": result.memories_created + hotspots_created + couplings_created,
+            "commitsSkipped": result.commits_skipped,
+            "memoryIds": result.memory_ids,
+            "warnings": result.warnings,
+            "hotspotsDetected": hotspots_created,
+            "couplingsDetected": couplings_created,
+        }))
+    }
+
+    /// Mine git history for a specific file.
+    pub async fn handle_mine_git_history_for_file(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use crate::git_mining::{GitMiner, MiningConfig};
+
+        // Get file path from params
+        let uri_str = params
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Missing uri parameter"))?;
+
+        let file_path = Url::parse(uri_str)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Invalid file URI"))?;
+
+        // Get workspace folder
+        let workspace_folders = self.workspace_folders.read().await;
+        let workspace_path = workspace_folders
+            .first()
+            .ok_or_else(tower_lsp::jsonrpc::Error::invalid_request)?;
+
+        // Parse configuration from params
+        let max_commits = params
+            .get("maxCommits")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(100);
+
+        let config = MiningConfig {
+            max_commits,
+            min_confidence: 0.7,
+            ..Default::default()
+        };
+
+        // Create miner and run for specific file
+        let miner = GitMiner::new(workspace_path)
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_request())?;
+
+        let result = miner
+            .mine_file(&file_path, &self.memory_manager, &self.graph, &config)
+            .await
+            .map_err(|e| {
+                tracing::error!("Git mining for file failed: {}", e);
+                tower_lsp::jsonrpc::Error::internal_error()
+            })?;
+
+        Ok(serde_json::json!({
+            "file": file_path.to_string_lossy(),
+            "commitsProcessed": result.commits_processed,
+            "memoriesCreated": result.memories_created,
+            "commitsSkipped": result.commits_skipped,
+            "memoryIds": result.memory_ids,
+            "warnings": result.warnings
+        }))
     }
 }
 

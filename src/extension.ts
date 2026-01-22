@@ -50,6 +50,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         outputChannel: vscode.window.createOutputChannel('CodeGraph'),
         traceOutputChannel: vscode.window.createOutputChannel('CodeGraph Trace'),
+        initializationOptions: {
+            extensionPath: context.extensionPath,
+        },
     };
 
     // Create the language client

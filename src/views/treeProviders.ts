@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LanguageClient, RequestType } from 'vscode-languageclient/node';
+import { registerMemoryTreeView } from './memoryProvider';
 
 interface SymbolInfo {
     id: string;
@@ -203,4 +204,7 @@ export function registerTreeDataProviders(
             symbolProvider.refresh();
         })
     );
+
+    // Register memory tree view
+    registerMemoryTreeView(context, client);
 }

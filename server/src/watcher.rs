@@ -1,5 +1,6 @@
 //! File system watcher for incremental updates.
 
+use crate::memory::MemoryManager;
 use crate::parser_registry::ParserRegistry;
 use codegraph::CodeGraph;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -25,6 +26,7 @@ impl FileWatcher {
         graph: Arc<RwLock<CodeGraph>>,
         parsers: Arc<ParserRegistry>,
         client: Client,
+        memory_manager: Arc<MemoryManager>,
     ) -> Result<Self, notify::Error> {
         let (tx, mut rx) = mpsc::channel::<Event>(100);
 
@@ -42,6 +44,7 @@ impl FileWatcher {
         let graph_clone = Arc::clone(&graph);
         let parsers_clone = Arc::clone(&parsers);
         let client_clone = client.clone();
+        let memory_clone = Arc::clone(&memory_manager);
 
         tokio::spawn(async move {
             let debounce_duration = Duration::from_millis(DEFAULT_DEBOUNCE_MS);
@@ -82,7 +85,7 @@ impl FileWatcher {
                                 paths: vec![path],
                                 attrs: Default::default(),
                             };
-                            Self::handle_event(&graph_clone, &parsers_clone, &client_clone, event).await;
+                            Self::handle_event(&graph_clone, &parsers_clone, &client_clone, &memory_clone, event).await;
                         }
                     }
                 }
@@ -107,6 +110,7 @@ impl FileWatcher {
         graph: &Arc<RwLock<CodeGraph>>,
         parsers: &Arc<ParserRegistry>,
         client: &Client,
+        memory_manager: &Arc<MemoryManager>,
         event: Event,
     ) {
         match event.kind {
@@ -117,7 +121,9 @@ impl FileWatcher {
                         continue;
                     }
 
-                    if let Err(e) = Self::handle_file_change(graph, parsers, &path).await {
+                    if let Err(e) =
+                        Self::handle_file_change(graph, parsers, memory_manager, &path).await
+                    {
                         client
                             .log_message(
                                 MessageType::WARNING,
@@ -131,7 +137,7 @@ impl FileWatcher {
             }
             EventKind::Remove(_) => {
                 for path in event.paths {
-                    if let Err(e) = Self::handle_file_remove(graph, &path).await {
+                    if let Err(e) = Self::handle_file_remove(graph, memory_manager, &path).await {
                         client
                             .log_message(
                                 MessageType::WARNING,
@@ -151,6 +157,7 @@ impl FileWatcher {
     async fn handle_file_change(
         graph: &Arc<RwLock<CodeGraph>>,
         parsers: &Arc<ParserRegistry>,
+        memory_manager: &Arc<MemoryManager>,
         path: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Skip non-parseable files
@@ -162,17 +169,36 @@ impl FileWatcher {
         // Read file content
         let content = tokio::fs::read_to_string(path).await?;
 
-        // Remove old entries and re-parse
-        let mut graph = graph.write().await;
+        let path_str = path.to_string_lossy().to_string();
+        let node_id_strings: Vec<String>;
 
-        // Remove existing nodes for this file
-        Self::remove_file_nodes(&mut graph, path)?;
+        // Scope the graph lock
+        {
+            let mut graph = graph.write().await;
 
-        // Parse and add new nodes
-        parser.parse_source(&content, path, &mut graph)?;
+            // Collect node IDs before removal for memory invalidation
+            node_id_strings = Self::collect_file_node_ids(&graph, path);
 
-        // Resolve cross-file imports after parsing
-        GraphUpdater::resolve_cross_file_imports(&mut graph);
+            // Remove existing nodes for this file
+            Self::remove_file_nodes(&mut graph, path)?;
+
+            // Parse and add new nodes
+            parser.parse_source(&content, path, &mut graph)?;
+
+            // Resolve cross-file imports after parsing
+            GraphUpdater::resolve_cross_file_imports(&mut graph);
+        }
+
+        // Auto-invalidate memories linked to changed nodes (after releasing graph lock)
+        if !node_id_strings.is_empty() {
+            let reason = format!("File modified: {}", path_str);
+            if let Err(e) = memory_manager
+                .invalidate_for_code_nodes(&node_id_strings, &reason)
+                .await
+            {
+                tracing::warn!("Failed to invalidate memories for {}: {}", path_str, e);
+            }
+        }
 
         Ok(())
     }
@@ -180,11 +206,44 @@ impl FileWatcher {
     /// Handle a file removal.
     async fn handle_file_remove(
         graph: &Arc<RwLock<CodeGraph>>,
+        memory_manager: &Arc<MemoryManager>,
         path: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut graph = graph.write().await;
-        Self::remove_file_nodes(&mut graph, path)?;
+        let path_str = path.to_string_lossy().to_string();
+        let node_id_strings: Vec<String>;
+
+        // Scope the graph lock
+        {
+            let mut graph = graph.write().await;
+
+            // Collect node IDs before removal for memory invalidation
+            node_id_strings = Self::collect_file_node_ids(&graph, path);
+
+            Self::remove_file_nodes(&mut graph, path)?;
+        }
+
+        // Auto-invalidate memories linked to deleted nodes
+        if !node_id_strings.is_empty() {
+            let reason = format!("File deleted: {}", path_str);
+            if let Err(e) = memory_manager
+                .invalidate_for_code_nodes(&node_id_strings, &reason)
+                .await
+            {
+                tracing::warn!("Failed to invalidate memories for {}: {}", path_str, e);
+            }
+        }
+
         Ok(())
+    }
+
+    /// Collect all node IDs for a file (for memory invalidation).
+    fn collect_file_node_ids(graph: &CodeGraph, path: &Path) -> Vec<String> {
+        let path_str = path.to_string_lossy().to_string();
+        if let Ok(nodes) = graph.query().property("path", path_str).execute() {
+            nodes.iter().map(|n| n.to_string()).collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Remove all nodes associated with a file from the graph.

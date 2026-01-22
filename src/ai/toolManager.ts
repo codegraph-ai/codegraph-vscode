@@ -16,6 +16,16 @@ import {
     GetCallersResponse,
     DetailedSymbolResponse,
     FindBySignatureResponse,
+    // Memory Layer Types
+    MemoryStoreResponse,
+    MemorySearchResponse,
+    MemoryGetResponse,
+    MemoryContextResponse,
+    MemoryInvalidateResponse,
+    MemoryListResponse,
+    MemoryStatsResponse,
+    // Git Mining Types
+    GitMiningResponse,
 } from '../types';
 
 /**
@@ -925,6 +935,335 @@ export class CodeGraphToolManager {
             })
         );
 
+        // ==========================================
+        // Memory Layer Tools (Tools 18-24)
+        // ==========================================
+
+        // Tool 18: Memory Store
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_store', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        kind: string;
+                        title: string;
+                        content: string;
+                        tags?: string[];
+                        codeLinks?: Array<{ nodeId: string; nodeType: string }>;
+                        confidence?: number;
+                        problem?: string;
+                        solution?: string;
+                        decision?: string;
+                        rationale?: string;
+                        description?: string;
+                        severity?: string;
+                        name?: string;
+                        topic?: string;
+                    };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<MemoryStoreResponse>(
+                            'codegraph.memoryStore',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemoryStore(response, input.title))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'store memory', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { kind: string; title: string };
+                    return {
+                        invocationMessage: `Storing ${input.kind} memory: "${input.title}"...`
+                    };
+                }
+            })
+        );
+
+        // Tool 19: Memory Search
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_search', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        query: string;
+                        limit?: number;
+                        tags?: string[];
+                        kinds?: string[];
+                        currentOnly?: boolean;
+                        codeContext?: string[];
+                    };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<MemorySearchResponse>(
+                            'codegraph.memorySearch',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemorySearch(response, input.query))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'search memories', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { query: string };
+                    return {
+                        invocationMessage: `Searching memories for "${input.query}"...`
+                    };
+                }
+            })
+        );
+
+        // Tool 20: Memory Get
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_get', {
+                invoke: async (options, token) => {
+                    const input = options.input as { id: string };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<MemoryGetResponse>(
+                            'codegraph.memoryGet',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemoryGet(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'get memory', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { id: string };
+                    return {
+                        invocationMessage: `Retrieving memory ${input.id}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 21: Memory Context
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_context', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        uri: string;
+                        position?: { line: number; character: number };
+                        limit?: number;
+                        kinds?: string[];
+                    };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<MemoryContextResponse>(
+                            'codegraph.memoryContext',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemoryContext(response, input.uri))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'get memory context', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri: string };
+                    const filename = input.uri.split('/').pop() || input.uri;
+                    return {
+                        invocationMessage: `Finding relevant memories for ${filename}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 22: Memory Invalidate
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_invalidate', {
+                invoke: async (options, token) => {
+                    const input = options.input as { id: string };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<MemoryInvalidateResponse>(
+                            'codegraph.memoryInvalidate',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemoryInvalidate(response, input.id))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'invalidate memory', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { id: string };
+                    return {
+                        invocationMessage: `Invalidating memory ${input.id}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 23: Memory List
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_list', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        kinds?: string[];
+                        tags?: string[];
+                        currentOnly?: boolean;
+                        limit?: number;
+                        offset?: number;
+                    };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<MemoryListResponse>(
+                            'codegraph.memoryList',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemoryList(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'list memories', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { kinds?: string[]; tags?: string[] };
+                    const filters: string[] = [];
+                    if (input.kinds?.length) {filters.push(`kinds: ${input.kinds.join(', ')}`);}
+                    if (input.tags?.length) {filters.push(`tags: ${input.tags.join(', ')}`);}
+                    const filterStr = filters.length > 0 ? ` (${filters.join('; ')})` : '';
+                    return {
+                        invocationMessage: `Listing memories${filterStr}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 24: Memory Stats
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_memory_stats', {
+                invoke: async (options, token) => {
+                    try {
+                        const response = await this.sendRequestWithRetry<MemoryStatsResponse>(
+                            'codegraph.memoryStats',
+                            {},
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatMemoryStats(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'get memory stats', token);
+                    }
+                },
+                prepareInvocation: async (_options, _token) => {
+                    return {
+                        invocationMessage: 'Retrieving memory statistics...'
+                    };
+                }
+            })
+        );
+
+        // ==========================================
+        // Git Mining Tools (Tools 25-26)
+        // ==========================================
+
+        // Tool 25: Mine Git History
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_mine_git_history', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        maxCommits?: number;
+                        minConfidence?: number;
+                        mineBugFixes?: boolean;
+                        mineArchDecisions?: boolean;
+                        mineBreakingChanges?: boolean;
+                        mineReverts?: boolean;
+                        mineFeatures?: boolean;
+                        mineDeprecations?: boolean;
+                        includeHotspots?: boolean;
+                        includeCoupling?: boolean;
+                    };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<GitMiningResponse>(
+                            'codegraph.mineGitHistory',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatGitMiningResult(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'mine git history', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { maxCommits?: number };
+                    const limit = input.maxCommits || 500;
+                    return {
+                        invocationMessage: `Mining git history (up to ${limit} commits)...`
+                    };
+                }
+            })
+        );
+
+        // Tool 26: Mine Git History for File
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_mine_git_history_for_file', {
+                invoke: async (options, token) => {
+                    const input = options.input as {
+                        uri: string;
+                        maxCommits?: number;
+                    };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<GitMiningResponse>(
+                            'codegraph.mineGitHistoryForFile',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatGitMiningResult(response, input.uri))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'mine git history for file', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri: string };
+                    const filename = input.uri.split('/').pop() || input.uri;
+                    return {
+                        invocationMessage: `Mining git history for ${filename}...`
+                    };
+                }
+            })
+        );
+
         console.log(`[CodeGraph] Registered ${this.disposables.length} Language Model tools`);
     }
 
@@ -1638,6 +1977,259 @@ export class CodeGraphToolManager {
             }
             output += '\n';
         });
+
+        return output;
+    }
+
+    // ==========================================
+    // Memory Layer Formatters
+    // ==========================================
+
+    /**
+     * Format memory store result for AI consumption
+     */
+    private formatMemoryStore(response: MemoryStoreResponse, title: string): string {
+        let output = '# Memory Stored\n\n';
+
+        if (response.success) {
+            output += `✅ Successfully stored memory: "${title}"\n\n`;
+            output += `- **Memory ID**: \`${response.id}\`\n`;
+            output += '\nYou can retrieve this memory later using the ID, or it will be automatically surfaced when relevant.\n';
+        } else {
+            output += `❌ Failed to store memory: "${title}"\n`;
+        }
+
+        return output;
+    }
+
+    /**
+     * Format memory search results for AI consumption
+     */
+    private formatMemorySearch(response: MemorySearchResponse, query: string): string {
+        let output = '# Memory Search Results\n\n';
+        output += `Query: "${query}"\n`;
+        output += `Found ${response.total} memories.\n\n`;
+
+        if (response.results.length === 0) {
+            output += 'No memories found matching your query.\n\n';
+            output += 'Tips:\n';
+            output += '- Try broader search terms\n';
+            output += '- Check if memories exist using `codegraph_memory_list`\n';
+            output += '- Memories may have been invalidated\n';
+            return output;
+        }
+
+        response.results.forEach((memory, i) => {
+            const currentBadge = memory.isCurrent ? '✅' : '⚠️ invalidated';
+            output += `## ${i + 1}. ${memory.title} ${currentBadge}\n`;
+            output += `- **ID**: \`${memory.id}\`\n`;
+            output += `- **Kind**: ${memory.kind}\n`;
+            output += `- **Relevance**: ${(memory.score * 100).toFixed(1)}%\n`;
+            if (memory.tags.length > 0) {
+                output += `- **Tags**: ${memory.tags.join(', ')}\n`;
+            }
+            output += `\n${memory.content.slice(0, 300)}${memory.content.length > 300 ? '...' : ''}\n\n`;
+        });
+
+        return output;
+    }
+
+    /**
+     * Format memory get result for AI consumption
+     */
+    private formatMemoryGet(response: MemoryGetResponse): string {
+        let output = '# Memory Details\n\n';
+
+        const currentBadge = response.isCurrent ? '✅ Current' : '⚠️ Invalidated';
+        output += `## ${response.title} ${currentBadge}\n\n`;
+        output += `- **ID**: \`${response.id}\`\n`;
+        output += `- **Kind**: ${JSON.stringify(response.kind)}\n`;
+        output += `- **Confidence**: ${(response.confidence * 100).toFixed(0)}%\n`;
+        output += `- **Created**: ${response.createdAt}\n`;
+        if (response.validFrom) {
+            output += `- **Valid From**: ${response.validFrom}\n`;
+        }
+        if (response.tags.length > 0) {
+            output += `- **Tags**: ${response.tags.join(', ')}\n`;
+        }
+
+        output += `\n### Content\n${response.content}\n`;
+
+        if (response.codeLinks.length > 0) {
+            output += `\n### Linked Code\n`;
+            response.codeLinks.forEach(link => {
+                output += `- ${link.nodeType}: \`${link.nodeId}\`\n`;
+            });
+        }
+
+        return output;
+    }
+
+    /**
+     * Format memory context results for AI consumption
+     */
+    private formatMemoryContext(response: MemoryContextResponse, uri: string): string {
+        const filename = uri.split('/').pop() || uri;
+        let output = `# Relevant Memories for ${filename}\n\n`;
+
+        if (response.memories.length === 0) {
+            output += 'No relevant memories found for this code context.\n\n';
+            output += 'This means there are no stored:\n';
+            output += '- Debug contexts from previous sessions\n';
+            output += '- Architectural decisions related to this code\n';
+            output += '- Known issues or conventions\n';
+            return output;
+        }
+
+        output += `Found ${response.memories.length} relevant memories.\n\n`;
+
+        response.memories.forEach((memory, i) => {
+            output += `## ${i + 1}. ${memory.title}\n`;
+            output += `- **Kind**: ${memory.kind}\n`;
+            output += `- **Relevance**: ${(memory.relevanceScore * 100).toFixed(1)}%\n`;
+            output += `- **Why relevant**: ${memory.relevanceReason}\n`;
+            if (memory.tags.length > 0) {
+                output += `- **Tags**: ${memory.tags.join(', ')}\n`;
+            }
+            output += `\n${memory.content.slice(0, 400)}${memory.content.length > 400 ? '...' : ''}\n\n`;
+        });
+
+        return output;
+    }
+
+    /**
+     * Format memory invalidate result for AI consumption
+     */
+    private formatMemoryInvalidate(response: MemoryInvalidateResponse, id: string): string {
+        let output = '# Memory Invalidation\n\n';
+
+        if (response.success) {
+            output += `✅ Successfully invalidated memory \`${id}\`\n\n`;
+            output += 'The memory is now marked as no longer current and will be excluded from searches by default.\n';
+            output += 'It can still be retrieved directly by ID if needed.\n';
+        } else {
+            output += `❌ Failed to invalidate memory \`${id}\`\n\n`;
+            output += 'The memory may not exist or may already be invalidated.\n';
+        }
+
+        return output;
+    }
+
+    /**
+     * Format memory list results for AI consumption
+     */
+    private formatMemoryList(response: MemoryListResponse): string {
+        let output = '# Memory List\n\n';
+        output += `Total: ${response.total} memories`;
+        if (response.hasMore) {
+            output += ` (showing ${response.memories.length}, more available)`;
+        }
+        output += '\n\n';
+
+        if (response.memories.length === 0) {
+            output += 'No memories found matching the criteria.\n';
+            return output;
+        }
+
+        response.memories.forEach((memory, i) => {
+            const currentBadge = memory.isCurrent ? '✅' : '⚠️';
+            output += `${i + 1}. **${memory.title}** ${currentBadge}\n`;
+            output += `   - ID: \`${memory.id}\`\n`;
+            output += `   - Kind: ${memory.kind}\n`;
+            if (memory.tags.length > 0) {
+                output += `   - Tags: ${memory.tags.join(', ')}\n`;
+            }
+        });
+
+        return output;
+    }
+
+    /**
+     * Format memory stats for AI consumption
+     */
+    private formatMemoryStats(response: MemoryStatsResponse): string {
+        let output = '# Memory Statistics\n\n';
+
+        output += '## Overview\n';
+        output += `- **Total Memories**: ${response.totalMemories}\n`;
+        output += `- **Current (Valid)**: ${response.currentMemories}\n`;
+        output += `- **Invalidated**: ${response.invalidatedMemories}\n`;
+        output += '\n';
+
+        if (Object.keys(response.byKind).length > 0) {
+            output += '## By Kind\n';
+            for (const [kind, count] of Object.entries(response.byKind)) {
+                output += `- **${kind}**: ${count}\n`;
+            }
+            output += '\n';
+        }
+
+        if (Object.keys(response.byTag).length > 0) {
+            output += '## By Tag (top 10)\n';
+            const sortedTags = Object.entries(response.byTag)
+                .sort(([, a], [, b]) => b - a)
+                .slice(0, 10);
+            for (const [tag, count] of sortedTags) {
+                output += `- **${tag}**: ${count}\n`;
+            }
+        }
+
+        return output;
+    }
+
+    // ==========================================
+    // Git Mining Formatters
+    // ==========================================
+
+    /**
+     * Format git mining result for AI consumption
+     */
+    private formatGitMiningResult(response: GitMiningResponse, forFile?: string): string {
+        let output = forFile
+            ? `# Git Mining Results for ${forFile.split('/').pop()}\n\n`
+            : '# Git Mining Results\n\n';
+
+        output += '## Summary\n';
+        output += `- **Commits Processed**: ${response.commitsProcessed}\n`;
+        output += `- **Memories Created**: ${response.memoriesCreated}\n`;
+        output += `- **Commits Skipped**: ${response.commitsSkipped}\n`;
+        
+        if (response.hotspotsDetected !== undefined && response.hotspotsDetected > 0) {
+            output += `- **Hotspots Detected**: ${response.hotspotsDetected}\n`;
+        }
+        
+        if (response.couplingsDetected !== undefined && response.couplingsDetected > 0) {
+            output += `- **Couplings Detected**: ${response.couplingsDetected}\n`;
+        }
+        
+        output += '\n';
+
+        if (response.memoriesCreated > 0) {
+            output += '## Created Memories\n';
+            output += 'The following memories were extracted from git history:\n\n';
+            response.memoryIds.forEach((id, i) => {
+                output += `${i + 1}. Memory ID: \`${id}\`\n`;
+            });
+            output += '\nUse `codegraph_memory_get` with these IDs to see full details.\n';
+            output += '\n';
+        }
+
+        if (response.memoriesCreated === 0) {
+            output += '## No Memories Created\n';
+            output += 'No commits matched the mining criteria (bug fixes, architectural decisions, breaking changes, or reverts).\n';
+            output += '\n';
+            output += 'Tips:\n';
+            output += '- Ensure commits follow conventional commit format (e.g., "fix:", "feat:", "arch:")\n';
+            output += '- Try lowering the minConfidence threshold\n';
+            output += '- Check if the repository has meaningful commit history\n';
+        }
+
+        if (response.warnings.length > 0) {
+            output += '## Warnings\n';
+            response.warnings.forEach(warning => {
+                output += `- ${warning}\n`;
+            });
+        }
 
         return output;
     }

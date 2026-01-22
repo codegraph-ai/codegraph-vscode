@@ -511,3 +511,144 @@ export interface FindBySignatureResponse {
     results: SymbolMatch[];
     queryTimeMs: number;
 }
+
+// ==========================================
+// Memory Layer Types
+// ==========================================
+
+export type MemoryKind = 'debug_context' | 'architectural_decision' | 'known_issue' | 'convention' | 'project_context';
+
+export interface MemoryCodeLink {
+    nodeId: string;
+    nodeType: string;
+}
+
+export interface MemoryStoreParams {
+    kind: MemoryKind;
+    title: string;
+    content: string;
+    tags?: string[];
+    codeLinks?: MemoryCodeLink[];
+    confidence?: number;
+    // Kind-specific fields
+    problem?: string;           // debug_context
+    solution?: string;          // debug_context
+    decision?: string;          // architectural_decision
+    rationale?: string;         // architectural_decision
+    description?: string;       // known_issue, convention, project_context
+    severity?: 'critical' | 'high' | 'medium' | 'low';  // known_issue
+    name?: string;              // convention
+    topic?: string;             // project_context
+}
+
+export interface MemoryStoreResponse {
+    id: string;
+    success: boolean;
+}
+
+export interface MemorySearchParams {
+    query: string;
+    limit?: number;
+    tags?: string[];
+    kinds?: MemoryKind[];
+    currentOnly?: boolean;
+    codeContext?: string[];
+}
+
+export interface MemorySearchResult {
+    id: string;
+    kind: string;
+    title: string;
+    content: string;
+    tags: string[];
+    score: number;
+    isCurrent: boolean;
+}
+
+export interface MemorySearchResponse {
+    results: MemorySearchResult[];
+    total: number;
+}
+
+export interface MemoryGetParams {
+    id: string;
+}
+
+export interface MemoryGetResponse {
+    id: string;
+    kind: Record<string, unknown>;
+    title: string;
+    content: string;
+    tags: string[];
+    codeLinks: MemoryCodeLink[];
+    confidence: number;
+    isCurrent: boolean;
+    createdAt: string;
+    validFrom?: string;
+}
+
+export interface MemoryInvalidateParams {
+    id: string;
+}
+
+export interface MemoryInvalidateResponse {
+    success: boolean;
+}
+
+export interface MemoryListParams {
+    kinds?: MemoryKind[];
+    tags?: string[];
+    currentOnly?: boolean;
+    limit?: number;
+    offset?: number;
+}
+
+export interface MemoryListResponse {
+    memories: MemorySearchResult[];
+    total: number;
+    hasMore: boolean;
+}
+
+export interface MemoryContextParams {
+    uri: string;
+    position?: Position;
+    limit?: number;
+    kinds?: MemoryKind[];
+}
+
+export interface ContextMemory {
+    id: string;
+    kind: string;
+    title: string;
+    content: string;
+    tags: string[];
+    relevanceScore: number;
+    relevanceReason: string;
+}
+
+export interface MemoryContextResponse {
+    memories: ContextMemory[];
+}
+
+export interface MemoryStatsResponse {
+    totalMemories: number;
+    currentMemories: number;
+    invalidatedMemories: number;
+    byKind: Record<string, number>;
+    byTag: Record<string, number>;
+}
+
+// ==========================================
+// Git Mining Types
+// ==========================================
+
+export interface GitMiningResponse {
+    file?: string;
+    commitsProcessed: number;
+    memoriesCreated: number;
+    commitsSkipped: number;
+    memoryIds: string[];
+    warnings: string[];
+    hotspotsDetected?: number;
+    couplingsDetected?: number;
+}

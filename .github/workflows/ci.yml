@@ -132,53 +132,53 @@ jobs:
           path: artifacts/${{ matrix.artifact }}
 
   # Package extension (only on main branch, after all checks pass)
-  package:
-    name: Package Extension
-    needs: [typescript, rust, build-binaries]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
+  # package:
+  #   name: Package Extension
+  #   needs: [typescript, rust, build-binaries]
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '20'
+  #         cache: 'npm'
 
-      - name: Install dependencies
-        run: |
-          # Remove local-only devDependencies that aren't available in CI
-          node -e "
-            const pkg = require('./package.json');
-            delete pkg.devDependencies['@vsforge/config'];
-            delete pkg.devDependencies['@vsforge/shim'];
-            delete pkg.devDependencies['@vsforge/test'];
-            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 4));
-          "
-          npm install
+  #     - name: Install dependencies
+  #       run: |
+  #         # Remove local-only devDependencies that aren't available in CI
+  #         node -e "
+  #           const pkg = require('./package.json');
+  #           delete pkg.devDependencies['@vsforge/config'];
+  #           delete pkg.devDependencies['@vsforge/shim'];
+  #           delete pkg.devDependencies['@vsforge/test'];
+  #           require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 4));
+  #         "
+  #         npm install
 
-      - name: Download all binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: bin/
+  #     - name: Download all binaries
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         path: bin/
 
-      - name: Move binaries to correct location
-        run: |
-          mkdir -p bin
-          mv bin/codegraph-lsp-linux-x64/codegraph-lsp-linux-x64 bin/
-          mv bin/codegraph-lsp-win32-x64.exe/codegraph-lsp-win32-x64.exe bin/
-          chmod +x bin/codegraph-lsp-*
-          ls -la bin/
+  #     - name: Move binaries to correct location
+  #       run: |
+  #         mkdir -p bin
+  #         mv bin/codegraph-lsp-linux-x64/codegraph-lsp-linux-x64 bin/
+  #         mv bin/codegraph-lsp-win32-x64.exe/codegraph-lsp-win32-x64.exe bin/
+  #         chmod +x bin/codegraph-lsp-*
+  #         ls -la bin/
 
-      - name: Bundle with esbuild
-        run: npm run esbuild-base -- --production
+  #     - name: Bundle with esbuild
+  #       run: npm run esbuild-base -- --production
 
-      - name: Package extension
-        run: npx vsce package --no-dependencies
+  #     - name: Package extension
+  #       run: npx vsce package --no-dependencies
 
-      - name: Upload VSIX
-        uses: actions/upload-artifact@v4
-        with:
-          name: codegraph-vsix
-          path: "*.vsix"
+  #     - name: Upload VSIX
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: codegraph-vsix
+  #         path: "*.vsix"

@@ -1,6 +1,8 @@
 .claude/
 .codemender/
+.codegraph/
 .vscode/
+models/
 # Build outputs
 out/
 dist/
