@@ -2,7 +2,7 @@
     "name": "codegraph",
     "displayName": "CodeGraph",
     "description": "Cross-language code intelligence powered by graph analysis",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "publisher": "aStudioPlus",
     "license": "Apache-2.0",
     "repository": {
@@ -751,7 +751,16 @@
                         },
                         "symbolType": {
                             "type": "string",
-                            "enum": ["function", "class", "method", "variable", "interface", "type", "module", "any"],
+                            "enum": [
+                                "function",
+                                "class",
+                                "method",
+                                "variable",
+                                "interface",
+                                "type",
+                                "module",
+                                "any"
+                            ],
                             "description": "Filter results by symbol type",
                             "default": "any"
                         },
@@ -766,7 +775,9 @@
                             "default": true
                         }
                     },
-                    "required": ["query"]
+                    "required": [
+                        "query"
+                    ]
                 }
             },
             {
@@ -793,7 +804,12 @@
                         },
                         "matchMode": {
                             "type": "string",
-                            "enum": ["exact", "prefix", "contains", "fuzzy"],
+                            "enum": [
+                                "exact",
+                                "prefix",
+                                "contains",
+                                "fuzzy"
+                            ],
                             "description": "How to match the module name",
                             "default": "contains"
                         },
@@ -803,7 +819,9 @@
                             "default": 50
                         }
                     },
-                    "required": ["moduleName"]
+                    "required": [
+                        "moduleName"
+                    ]
                 }
             },
             {
@@ -826,7 +844,14 @@
                     "properties": {
                         "entryType": {
                             "type": "string",
-                            "enum": ["main", "http_handler", "cli_command", "event_handler", "test", "all"],
+                            "enum": [
+                                "main",
+                                "http_handler",
+                                "cli_command",
+                                "event_handler",
+                                "test",
+                                "all"
+                            ],
                             "description": "Type of entry point to find",
                             "default": "all"
                         },
@@ -874,18 +899,26 @@
                         },
                         "direction": {
                             "type": "string",
-                            "enum": ["outgoing", "incoming", "both"],
+                            "enum": [
+                                "outgoing",
+                                "incoming",
+                                "both"
+                            ],
                             "description": "Direction to traverse edges",
                             "default": "outgoing"
                         },
                         "edgeTypes": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Types of edges to follow (e.g., ['calls', 'imports'])"
                         },
                         "nodeTypes": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Filter results to specific node types"
                         },
                         "maxDepth": {
@@ -1065,7 +1098,9 @@
                         },
                         "modifiers": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Required modifiers (e.g., ['async'], ['static', 'public'])"
                         },
                         "limit": {
@@ -1115,7 +1150,9 @@
                         },
                         "tags": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Tags for categorization and search"
                         },
                         "codeLinks": {
@@ -1123,8 +1160,12 @@
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "nodeId": { "type": "string" },
-                                    "nodeType": { "type": "string" }
+                                    "nodeId": {
+                                        "type": "string"
+                                    },
+                                    "nodeType": {
+                                        "type": "string"
+                                    }
                                 }
                             },
                             "description": "Links to related code graph nodes for relevance scoring"
@@ -1132,7 +1173,7 @@
                         "confidence": {
                             "type": "number",
                             "description": "Confidence level 0.0-1.0 (default: 1.0)",
-                            "default": 1.0
+                            "default": 1
                         },
                         "problem": {
                             "type": "string",
@@ -1156,11 +1197,20 @@
                         },
                         "severity": {
                             "type": "string",
-                            "enum": ["critical", "high", "medium", "low"],
+                            "enum": [
+                                "critical",
+                                "high",
+                                "medium",
+                                "low"
+                            ],
                             "description": "For known_issue: severity level"
                         }
                     },
-                    "required": ["kind", "title", "content"]
+                    "required": [
+                        "kind",
+                        "title",
+                        "content"
+                    ]
                 }
             },
             {
@@ -1192,12 +1242,16 @@
                         },
                         "tags": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Filter by tags"
                         },
                         "kinds": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Filter by memory kinds"
                         },
                         "currentOnly": {
@@ -1207,11 +1261,15 @@
                         },
                         "codeContext": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Code node IDs for proximity boosting"
                         }
                     },
-                    "required": ["query"]
+                    "required": [
+                        "query"
+                    ]
                 }
             },
             {
@@ -1235,7 +1293,9 @@
                             "description": "Memory ID to retrieve"
                         }
                     },
-                    "required": ["id"]
+                    "required": [
+                        "id"
+                    ]
                 }
             },
             {
@@ -1274,11 +1334,15 @@
                         },
                         "kinds": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Filter by memory kinds"
                         }
                     },
-                    "required": ["uri"]
+                    "required": [
+                        "uri"
+                    ]
                 }
             },
             {
@@ -1302,7 +1366,9 @@
                             "description": "Memory ID to invalidate"
                         }
                     },
-                    "required": ["id"]
+                    "required": [
+                        "id"
+                    ]
                 }
             },
             {
@@ -1324,12 +1390,16 @@
                     "properties": {
                         "kinds": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Filter by memory kinds"
                         },
                         "tags": {
                             "type": "array",
-                            "items": { "type": "string" },
+                            "items": {
+                                "type": "string"
+                            },
                             "description": "Filter by tags"
                         },
                         "currentOnly": {
@@ -1447,7 +1517,9 @@
                             "default": 100
                         }
                     },
-                    "required": ["uri"]
+                    "required": [
+                        "uri"
+                    ]
                 }
             }
         ],
