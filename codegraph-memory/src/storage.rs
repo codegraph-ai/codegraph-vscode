@@ -88,7 +88,7 @@ impl MemoryStore {
 
             if key_str.starts_with("mem:") {
                 let id = key_str.strip_prefix("mem:").unwrap().to_string();
-                
+
                 // Gracefully handle deserialization errors
                 match bincode::deserialize::<MemoryNode>(&value) {
                     Ok(memory) => {
@@ -96,7 +96,9 @@ impl MemoryStore {
                             self.memory_cache.insert(id.clone(), memory);
 
                             // Load vector
-                            if let Ok(Some(vec_bytes)) = self.db.get(format!("vec:{}", id).as_bytes()) {
+                            if let Ok(Some(vec_bytes)) =
+                                self.db.get(format!("vec:{}", id).as_bytes())
+                            {
                                 if let Ok(vector) = bincode::deserialize::<Vec<f32>>(&vec_bytes) {
                                     self.vector_cache.insert(id.clone(), vector.clone());
                                     points.push(MemoryPoint { id, vector });

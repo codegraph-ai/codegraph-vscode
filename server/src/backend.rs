@@ -628,8 +628,14 @@ impl LanguageServer for CodeGraphBackend {
         });
 
         if let Some(path) = extension_path {
-            tracing::info!("[LSP::initialize] Extension path received: {}", path.display());
-            tracing::info!("[LSP::initialize] Model path should be: {}/models/model2vec/", path.display());
+            tracing::info!(
+                "[LSP::initialize] Extension path received: {}",
+                path.display()
+            );
+            tracing::info!(
+                "[LSP::initialize] Model path should be: {}/models/model2vec/",
+                path.display()
+            );
 
             // Update memory manager with extension path by replacing it
             // Safety: We're replacing the Arc contents during initialization before any use
@@ -640,7 +646,9 @@ impl LanguageServer for CodeGraphBackend {
             }
             tracing::info!("[LSP::initialize] MemoryManager updated with extension path");
         } else {
-            tracing::error!("[LSP::initialize] CRITICAL: No extension path provided in initialization options!");
+            tracing::error!(
+                "[LSP::initialize] CRITICAL: No extension path provided in initialization options!"
+            );
             tracing::warn!("[LSP::initialize] Memory features will require MODEL2VEC_PATH or ~/.codegraph/models/model2vec");
         }
 
@@ -760,14 +768,20 @@ impl LanguageServer for CodeGraphBackend {
 
         // Initialize memory store for persistent AI context
         if let Some(first_folder) = folders.first() {
-            tracing::info!("Starting memory store initialization for workspace: {}", first_folder.display());
+            tracing::info!(
+                "Starting memory store initialization for workspace: {}",
+                first_folder.display()
+            );
             self.client
                 .log_message(
                     MessageType::INFO,
-                    format!("[DEBUG] Initializing memory store for: {}", first_folder.display()),
+                    format!(
+                        "[DEBUG] Initializing memory store for: {}",
+                        first_folder.display()
+                    ),
                 )
                 .await;
-            
+
             match self.memory_manager.initialize(first_folder).await {
                 Ok(_) => {
                     tracing::info!("Memory store initialization succeeded");
