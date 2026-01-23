@@ -32,6 +32,7 @@
 
 pub mod embedding;
 pub mod error;
+pub mod migration;
 pub mod node;
 pub mod search;
 pub mod storage;

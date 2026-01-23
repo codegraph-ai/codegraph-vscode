@@ -628,17 +628,20 @@ impl LanguageServer for CodeGraphBackend {
         });
 
         if let Some(path) = extension_path {
-            tracing::info!("Extension path received: {}", path.display());
+            tracing::info!("[LSP::initialize] Extension path received: {}", path.display());
+            tracing::info!("[LSP::initialize] Model path should be: {}/models/model2vec/", path.display());
 
             // Update memory manager with extension path by replacing it
             // Safety: We're replacing the Arc contents during initialization before any use
-            let new_manager = Arc::new(MemoryManager::new(Some(path)));
+            let new_manager = Arc::new(MemoryManager::new(Some(path.clone())));
             let self_mut = self as *const Self as *mut Self;
             unsafe {
                 (*self_mut).memory_manager = new_manager;
             }
+            tracing::info!("[LSP::initialize] MemoryManager updated with extension path");
         } else {
-            tracing::warn!("No extension path provided in initialization options. Memory features will require MODEL2VEC_PATH or ~/.codegraph/models/model2vec");
+            tracing::error!("[LSP::initialize] CRITICAL: No extension path provided in initialization options!");
+            tracing::warn!("[LSP::initialize] Memory features will require MODEL2VEC_PATH or ~/.codegraph/models/model2vec");
         }
 
         // Store workspace folders
@@ -757,21 +760,39 @@ impl LanguageServer for CodeGraphBackend {
 
         // Initialize memory store for persistent AI context
         if let Some(first_folder) = folders.first() {
+            tracing::info!("Starting memory store initialization for workspace: {}", first_folder.display());
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("[DEBUG] Initializing memory store for: {}", first_folder.display()),
+                )
+                .await;
+            
             match self.memory_manager.initialize(first_folder).await {
                 Ok(_) => {
+                    tracing::info!("Memory store initialization succeeded");
                     self.client
-                        .log_message(MessageType::INFO, "Memory store initialized")
+                        .log_message(MessageType::INFO, "✓ Memory store initialized successfully")
                         .await;
                 }
                 Err(e) => {
+                    tracing::error!("Memory store initialization failed: {:?}", e);
                     self.client
                         .log_message(
-                            MessageType::WARNING,
-                            format!("Failed to initialize memory store: {}. Memory features will be disabled.", e),
+                            MessageType::ERROR,
+                            format!("✗ Failed to initialize memory store: {}. Memory features will be disabled.", e),
                         )
                         .await;
                 }
             }
+        } else {
+            tracing::warn!("No workspace folders available for memory initialization");
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    "[DEBUG] No workspace folders found - memory store not initialized",
+                )
+                .await;
         }
 
         // Start file watcher for incremental updates

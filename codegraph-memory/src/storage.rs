@@ -49,6 +49,9 @@ impl MemoryStore {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
 
+        // Run migration if needed before opening database
+        crate::migration::migrate_if_needed(path)?;
+
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_max_background_jobs(2);
@@ -75,6 +78,7 @@ impl MemoryStore {
     /// Load existing memories into cache on startup
     fn load_cache(&self) -> Result<()> {
         let mut count = 0;
+        let mut skipped = 0;
         let mut points = Vec::new();
         let iter = self.db.iterator(IteratorMode::Start);
 
@@ -84,26 +88,37 @@ impl MemoryStore {
 
             if key_str.starts_with("mem:") {
                 let id = key_str.strip_prefix("mem:").unwrap().to_string();
-                let memory: MemoryNode = bincode::deserialize(&value)?;
+                
+                // Gracefully handle deserialization errors
+                match bincode::deserialize::<MemoryNode>(&value) {
+                    Ok(memory) => {
+                        if memory.temporal.is_current() {
+                            self.memory_cache.insert(id.clone(), memory);
 
-                if memory.temporal.is_current() {
-                    self.memory_cache.insert(id.clone(), memory);
+                            // Load vector
+                            if let Ok(Some(vec_bytes)) = self.db.get(format!("vec:{}", id).as_bytes()) {
+                                if let Ok(vector) = bincode::deserialize::<Vec<f32>>(&vec_bytes) {
+                                    self.vector_cache.insert(id.clone(), vector.clone());
+                                    points.push(MemoryPoint { id, vector });
+                                }
+                            }
 
-                    // Load vector
-                    if let Ok(Some(vec_bytes)) = self.db.get(format!("vec:{}", id).as_bytes()) {
-                        if let Ok(vector) = bincode::deserialize::<Vec<f32>>(&vec_bytes) {
-                            self.vector_cache.insert(id.clone(), vector.clone());
-                            points.push(MemoryPoint { id, vector });
+                            count += 1;
                         }
                     }
-
-                    count += 1;
+                    Err(e) => {
+                        log::warn!("Failed to deserialize memory {}: {}. Skipping.", id, e);
+                        skipped += 1;
+                    }
                 }
             }
         }
 
         if count > 0 {
             log::info!("Loaded {} memories from disk", count);
+            if skipped > 0 {
+                log::warn!("Skipped {} memories due to deserialization errors", skipped);
+            }
             if !points.is_empty() {
                 self.rebuild_hnsw_index(points)?;
             }

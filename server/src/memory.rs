@@ -43,21 +43,45 @@ impl MemoryManager {
     /// # Errors
     /// Returns error if directory creation, model loading, or store initialization fails.
     pub async fn initialize(&self, workspace_path: &Path) -> Result<(), MemoryError> {
+        tracing::info!("[MemoryManager::initialize] Starting initialization");
+        tracing::info!("[MemoryManager::initialize] Workspace path: {:?}", workspace_path);
+        tracing::info!("[MemoryManager::initialize] Extension path: {:?}", self.extension_path);
+        
         // Create data directory for memory storage
         let data_dir = workspace_path.join(".codegraph").join("memory");
-        std::fs::create_dir_all(&data_dir)?;
+        tracing::info!("[MemoryManager::initialize] Creating data directory: {:?}", data_dir);
+        
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| {
+                tracing::error!("[MemoryManager::initialize] Failed to create data directory: {}", e);
+                e
+            })?;
+        tracing::info!("[MemoryManager::initialize] Data directory created successfully");
 
         // Initialize vector engine with bundled model
-        let engine = VectorEngine::new(self.extension_path.as_deref())?;
+        tracing::info!("[MemoryManager::initialize] Initializing VectorEngine...");
+        let engine = VectorEngine::new(self.extension_path.as_deref())
+            .map_err(|e| {
+                tracing::error!("[MemoryManager::initialize] VectorEngine initialization failed: {:?}", e);
+                e
+            })?;
+        tracing::info!("[MemoryManager::initialize] VectorEngine created successfully");
         let engine = Arc::new(engine);
 
         // Initialize memory store
-        let store = MemoryStore::new(&data_dir, engine)?;
+        tracing::info!("[MemoryManager::initialize] Creating MemoryStore...");
+        let store = MemoryStore::new(&data_dir, engine)
+            .map_err(|e| {
+                tracing::error!("[MemoryManager::initialize] MemoryStore creation failed: {:?}", e);
+                e
+            })?;
+        tracing::info!("[MemoryManager::initialize] MemoryStore created successfully");
         let store = Arc::new(store);
 
-        tracing::info!("Memory store initialized at {:?}", data_dir);
+        tracing::info!("[MemoryManager::initialize] Memory store fully initialized at {:?}", data_dir);
 
         *self.store.write().await = Some(store);
+        tracing::info!("[MemoryManager::initialize] Store reference updated - initialization complete");
         Ok(())
     }
 
