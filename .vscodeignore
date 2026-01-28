@@ -20,6 +20,7 @@ Cargo.lock
 .github/**
 .claude/**
 .codemender/**
+.cargo/**
 *.vsix
 
 # Test files
@@ -36,6 +37,12 @@ target/**
 node_modules/**
 .turbo/**
 logs/**
+.fastembed_cache/**
+.codegraph/**
+
+# Rust crates (source only)
+codegraph-memory/**
+models/**
 
 # Documentation (except README, LICENSE, CHANGELOG)
 docs/**
