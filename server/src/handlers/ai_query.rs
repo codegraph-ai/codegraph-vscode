@@ -85,8 +85,12 @@ pub struct SymbolLocationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct FindByImportsParams {
     /// Libraries/modules to search for
+    #[serde(default)]
     pub libraries: Vec<String>,
-    /// Match mode: "exact", "prefix", or "fuzzy"
+    /// Single module name for MCP compatibility
+    #[serde(default)]
+    pub module_name: Option<String>,
+    /// Match mode: "exact", "prefix", "contains", or "fuzzy"
     #[serde(default)]
     pub match_mode: Option<String>,
 }
@@ -105,9 +109,12 @@ pub struct FindByImportsResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindEntryPointsParams {
-    /// Entry type: "http_handler", "cli_command", "public_api", "event_handler", "test_entry", "main"
+    /// Entry type: "http_handler", "cli_command", "public_api", "event_handler", "test_entry", "main", "all"
     #[serde(default)]
     pub entry_type: Option<String>,
+    /// Filter by framework (e.g., "express", "fastapi", "actix")
+    #[serde(default)]
+    pub framework: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,6 +228,27 @@ pub struct CallInfoResponse {
     pub symbol: SymbolInfoResponse,
     pub call_site: SymbolLocationResponse,
     pub depth: u32,
+}
+
+/// Get Callees parameters (same structure as GetCallersParams)
+pub type GetCalleesParams = GetCallersParams;
+
+/// Get Detailed Symbol parameters with source code options
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetDetailedSymbolParams {
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub uri: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub include_source: Option<bool>,
+    #[serde(default)]
+    pub include_callers: Option<bool>,
+    #[serde(default)]
+    pub include_callees: Option<bool>,
 }
 
 // ==========================================
@@ -958,6 +986,7 @@ mod tests {
 
         let params = FindByImportsParams {
             libraries: vec!["serde".to_string()],
+            module_name: None,
             match_mode: Some("exact".to_string()),
         };
 
@@ -1009,6 +1038,7 @@ mod tests {
 
         let params = FindByImportsParams {
             libraries: vec!["tokio".to_string()],
+            module_name: None,
             match_mode: Some("fuzzy".to_string()),
         };
 
@@ -1045,6 +1075,7 @@ mod tests {
 
         let params = FindEntryPointsParams {
             entry_type: Some("main".to_string()),
+            framework: None,
         };
 
         let result = backend.handle_find_entry_points(params).await.unwrap();
@@ -1086,6 +1117,7 @@ mod tests {
 
         let params = FindEntryPointsParams {
             entry_type: Some("http_handler".to_string()),
+            framework: None,
         };
 
         let result = backend.handle_find_entry_points(params).await.unwrap();
@@ -1134,7 +1166,10 @@ mod tests {
         backend.query_engine.build_indexes().await;
 
         // Empty entry_type means find all
-        let params = FindEntryPointsParams { entry_type: None };
+        let params = FindEntryPointsParams {
+            entry_type: None,
+            framework: None,
+        };
 
         let result = backend.handle_find_entry_points(params).await.unwrap();
 

@@ -324,6 +324,68 @@ pub struct ContextMemory {
     pub relevance_reason: String,
 }
 
+// ==========================================
+// Git Mining Request Types
+// ==========================================
+
+/// Parameters for mining git history for memories.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MineGitHistoryParams {
+    /// Maximum number of commits to process
+    #[serde(default = "default_max_commits")]
+    pub max_commits: Option<usize>,
+    /// Minimum confidence score for creating memories (0.0-1.0)
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: Option<f64>,
+}
+
+fn default_max_commits() -> Option<usize> {
+    Some(500)
+}
+
+fn default_min_confidence() -> Option<f64> {
+    Some(0.7)
+}
+
+/// Parameters for mining git history for a specific file.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MineGitFileParams {
+    /// The file URI to mine history for
+    pub uri: String,
+    /// Maximum number of commits to process
+    #[serde(default = "default_file_max_commits")]
+    pub max_commits: Option<usize>,
+    /// Minimum confidence score for creating memories (0.0-1.0)
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: Option<f64>,
+}
+
+fn default_file_max_commits() -> Option<usize> {
+    Some(100)
+}
+
+// ==========================================
+// Symbol Info Request (for MCP)
+// ==========================================
+
+/// Parameters for getting symbol information.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolInfoParams {
+    /// The file URI containing the symbol
+    pub uri: String,
+    /// Line number of the symbol (0-indexed)
+    pub line: u32,
+    /// Character position (0-indexed)
+    #[serde(default)]
+    pub character: Option<u32>,
+    /// Whether to include all references to the symbol
+    #[serde(default)]
+    pub include_references: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

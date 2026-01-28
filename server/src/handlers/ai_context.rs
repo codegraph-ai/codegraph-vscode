@@ -15,8 +15,15 @@ use tower_lsp::lsp_types::{Position, Range, Url};
 #[serde(rename_all = "camelCase")]
 pub struct AIContextParams {
     pub uri: String,
-    pub position: Position,
-    pub context_type: String, // "explain", "modify", "debug", "test"
+    /// Line number (0-indexed) - used for MCP compatibility
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// Position for LSP compatibility
+    #[serde(default)]
+    pub position: Option<Position>,
+    /// Context intent: "explain", "modify", "debug", "test"
+    #[serde(alias = "context_type")]
+    pub intent: Option<String>,
     pub max_tokens: Option<usize>,
 }
 
@@ -156,9 +163,21 @@ impl CodeGraphBackend {
         let graph = self.graph.read().await;
         let max_tokens = params.max_tokens.unwrap_or(4000);
 
+        // Get position from either line field or position field
+        let position = if let Some(line) = params.line {
+            Position { line, character: 0 }
+        } else if let Some(pos) = params.position {
+            pos
+        } else {
+            Position {
+                line: 0,
+                character: 0,
+            }
+        };
+
         // Find node at position, with fallback to nearest symbol
         let (node_id, used_fallback) = self
-            .find_nearest_node(&graph, &path, params.position)?
+            .find_nearest_node(&graph, &path, position)?
             .ok_or_else(|| {
                 tower_lsp::jsonrpc::Error::invalid_params(
                     "No symbols found in file. Try indexing the workspace first.",
@@ -204,7 +223,8 @@ impl CodeGraphBackend {
         budget.consume(estimate_tokens(&primary_code));
 
         // Get related symbols based on context type
-        let related_symbols = match params.context_type.as_str() {
+        let context_type = params.intent.as_deref().unwrap_or("explain");
+        let related_symbols = match context_type {
             "explain" => {
                 self.get_explanation_context(&graph, node_id, &mut budget)
                     .await

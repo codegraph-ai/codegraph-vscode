@@ -2,6 +2,12 @@
 //!
 //! This crate implements a Language Server Protocol (LSP) server for CodeGraph,
 //! providing cross-language code intelligence through graph-based analysis.
+//!
+//! ## Transports
+//!
+//! The server supports two transports:
+//! - **LSP** (default): Standard Language Server Protocol for IDE integration
+//! - **MCP** (`--mcp` flag): Model Context Protocol for AI client integration
 
 pub mod ai_query;
 pub mod backend;
@@ -11,6 +17,7 @@ pub mod error;
 pub mod git_mining;
 pub mod handlers;
 pub mod index;
+pub mod mcp;
 pub mod memory;
 pub mod parser_registry;
 pub mod watcher;

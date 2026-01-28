@@ -1,6 +1,7 @@
 //! Memory layer integration for CodeGraph LSP
 //!
 //! Provides persistent memory storage with semantic search for AI agent context.
+//! Uses on-demand database opening to avoid lock conflicts between processes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,11 +14,16 @@ pub use codegraph_memory::{
 
 /// Memory manager for the LSP server
 ///
-/// Wraps `MemoryStore` and provides async methods suitable for the LSP runtime.
-/// Handles initialization, storage, search, and invalidation of memory nodes.
+/// Opens the database on-demand for each operation and closes it immediately after.
+/// This allows multiple processes (VS Code extension + Claude MCP) to share the same
+/// database without lock conflicts.
 pub struct MemoryManager {
-    store: Arc<RwLock<Option<Arc<MemoryStore>>>>,
+    /// Path to workspace root (database lives at workspace/.codegraph/memory)
+    workspace_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Path to extension root (for model discovery at extension/models/model2vec)
     extension_path: Option<PathBuf>,
+    /// Cached vector engine (holds model, not DB - safe to keep)
+    engine: Arc<RwLock<Option<Arc<VectorEngine>>>>,
 }
 
 impl MemoryManager {
@@ -27,21 +33,19 @@ impl MemoryManager {
     /// * `extension_path` - Optional path to the VS Code extension root for model discovery
     pub fn new(extension_path: Option<PathBuf>) -> Self {
         Self {
-            store: Arc::new(RwLock::new(None)),
+            workspace_path: Arc::new(RwLock::new(None)),
             extension_path,
+            engine: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Initialize the memory store
+    /// Initialize the memory manager with workspace path
     ///
-    /// Called during LSP initialization with the workspace path.
-    /// Creates the data directory and initializes the vector engine and memory store.
+    /// Sets up the workspace path and initializes the vector engine.
+    /// Does NOT hold the database open - that happens on-demand per operation.
     ///
     /// # Arguments
     /// * `workspace_path` - Path to the workspace root
-    ///
-    /// # Errors
-    /// Returns error if directory creation, model loading, or store initialization fails.
     pub async fn initialize(&self, workspace_path: &Path) -> Result<(), MemoryError> {
         tracing::info!("[MemoryManager::initialize] Starting initialization");
         tracing::info!(
@@ -69,7 +73,7 @@ impl MemoryManager {
         })?;
         tracing::info!("[MemoryManager::initialize] Data directory created successfully");
 
-        // Initialize vector engine with bundled model
+        // Initialize vector engine with bundled model (cached, doesn't hold DB lock)
         tracing::info!("[MemoryManager::initialize] Initializing VectorEngine...");
         let engine = VectorEngine::new(self.extension_path.as_deref()).map_err(|e| {
             tracing::error!(
@@ -79,161 +83,117 @@ impl MemoryManager {
             e
         })?;
         tracing::info!("[MemoryManager::initialize] VectorEngine created successfully");
-        let engine = Arc::new(engine);
 
-        // Initialize memory store
-        tracing::info!("[MemoryManager::initialize] Creating MemoryStore...");
-        let store = MemoryStore::new(&data_dir, engine).map_err(|e| {
-            tracing::error!(
-                "[MemoryManager::initialize] MemoryStore creation failed: {:?}",
-                e
-            );
-            e
-        })?;
-        tracing::info!("[MemoryManager::initialize] MemoryStore created successfully");
-        let store = Arc::new(store);
+        // Store paths and engine for on-demand use
+        *self.workspace_path.write().await = Some(workspace_path.to_path_buf());
+        *self.engine.write().await = Some(Arc::new(engine));
 
         tracing::info!(
-            "[MemoryManager::initialize] Memory store fully initialized at {:?}",
-            data_dir
-        );
-
-        *self.store.write().await = Some(store);
-        tracing::info!(
-            "[MemoryManager::initialize] Store reference updated - initialization complete"
+            "[MemoryManager::initialize] Memory manager initialized (on-demand DB mode)"
         );
         Ok(())
     }
 
-    /// Check if memory store is initialized
+    /// Check if memory manager is initialized
     pub async fn is_initialized(&self) -> bool {
-        self.store.read().await.is_some()
+        self.workspace_path.read().await.is_some() && self.engine.read().await.is_some()
+    }
+
+    /// Open a fresh MemoryStore for an operation
+    ///
+    /// The store is dropped when it goes out of scope, releasing the DB lock.
+    async fn open_store(&self) -> Result<MemoryStore, MemoryError> {
+        let workspace = self
+            .workspace_path
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| MemoryError::Other("Memory manager not initialized".to_string()))?;
+
+        let engine = self
+            .engine
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| MemoryError::Other("Vector engine not initialized".to_string()))?;
+
+        let data_dir = workspace.join(".codegraph").join("memory");
+        MemoryStore::new(&data_dir, engine)
     }
 
     /// Store a memory node
     ///
-    /// Generates embeddings automatically if not present and persists to storage.
-    ///
-    /// # Arguments
-    /// * `node` - The memory node to store
-    ///
-    /// # Returns
-    /// The ID of the stored memory as a string
+    /// Opens DB, stores memory, closes DB.
     pub async fn put(&self, node: MemoryNode) -> Result<String, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         store.put(node).await
     }
 
     /// Get a memory by ID
     ///
-    /// # Arguments
-    /// * `id` - The memory ID as a string
-    ///
-    /// # Returns
-    /// The memory node if found, None otherwise
+    /// Opens DB, retrieves memory, closes DB.
     pub async fn get(&self, id: &str) -> Result<Option<MemoryNode>, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         Ok(store.get(id))
     }
 
     /// Search memories with hybrid search
     ///
-    /// Combines BM25 text search, semantic similarity, and graph proximity
-    /// for comprehensive memory retrieval.
-    ///
-    /// # Arguments
-    /// * `query` - The search query text
-    /// * `config` - Search configuration (limits, weights, filters)
-    /// * `code_context` - List of code node IDs for graph proximity scoring
-    ///
-    /// # Returns
-    /// Vector of search results sorted by relevance score
+    /// Opens DB, performs search, closes DB.
     pub async fn search(
         &self,
         query: &str,
         config: &SearchConfig,
         code_context: &[String],
     ) -> Result<Vec<SearchResult>, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
+        let store = Arc::new(store);
         let search = MemorySearch::new(store)?;
         search.search(query, code_context, config)
     }
 
     /// Find memories linked to a code node
-    ///
-    /// # Arguments
-    /// * `code_node_id` - The ID of the code graph node
-    ///
-    /// # Returns
-    /// Vector of memory nodes that reference the given code node
     pub async fn find_by_code_node(
         &self,
         code_node_id: &str,
     ) -> Result<Vec<MemoryNode>, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         Ok(store.find_by_code_node(code_node_id))
     }
 
     /// Find memories with a specific tag
-    ///
-    /// # Arguments
-    /// * `tag` - The tag to search for
-    ///
-    /// # Returns
-    /// Vector of memory nodes that have the specified tag
     pub async fn find_by_tag(&self, tag: &str) -> Result<Vec<MemoryNode>, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         Ok(store.find_by_tag(tag))
     }
 
     /// Invalidate a memory (mark as no longer current)
-    ///
-    /// The memory is not deleted but marked with an invalidation timestamp.
-    /// Invalidated memories are excluded from searches by default.
-    ///
-    /// # Arguments
-    /// * `id` - The memory ID to invalidate
-    /// * `reason` - Human-readable reason for invalidation
     pub async fn invalidate(&self, id: &str, reason: &str) -> Result<(), MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         store.invalidate(id, reason)
     }
 
     /// Delete a memory permanently
-    ///
-    /// # Arguments
-    /// * `id` - The memory ID to delete
-    ///
-    /// # Returns
-    /// true if the memory was deleted, false if it didn't exist
     pub async fn delete(&self, id: &str) -> Result<bool, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         store.delete(id)
     }
 
     /// Get all current (non-invalidated) memories
     pub async fn get_all_current(&self) -> Result<Vec<MemoryNode>, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         Ok(store.get_all_current())
     }
 
     /// Get store statistics
     pub async fn stats(&self) -> Result<serde_json::Value, MemoryError> {
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         Ok(store.stats())
     }
 
     /// Invalidate all memories linked to any of the given code node IDs
     ///
-    /// Used for auto-invalidation when code changes. Returns the count of
-    /// invalidated memories and their IDs for logging.
-    ///
-    /// # Arguments
-    /// * `node_ids` - List of code graph node IDs that have changed
-    /// * `reason` - Human-readable reason for invalidation
-    ///
-    /// # Returns
-    /// Vector of (memory_id, memory_title) pairs that were invalidated
+    /// Used for auto-invalidation when code changes.
     pub async fn invalidate_for_code_nodes(
         &self,
         node_ids: &[String],
@@ -243,7 +203,7 @@ impl MemoryManager {
             return Ok(vec![]);
         }
 
-        let store = self.get_store().await?;
+        let store = self.open_store().await?;
         let mut invalidated = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
@@ -275,15 +235,6 @@ impl MemoryManager {
     /// Create a memory builder for convenience
     pub fn builder() -> codegraph_memory::MemoryNodeBuilder {
         MemoryNode::builder()
-    }
-
-    /// Get the underlying store, returning error if not initialized
-    async fn get_store(&self) -> Result<Arc<MemoryStore>, MemoryError> {
-        self.store
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| MemoryError::Other("Memory store not initialized".to_string()))
     }
 }
 
