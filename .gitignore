@@ -47,3 +47,4 @@ coverage/
 # Webview build
 webview/dist/
 webview/node_modules/
+.fastembed_cache/
