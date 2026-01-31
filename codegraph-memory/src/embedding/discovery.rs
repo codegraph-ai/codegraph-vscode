@@ -6,11 +6,22 @@ use crate::error::{MemoryError, Result};
 use std::path::{Path, PathBuf};
 
 /// Find Model2Vec model path with priority:
-/// 1. Bundled location (relative to extension)
-/// 2. Environment variable MODEL2VEC_PATH
-/// 3. User home directory (~/.codegraph/models/model2vec)
+/// 1. CODEGRAPH_MODELS_PATH environment variable (npm package)
+/// 2. Bundled location (relative to extension)
+/// 3. Environment variable MODEL2VEC_PATH
+/// 4. User home directory (~/.codegraph/models/model2vec)
 pub fn find_model2vec_path(extension_path: Option<&Path>) -> Result<PathBuf> {
-    // Priority 1: Bundled with extension
+    // Priority 1: CODEGRAPH_MODELS_PATH (set by npm package wrapper)
+    if let Ok(models_path) = std::env::var("CODEGRAPH_MODELS_PATH") {
+        let path = PathBuf::from(&models_path);
+        if path.join("model.safetensors").exists() {
+            log::info!("Using CODEGRAPH_MODELS_PATH: {}", path.display());
+            return Ok(path);
+        }
+        log::warn!("CODEGRAPH_MODELS_PATH set but model not found: {}", models_path);
+    }
+
+    // Priority 2: Bundled with extension
     if let Some(ext_path) = extension_path {
         let bundled = ext_path.join("models").join("model2vec");
         if bundled.join("model.safetensors").exists() {
@@ -19,7 +30,7 @@ pub fn find_model2vec_path(extension_path: Option<&Path>) -> Result<PathBuf> {
         }
     }
 
-    // Priority 2: Environment variable
+    // Priority 3: Environment variable MODEL2VEC_PATH
     if let Ok(model_path) = std::env::var("MODEL2VEC_PATH") {
         let path = PathBuf::from(&model_path);
         if path.join("model.safetensors").exists() {
@@ -29,7 +40,7 @@ pub fn find_model2vec_path(extension_path: Option<&Path>) -> Result<PathBuf> {
         log::warn!("MODEL2VEC_PATH set but model not found: {}", model_path);
     }
 
-    // Priority 3: User home directory
+    // Priority 4: User home directory
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         let user_path = PathBuf::from(home)
             .join(".codegraph")
@@ -43,6 +54,7 @@ pub fn find_model2vec_path(extension_path: Option<&Path>) -> Result<PathBuf> {
 
     Err(MemoryError::model(
         "Model2Vec model not found. Checked:\n\
+         - CODEGRAPH_MODELS_PATH environment variable\n\
          - Bundled location (extension/models/model2vec)\n\
          - MODEL2VEC_PATH environment variable\n\
          - ~/.codegraph/models/model2vec\n\

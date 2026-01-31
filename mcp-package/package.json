@@ -1,0 +1,42 @@
+{
+  "name": "@memoryx/codegraph-mcp",
+  "version": "0.5.0",
+  "description": "CodeGraph MCP server - Cross-language code intelligence for AI assistants",
+  "author": "aStudioPlus",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codegraph-ai/codegraph-vscode"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-intelligence",
+    "ai",
+    "claude",
+    "cursor"
+  ],
+  "bin": {
+    "codegraph-mcp": "./bin/codegraph-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "models/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "scripts": {
+    "postinstall": "node bin/postinstall.js"
+  }
+}

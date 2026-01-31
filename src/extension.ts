@@ -30,7 +30,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Server options
     const serverOptions: ServerOptions = {
         command: serverModule,
-        args: ['--stdio'],
+        args: [],
         transport: TransportKind.stdio,
     };
 

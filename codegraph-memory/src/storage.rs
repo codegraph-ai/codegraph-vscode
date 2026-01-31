@@ -57,6 +57,9 @@ impl MemoryStore {
         opts.set_max_background_jobs(2);
         opts.set_bytes_per_sync(1048576); // 1MB
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        // Ensure WAL is synced for durability across on-demand open/close cycles
+        opts.set_wal_dir(path);
+        opts.set_manual_wal_flush(false);
 
         let db = DB::open(&opts, path)?;
 
@@ -79,12 +82,16 @@ impl MemoryStore {
     fn load_cache(&self) -> Result<()> {
         let mut count = 0;
         let mut skipped = 0;
+        let mut total_keys = 0;
         let mut points = Vec::new();
         let iter = self.db.iterator(IteratorMode::Start);
+        log::debug!("load_cache: starting iteration over RocksDB keys");
 
         for item in iter {
             let (key, value) = item?;
             let key_str = String::from_utf8_lossy(&key);
+            total_keys += 1;
+            log::debug!("load_cache: found key '{}' ({} bytes)", key_str, value.len());
 
             if key_str.starts_with("mem:") {
                 let id = key_str.strip_prefix("mem:").unwrap().to_string();
@@ -116,14 +123,14 @@ impl MemoryStore {
             }
         }
 
-        if count > 0 {
-            log::info!("Loaded {} memories from disk", count);
-            if skipped > 0 {
-                log::warn!("Skipped {} memories due to deserialization errors", skipped);
-            }
-            if !points.is_empty() {
-                self.rebuild_hnsw_index(points)?;
-            }
+        log::info!(
+            "load_cache complete: {} total keys, {} memories loaded, {} skipped",
+            total_keys,
+            count,
+            skipped
+        );
+        if !points.is_empty() {
+            self.rebuild_hnsw_index(points)?;
         }
 
         Ok(())
@@ -162,13 +169,54 @@ impl MemoryStore {
             .put(mem_key.as_bytes(), bincode::serialize(&node)?)?;
         self.memory_cache.insert(id.clone(), node);
 
+        // Flush memtable to SST files and sync WAL for immediate visibility and durability
         self.db.flush()?;
+        self.db.flush_wal(true)?;
         Ok(id)
     }
 
     /// Get a memory by ID
     pub fn get(&self, id: &str) -> Option<MemoryNode> {
-        self.memory_cache.get(id).map(|e| e.clone())
+        eprintln!("[MemoryStore::get] Looking for id: {}", id);
+        
+        // First check cache
+        if let Some(cached) = self.memory_cache.get(id) {
+            eprintln!("[MemoryStore::get] Found in cache");
+            return Some(cached.clone());
+        }
+
+        eprintln!("[MemoryStore::get] Not in cache, checking DB...");
+        // If not in cache, try to load from DB directly
+        let mem_key = format!("mem:{}", id);
+        match self.db.get(mem_key.as_bytes()) {
+            Ok(Some(value)) => {
+                eprintln!("[MemoryStore::get] Found in DB, {} bytes", value.len());
+                match bincode::deserialize::<MemoryNode>(&value) {
+                    Ok(memory) => {
+                        eprintln!("[MemoryStore::get] Deserialized successfully, is_current: {}", memory.temporal.is_current());
+                        if memory.temporal.is_current() {
+                            // Cache it for future use
+                            self.memory_cache.insert(id.to_string(), memory.clone());
+                            return Some(memory);
+                        } else {
+                            eprintln!("[MemoryStore::get] Memory is invalidated");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[MemoryStore::get] Deserialization error: {:?}", e);
+                    }
+                }
+            }
+            Ok(None) => {
+                eprintln!("[MemoryStore::get] Key not found in DB");
+            }
+            Err(e) => {
+                eprintln!("[MemoryStore::get] DB get error: {:?}", e);
+            }
+        }
+
+        eprintln!("[MemoryStore::get] Returning None");
+        None
     }
 
     /// Find memories linked to a specific code node
@@ -202,7 +250,9 @@ impl MemoryStore {
             let mem_key = format!("mem:{}", id);
             self.db
                 .put(mem_key.as_bytes(), bincode::serialize(&*entry)?)?;
+            // Flush memtable to SST files and sync WAL for immediate visibility and durability
             self.db.flush()?;
+            self.db.flush_wal(true)?;
         }
         Ok(())
     }
@@ -216,7 +266,9 @@ impl MemoryStore {
         let vec_key = format!("vec:{}", id);
         self.db.delete(mem_key.as_bytes())?;
         self.db.delete(vec_key.as_bytes())?;
+        // Flush memtable to SST files and sync WAL for immediate visibility and durability
         self.db.flush()?;
+        self.db.flush_wal(true)?;
 
         // Rebuild HNSW without this point
         let mut points = self.hnsw_points.write();
@@ -230,11 +282,26 @@ impl MemoryStore {
 
     /// Get all current (non-invalidated) memories
     pub fn get_all_current(&self) -> Vec<MemoryNode> {
-        self.memory_cache
-            .iter()
-            .filter(|e| e.value().temporal.is_current())
-            .map(|e| e.value().clone())
-            .collect()
+        let mut memories = Vec::new();
+        
+        // Iterate over all keys in RocksDB
+        let iter = self.db.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            if let Ok((key, value)) = item {
+                // Only process memory keys (not vector keys)
+                if let Ok(key_str) = std::str::from_utf8(&key) {
+                    if key_str.starts_with("mem:") {
+                        if let Ok(memory) = bincode::deserialize::<MemoryNode>(&value) {
+                            if memory.temporal.is_current() {
+                                memories.push(memory);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        memories
     }
 
     /// Semantic search using HNSW
@@ -307,27 +374,42 @@ impl MemoryStore {
 
         let mut by_kind: HashMap<String, i32> = HashMap::new();
         let mut by_tag: HashMap<String, i32> = HashMap::new();
+        let mut current_count = 0;
+        let mut invalidated_count = 0;
 
-        // Use the memory cache (which only contains current memories)
-        for entry in self.memory_cache.iter() {
-            let memory = entry.value();
+        // Iterate over all memories in RocksDB
+        let iter = self.db.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            if let Ok((key, value)) = item {
+                if let Ok(key_str) = std::str::from_utf8(&key) {
+                    if key_str.starts_with("mem:") {
+                        if let Ok(memory) = bincode::deserialize::<MemoryNode>(&value) {
+                            if memory.temporal.is_current() {
+                                current_count += 1;
+                                
+                                // Count by kind
+                                let kind_str = format!("{:?}", memory.kind).to_lowercase();
+                                *by_kind.entry(kind_str).or_insert(0) += 1;
 
-            // Count by kind
-            let kind_str = format!("{:?}", memory.kind).to_lowercase();
-            *by_kind.entry(kind_str).or_insert(0) += 1;
-
-            // Count by tag
-            for tag in &memory.tags {
-                *by_tag.entry(tag.clone()).or_insert(0) += 1;
+                                // Count by tag
+                                for tag in &memory.tags {
+                                    *by_tag.entry(tag.clone()).or_insert(0) += 1;
+                                }
+                            } else {
+                                invalidated_count += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        let current = self.memory_cache.len();
+        let total = current_count + invalidated_count;
 
         serde_json::json!({
-            "totalMemories": current,
-            "currentMemories": current,
-            "invalidatedMemories": 0,
+            "totalMemories": total,
+            "currentMemories": current_count,
+            "invalidatedMemories": invalidated_count,
             "byKind": by_kind,
             "byTag": by_tag,
         })

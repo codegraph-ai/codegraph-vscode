@@ -431,9 +431,10 @@ export function registerMemoryTreeView(
         })
     );
 
-    // Register memory stats command
-    context.subscriptions.push(
-        vscode.commands.registerCommand('codegraph.memoryStats', async () => {
+    // Register memory stats command (wrapped in try-catch for dev reloads)
+    try {
+        context.subscriptions.push(
+            vscode.commands.registerCommand('codegraph.memoryStats', async () => {
             try {
                 const stats = await client.sendRequest<MemoryStatsResponse>(
                     'workspace/executeCommand',
@@ -459,6 +460,10 @@ export function registerMemoryTreeView(
             }
         })
     );
+    } catch {
+        // Command may already be registered from previous activation
+        console.log('[CodeGraph] memoryStats command already registered');
+    }
 
     // Auto-refresh when files change
     context.subscriptions.push(

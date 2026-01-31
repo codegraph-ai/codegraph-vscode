@@ -1593,7 +1593,7 @@
         ]
     },
     "scripts": {
-        "vscode:prepublish": "npm run esbuild-base -- --production && npm run build-server",
+        "vscode:prepublish": "npm run esbuild-base -- --production && ./scripts/prepare-binaries.sh",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "esbuild-base": "node esbuild.js",

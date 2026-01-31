@@ -2,6 +2,47 @@
 
 All notable changes to the CodeGraph extension will be documented in this file.
 
+## [0.5.0] - 2026-01-29
+
+### Added
+
+- **MCP Server Transport**: CodeGraph LSP now supports Model Context Protocol (MCP) as a second transport
+  - Run with `codegraph-lsp --mcp` for JSON-RPC 2.0 over stdio
+  - Compatible with Claude Desktop, Cursor, Claude Code CLI, and other MCP clients
+  - All 26 tools available via MCP including code analysis, navigation, search, and memory
+- **Standalone npm Package**: Distribute MCP server independently from VS Code extension
+  - Install globally: `npm install -g @memoryx/codegraph-mcp`
+  - Run: `codegraph-mcp` (automatically passes `--mcp` flag)
+- **Memory System Tools** (9 new tools):
+  - `codegraph_memory_store` - Persist debugging insights, architectural decisions, conventions
+  - `codegraph_memory_search` - Hybrid BM25 + semantic search across stored memories
+  - `codegraph_memory_get` - Retrieve full memory details by ID
+  - `codegraph_memory_context` - Find memories relevant to current code location
+  - `codegraph_memory_list` - List all memories with filtering
+  - `codegraph_memory_invalidate` - Mark outdated memories without deleting
+  - `codegraph_memory_stats` - Get memory system statistics
+  - `codegraph_mine_git_history` - Create memories from git commit patterns
+  - `codegraph_mine_git_file` - Mine history for specific files
+
+### Changed
+
+- On-demand database opening to avoid RocksDB lock conflicts when running multiple instances
+- Model path discovery now supports `CODEGRAPH_MODELS_PATH` environment variable for npm package
+
+### Fixed
+
+- Extension file type matching (`.py` vs `py` format)
+- Memory initialization with proper extension path resolution
+
+## [0.4.0] - 2026-01-22
+
+### Added
+
+- **Episodic Memory System**: Graph-based memory with semantic search
+  - Model2Vec embeddings (256d, ~8000 samples/sec)
+  - RocksDB-backed persistent storage
+  - Temporal tracking with utility propagation
+
 ## [0.3.1] - 2026-01-01
 
 ### Fixed

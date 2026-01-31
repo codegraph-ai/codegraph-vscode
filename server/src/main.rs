@@ -18,6 +18,10 @@ struct Args {
     #[arg(long)]
     mcp: bool,
 
+    /// Run in LSP mode over stdio (default, kept for compatibility)
+    #[arg(long)]
+    stdio: bool,
+
     /// Workspace directory to index (required for MCP mode)
     #[arg(long, short)]
     workspace: Option<PathBuf>,
