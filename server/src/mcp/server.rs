@@ -567,31 +567,78 @@ impl McpServer {
                     .map(|v| v as u32)
                     .unwrap_or(1);
 
-                let start_node = if let Some(id_str) = node_id {
-                    parse_node_id(id_str)
+                // Use fallback for uri+line, exact match for node_id
+                let (start_node, used_fallback) = if let Some(id_str) = node_id {
+                    (parse_node_id(id_str), false)
                 } else if let (Some(u), Some(l)) = (uri, line) {
-                    self.find_node_at_location(u, l).await
+                    match self.find_nearest_node_with_fallback(u, l).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 if let Some(start) = start_node {
                     let result = self.backend.query_engine.get_callers(start, depth).await;
+
+                    // Get symbol name for fallback message
+                    let symbol_name = {
+                        let graph = self.backend.graph.read().await;
+                        graph
+                            .get_node(start)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    };
+
                     if result.is_empty() {
                         // Return diagnostic info when no callers found
                         let graph = self.backend.graph.read().await;
                         let edge_count = graph.edge_count();
-                        Ok(serde_json::json!({
+                        let mut response = serde_json::json!({
                             "callers": [],
                             "diagnostic": {
                                 "node_found": true,
                                 "node_id": start,
+                                "symbol_name": symbol_name,
                                 "total_edges_in_graph": edge_count,
                                 "note": "No callers found. This may indicate: (1) the function is not called anywhere, (2) the language parser doesn't extract call relationships, or (3) indexes need to be rebuilt."
                             }
-                        }))
+                        });
+                        // Add fallback metadata if used
+                        if used_fallback {
+                            if let Some(obj) = response.as_object_mut() {
+                                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                                obj.insert(
+                                    "fallback_message".to_string(),
+                                    serde_json::json!(format!(
+                                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                        line.unwrap_or(0),
+                                        symbol_name
+                                    )),
+                                );
+                            }
+                        }
+                        Ok(response)
                     } else {
-                        Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                        let response = serde_json::to_value(&result).map_err(|e| e.to_string())?;
+                        // Wrap in object with callers key and add fallback metadata
+                        let mut obj = serde_json::Map::new();
+                        obj.insert("callers".to_string(), response);
+                        obj.insert("symbol_name".to_string(), serde_json::json!(symbol_name));
+                        if used_fallback {
+                            obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                            obj.insert(
+                                "fallback_message".to_string(),
+                                serde_json::json!(format!(
+                                    "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                    line.unwrap_or(0),
+                                    symbol_name
+                                )),
+                            );
+                        }
+                        Ok(serde_json::Value::Object(obj))
                     }
                 } else {
                     Ok(serde_json::json!({
@@ -614,31 +661,80 @@ impl McpServer {
                     .map(|v| v as u32)
                     .unwrap_or(1);
 
-                let start_node = if let Some(id_str) = node_id {
-                    parse_node_id(id_str)
+                // Use fallback for uri+line, exact match for node_id
+                let (start_node, used_fallback) = if let Some(id_str) = node_id {
+                    (parse_node_id(id_str), false)
                 } else if let (Some(u), Some(l)) = (uri, line) {
-                    self.find_node_at_location(u, l).await
+                    match self.find_nearest_node_with_fallback(u, l).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 if let Some(start) = start_node {
                     let result = self.backend.query_engine.get_callees(start, depth).await;
+
+                    // Get symbol name for fallback message
+                    let symbol_name = {
+                        let graph = self.backend.graph.read().await;
+                        graph
+                            .get_node(start)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    };
+
                     if result.is_empty() {
                         // Return diagnostic info when no callees found
                         let graph = self.backend.graph.read().await;
                         let edge_count = graph.edge_count();
-                        Ok(serde_json::json!({
+                        let mut response = serde_json::json!({
                             "callees": [],
                             "diagnostic": {
                                 "node_found": true,
                                 "node_id": start,
+                                "symbol_name": symbol_name,
                                 "total_edges_in_graph": edge_count,
                                 "note": "No callees found. This may indicate: (1) the function doesn't call other functions, (2) the language parser doesn't extract call relationships, or (3) indexes need to be rebuilt."
                             }
-                        }))
+                        });
+                        // Add fallback metadata if used
+                        if used_fallback {
+                            if let Some(obj) = response.as_object_mut() {
+                                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                                obj.insert(
+                                    "fallback_message".to_string(),
+                                    serde_json::json!(format!(
+                                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                        line.unwrap_or(0),
+                                        symbol_name
+                                    )),
+                                );
+                            }
+                        }
+                        Ok(response)
                     } else {
-                        Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                        // Wrap in object with callees key and add fallback metadata
+                        let mut obj = serde_json::Map::new();
+                        obj.insert(
+                            "callees".to_string(),
+                            serde_json::to_value(&result).map_err(|e| e.to_string())?,
+                        );
+                        obj.insert("symbol_name".to_string(), serde_json::json!(symbol_name));
+                        if used_fallback {
+                            obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                            obj.insert(
+                                "fallback_message".to_string(),
+                                serde_json::json!(format!(
+                                    "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                    line.unwrap_or(0),
+                                    symbol_name
+                                )),
+                            );
+                        }
+                        Ok(serde_json::Value::Object(obj))
                     }
                 } else {
                     Ok(serde_json::json!({
@@ -714,19 +810,59 @@ impl McpServer {
                     .get("nodeId")
                     .or_else(|| args.get("node_id"))
                     .and_then(|v| v.as_str());
+                let include_refs = args
+                    .get("includeReferences")
+                    .or_else(|| args.get("include_references"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
-                let target_node = if let Some(id_str) = node_id {
-                    parse_node_id(id_str)
+                // Use fallback for uri+line, exact match for node_id
+                let (target_node, used_fallback) = if let Some(id_str) = node_id {
+                    (parse_node_id(id_str), false)
                 } else if let (Some(u), Some(l)) = (uri, line) {
-                    self.find_node_at_location(u, l).await
+                    match self.find_nearest_node_with_fallback(u, l).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 if let Some(node_id) = target_node {
                     let result = self.backend.query_engine.get_symbol_info(node_id).await;
                     match result {
-                        Some(info) => Ok(serde_json::to_value(info).map_err(|e| e.to_string())?),
+                        Some(info) => {
+                            let mut response =
+                                serde_json::to_value(&info).map_err(|e| e.to_string())?;
+                            // Add fallback metadata if used
+                            if used_fallback {
+                                if let Some(obj) = response.as_object_mut() {
+                                    obj.insert(
+                                        "used_fallback".to_string(),
+                                        serde_json::json!(true),
+                                    );
+                                    obj.insert(
+                                        "fallback_message".to_string(),
+                                        serde_json::json!(format!(
+                                            "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                            line.unwrap_or(0),
+                                            info.symbol.name
+                                        )),
+                                    );
+                                }
+                            }
+                            // Optionally include references (callers are already in DetailedSymbolInfo)
+                            if include_refs && info.callers.is_empty() {
+                                // Only note if explicitly requested but none found
+                                if let Some(obj) = response.as_object_mut() {
+                                    obj.insert(
+                                        "references_note".to_string(),
+                                        serde_json::json!("No references found. Check 'callers' field for call sites."),
+                                    );
+                                }
+                            }
+                            Ok(response)
+                        }
                         None => Ok(serde_json::json!({
                             "error": "Symbol not found"
                         })),
@@ -761,22 +897,45 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
 
-                let target_node = if let Some(id_str) = node_id {
-                    parse_node_id(id_str)
+                // Use fallback for uri+line, exact match for node_id
+                let (target_node, used_fallback) = if let Some(id_str) = node_id {
+                    (parse_node_id(id_str), false)
                 } else if let (Some(u), Some(l)) = (uri, line) {
-                    self.find_node_at_location(u, l).await
+                    match self.find_nearest_node_with_fallback(u, l).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 if let Some(node_id) = target_node {
                     let mut result = serde_json::Map::new();
 
                     // Get basic symbol info
-                    if let Some(info) = self.backend.query_engine.get_symbol_info(node_id).await {
+                    let symbol_name = if let Some(info) =
+                        self.backend.query_engine.get_symbol_info(node_id).await
+                    {
+                        let name = info.symbol.name.clone();
                         result.insert(
                             "symbol".to_string(),
                             serde_json::to_value(&info).unwrap_or(Value::Null),
+                        );
+                        name
+                    } else {
+                        String::new()
+                    };
+
+                    // Add fallback metadata if used
+                    if used_fallback {
+                        result.insert("used_fallback".to_string(), serde_json::json!(true));
+                        result.insert(
+                            "fallback_message".to_string(),
+                            serde_json::json!(format!(
+                                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                line.unwrap_or(0),
+                                symbol_name
+                            )),
                         );
                     }
 
@@ -1598,10 +1757,9 @@ impl McpServer {
         depth: u32,
         direction: &str,
     ) -> serde_json::Value {
-        let start_node = self.find_node_at_location(uri, line).await;
-
-        let start = match start_node {
-            Some(id) => id,
+        // Use fallback for better symbol discovery
+        let (start, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
+            Some((id, fallback)) => (id, fallback),
             None => {
                 return serde_json::json!({
                     "nodes": [],
@@ -1609,6 +1767,16 @@ impl McpServer {
                     "message": "Could not find symbol at location"
                 })
             }
+        };
+
+        // Get symbol name for fallback message
+        let symbol_name = {
+            let graph = self.backend.graph.read().await;
+            graph
+                .get_node(start)
+                .ok()
+                .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                .unwrap_or_default()
         };
 
         let mut nodes = Vec::new();
@@ -1681,12 +1849,13 @@ impl McpServer {
             }
         }
 
-        // Return with diagnostic if no call relationships found
-        if nodes.is_empty() {
+        // Build base response
+        let mut response = if nodes.is_empty() {
             let graph = self.backend.graph.read().await;
             let edge_count = graph.edge_count();
             serde_json::json!({
                 "root": start.to_string(),
+                "symbol_name": symbol_name,
                 "nodes": nodes,
                 "edges": edges,
                 "diagnostic": {
@@ -1698,18 +1867,34 @@ impl McpServer {
         } else {
             serde_json::json!({
                 "root": start.to_string(),
+                "symbol_name": symbol_name,
                 "nodes": nodes,
                 "edges": edges
             })
+        };
+
+        // Add fallback metadata if used
+        if used_fallback {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                obj.insert(
+                    "fallback_message".to_string(),
+                    serde_json::json!(format!(
+                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                        line, symbol_name
+                    )),
+                );
+            }
         }
+
+        response
     }
 
     /// Analyze impact of changes to a symbol
     async fn analyze_impact(&self, uri: &str, line: u32, change_type: &str) -> serde_json::Value {
-        let start_node = self.find_node_at_location(uri, line).await;
-
-        let start = match start_node {
-            Some(id) => id,
+        // Use fallback for better symbol discovery
+        let (start, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
+            Some((id, fallback)) => (id, fallback),
             None => {
                 return serde_json::json!({
                     "impacted": [],
@@ -1717,6 +1902,16 @@ impl McpServer {
                     "message": "Could not find symbol at location"
                 })
             }
+        };
+
+        // Get symbol name for fallback message
+        let symbol_name = {
+            let graph = self.backend.graph.read().await;
+            graph
+                .get_node(start)
+                .ok()
+                .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                .unwrap_or_default()
         };
 
         // Get all callers (things that depend on this)
@@ -1744,14 +1939,31 @@ impl McpServer {
             _ => "low",
         };
 
-        serde_json::json!({
+        let mut response = serde_json::json!({
             "symbol_id": start.to_string(),
+            "symbol_name": symbol_name,
             "change_type": change_type,
             "impacted": impacted,
             "total_impacted": callers.len(),
             "direct_impacted": callers.iter().filter(|c| c.depth == 1).count(),
             "risk_level": risk_level,
-        })
+        });
+
+        // Add fallback metadata if used
+        if used_fallback {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                obj.insert(
+                    "fallback_message".to_string(),
+                    serde_json::json!(format!(
+                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                        line, symbol_name
+                    )),
+                );
+            }
+        }
+
+        response
     }
 
     /// Analyze coupling for a file
