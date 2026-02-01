@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -27,11 +28,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Determine server binary path
     const serverModule = getServerPath(context);
 
-    // Server options
+    // Log server path for debugging
+    console.log(`[CodeGraph] Platform: ${os.platform()}`);
+    console.log(`[CodeGraph] Server binary path: ${serverModule}`);
+
+    // Server options - add Windows-specific spawn options
+    const isWindows = os.platform() === 'win32';
     const serverOptions: ServerOptions = {
         command: serverModule,
         args: [],
         transport: TransportKind.stdio,
+        options: {
+            // On Windows, we need shell: true to properly spawn .exe files
+            shell: isWindows,
+            // Ensure proper working directory
+            cwd: context.extensionPath,
+        },
     };
 
     // Client options
