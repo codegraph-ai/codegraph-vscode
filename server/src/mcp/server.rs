@@ -768,12 +768,16 @@ impl McpServer {
                     .map(|v| v as usize)
                     .unwrap_or(100);
 
-                let start_node = if let Some(id_str) = node_id {
-                    parse_node_id(id_str)
+                // Use fallback for uri+line, exact match for node_id
+                let (start_node, used_fallback) = if let Some(id_str) = node_id {
+                    (parse_node_id(id_str), false)
                 } else if let (Some(u), Some(l)) = (uri, line) {
-                    self.find_node_at_location(u, l).await
+                    match self.find_nearest_node_with_fallback(u, l).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 if let Some(start) = start_node {
@@ -793,7 +797,34 @@ impl McpServer {
                         .query_engine
                         .traverse_graph(start, direction, max_depth, &filter)
                         .await;
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+
+                    // Add fallback metadata if used
+                    let mut response = serde_json::to_value(result).map_err(|e| e.to_string())?;
+                    if used_fallback {
+                        if let Some(obj) = response.as_object_mut() {
+                            // Get symbol name for fallback message
+                            let symbol_name = {
+                                let graph = self.backend.graph.read().await;
+                                graph
+                                    .get_node(start)
+                                    .ok()
+                                    .and_then(|n| {
+                                        n.properties.get_string("name").map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_default()
+                            };
+                            obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                            obj.insert(
+                                "fallback_message".to_string(),
+                                serde_json::json!(format!(
+                                    "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                    line.unwrap_or(0),
+                                    symbol_name
+                                )),
+                            );
+                        }
+                    }
+                    Ok(response)
                 } else {
                     Ok(serde_json::json!({
                         "nodes": [],
@@ -1454,75 +1485,6 @@ impl McpServer {
         }
     }
 
-    /// Helper to find a node at a given location with proximity-based fallback
-    ///
-    /// Strategy:
-    /// 1. First try exact match (line within symbol's [start_line, end_line] range)
-    /// 2. If no exact match, find the closest symbol within +/- 2 lines
-    async fn find_node_at_location(&self, uri: &str, line: u32) -> Option<codegraph::NodeId> {
-        let url = tower_lsp::lsp_types::Url::parse(uri).ok()?;
-        let path = url.to_file_path().ok()?;
-        let path_str = path.to_string_lossy().to_string();
-
-        let graph = self.backend.graph.read().await;
-        let nodes = graph.query().property("path", path_str).execute().ok()?;
-
-        // Strategy 1: Exact match (line within symbol range)
-        for node_id in &nodes {
-            if let Ok(node) = graph.get_node(*node_id) {
-                let start_line = node
-                    .properties
-                    .get_int("line_start")
-                    .or_else(|| node.properties.get_int("start_line"))
-                    .unwrap_or(0) as u32;
-                let end_line = node
-                    .properties
-                    .get_int("line_end")
-                    .or_else(|| node.properties.get_int("end_line"))
-                    .unwrap_or(start_line as i64) as u32;
-
-                if line >= start_line && line <= end_line {
-                    return Some(*node_id);
-                }
-            }
-        }
-
-        // Strategy 2: Proximity search (+/- 2 lines)
-        const PROXIMITY: u32 = 2;
-        let mut best_match: Option<(codegraph::NodeId, u32)> = None; // (node_id, distance)
-
-        for node_id in &nodes {
-            if let Ok(node) = graph.get_node(*node_id) {
-                let start_line = node
-                    .properties
-                    .get_int("line_start")
-                    .or_else(|| node.properties.get_int("start_line"))
-                    .unwrap_or(0) as u32;
-                let end_line = node
-                    .properties
-                    .get_int("line_end")
-                    .or_else(|| node.properties.get_int("end_line"))
-                    .unwrap_or(start_line as i64) as u32;
-
-                // Calculate distance to symbol
-                let distance = if line < start_line {
-                    start_line - line
-                } else {
-                    line.saturating_sub(end_line)
-                };
-
-                // Only consider if within proximity threshold
-                if distance <= PROXIMITY
-                    && (best_match.is_none() || distance < best_match.unwrap().1)
-                {
-                    best_match = Some((*node_id, distance));
-                }
-            }
-        }
-
-        best_match.map(|(id, _)| id)
-    }
-
     /// Find a node at location with broader fallback, returning whether fallback was used.
     ///
     /// Strategy:
@@ -2127,16 +2089,25 @@ impl McpServer {
 
     /// Find related tests for a symbol
     async fn find_related_tests(&self, uri: &str, line: u32, limit: usize) -> serde_json::Value {
-        let node_id = self.find_node_at_location(uri, line).await;
-
-        let target = match node_id {
-            Some(id) => id,
+        // Use fallback for better symbol discovery
+        let (target, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
+            Some((id, fallback)) => (id, fallback),
             None => {
                 return serde_json::json!({
                     "tests": [],
                     "message": "Could not find symbol at location"
                 })
             }
+        };
+
+        // Get symbol name for fallback message
+        let symbol_name = {
+            let graph = self.backend.graph.read().await;
+            graph
+                .get_node(target)
+                .ok()
+                .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                .unwrap_or_default()
         };
 
         // Find test entry points that call this symbol
@@ -2164,11 +2135,28 @@ impl McpServer {
             }
         }
 
-        serde_json::json!({
+        let mut response = serde_json::json!({
             "target_id": target.to_string(),
+            "symbol_name": symbol_name,
             "tests": related_tests,
             "total": related_tests.len(),
-        })
+        });
+
+        // Add fallback metadata if used
+        if used_fallback {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                obj.insert(
+                    "fallback_message".to_string(),
+                    serde_json::json!(format!(
+                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                        line, symbol_name
+                    )),
+                );
+            }
+        }
+
+        response
     }
 
     /// Analyze complexity for a file
