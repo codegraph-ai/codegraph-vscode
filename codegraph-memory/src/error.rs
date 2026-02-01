@@ -13,6 +13,14 @@ pub enum MemoryError {
     #[error("Serialization error: {0}")]
     Bincode(#[from] bincode::Error),
 
+    /// MessagePack serialization error
+    #[error("MessagePack error: {0}")]
+    MessagePack(#[from] rmp_serde::encode::Error),
+
+    /// MessagePack deserialization error
+    #[error("MessagePack decode error: {0}")]
+    MessagePackDecode(#[from] rmp_serde::decode::Error),
+
     /// JSON serialization error
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

@@ -1,6 +1,7 @@
 .claude/
 .codemender/
 .codegraph/
+.smelt/
 .vscode/
 models/
 # Build outputs

@@ -63,6 +63,16 @@ impl MemoryStore {
 
         let db = DB::open(&opts, path)?;
 
+        // Set version key to current version to prevent migration on new data
+        // Migration code expects v1 = JSON, but we now use JSON in v3+ too
+        const DB_VERSION_KEY: &[u8] = b"_db_version";
+        const CURRENT_VERSION: u32 = 3; // v3 = JSON format (same as v1 but with version key)
+        if db.get(DB_VERSION_KEY)?.is_none() {
+            db.put(DB_VERSION_KEY, CURRENT_VERSION.to_le_bytes())?;
+            db.flush()?;
+            log::info!("Initialized database with version {}", CURRENT_VERSION);
+        }
+
         log::info!("MemoryStore opened at: {}", path.display());
 
         let store = Self {
@@ -91,13 +101,17 @@ impl MemoryStore {
             let (key, value) = item?;
             let key_str = String::from_utf8_lossy(&key);
             total_keys += 1;
-            log::debug!("load_cache: found key '{}' ({} bytes)", key_str, value.len());
+            log::debug!(
+                "load_cache: found key '{}' ({} bytes)",
+                key_str,
+                value.len()
+            );
 
             if key_str.starts_with("mem:") {
                 let id = key_str.strip_prefix("mem:").unwrap().to_string();
 
                 // Gracefully handle deserialization errors
-                match bincode::deserialize::<MemoryNode>(&value) {
+                match serde_json::from_slice::<MemoryNode>(&value) {
                     Ok(memory) => {
                         if memory.temporal.is_current() {
                             self.memory_cache.insert(id.clone(), memory);
@@ -163,10 +177,10 @@ impl MemoryStore {
             self.rebuild_hnsw_index(all_points)?;
         }
 
-        // Persist memory
+        // Persist memory using JSON (human-readable and schema-flexible)
         let mem_key = format!("mem:{}", id);
         self.db
-            .put(mem_key.as_bytes(), bincode::serialize(&node)?)?;
+            .put(mem_key.as_bytes(), serde_json::to_vec(&node)?)?;
         self.memory_cache.insert(id.clone(), node);
 
         // Flush memtable to SST files and sync WAL for immediate visibility and durability
@@ -178,7 +192,7 @@ impl MemoryStore {
     /// Get a memory by ID
     pub fn get(&self, id: &str) -> Option<MemoryNode> {
         eprintln!("[MemoryStore::get] Looking for id: {}", id);
-        
+
         // First check cache
         if let Some(cached) = self.memory_cache.get(id) {
             eprintln!("[MemoryStore::get] Found in cache");
@@ -191,9 +205,12 @@ impl MemoryStore {
         match self.db.get(mem_key.as_bytes()) {
             Ok(Some(value)) => {
                 eprintln!("[MemoryStore::get] Found in DB, {} bytes", value.len());
-                match bincode::deserialize::<MemoryNode>(&value) {
+                match serde_json::from_slice::<MemoryNode>(&value) {
                     Ok(memory) => {
-                        eprintln!("[MemoryStore::get] Deserialized successfully, is_current: {}", memory.temporal.is_current());
+                        eprintln!(
+                            "[MemoryStore::get] Deserialized successfully, is_current: {}",
+                            memory.temporal.is_current()
+                        );
                         if memory.temporal.is_current() {
                             // Cache it for future use
                             self.memory_cache.insert(id.to_string(), memory.clone());
@@ -249,7 +266,7 @@ impl MemoryStore {
             entry.temporal.invalidate();
             let mem_key = format!("mem:{}", id);
             self.db
-                .put(mem_key.as_bytes(), bincode::serialize(&*entry)?)?;
+                .put(mem_key.as_bytes(), serde_json::to_vec(&*entry)?)?;
             // Flush memtable to SST files and sync WAL for immediate visibility and durability
             self.db.flush()?;
             self.db.flush_wal(true)?;
@@ -283,24 +300,22 @@ impl MemoryStore {
     /// Get all current (non-invalidated) memories
     pub fn get_all_current(&self) -> Vec<MemoryNode> {
         let mut memories = Vec::new();
-        
+
         // Iterate over all keys in RocksDB
         let iter = self.db.iterator(rocksdb::IteratorMode::Start);
-        for item in iter {
-            if let Ok((key, value)) = item {
-                // Only process memory keys (not vector keys)
-                if let Ok(key_str) = std::str::from_utf8(&key) {
-                    if key_str.starts_with("mem:") {
-                        if let Ok(memory) = bincode::deserialize::<MemoryNode>(&value) {
-                            if memory.temporal.is_current() {
-                                memories.push(memory);
-                            }
+        for (key, value) in iter.flatten() {
+            // Only process memory keys (not vector keys)
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                if key_str.starts_with("mem:") {
+                    if let Ok(memory) = serde_json::from_slice::<MemoryNode>(&value) {
+                        if memory.temporal.is_current() {
+                            memories.push(memory);
                         }
                     }
                 }
             }
         }
-        
+
         memories
     }
 
@@ -379,25 +394,23 @@ impl MemoryStore {
 
         // Iterate over all memories in RocksDB
         let iter = self.db.iterator(rocksdb::IteratorMode::Start);
-        for item in iter {
-            if let Ok((key, value)) = item {
-                if let Ok(key_str) = std::str::from_utf8(&key) {
-                    if key_str.starts_with("mem:") {
-                        if let Ok(memory) = bincode::deserialize::<MemoryNode>(&value) {
-                            if memory.temporal.is_current() {
-                                current_count += 1;
-                                
-                                // Count by kind
-                                let kind_str = format!("{:?}", memory.kind).to_lowercase();
-                                *by_kind.entry(kind_str).or_insert(0) += 1;
+        for (key, value) in iter.flatten() {
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                if key_str.starts_with("mem:") {
+                    if let Ok(memory) = serde_json::from_slice::<MemoryNode>(&value) {
+                        if memory.temporal.is_current() {
+                            current_count += 1;
 
-                                // Count by tag
-                                for tag in &memory.tags {
-                                    *by_tag.entry(tag.clone()).or_insert(0) += 1;
-                                }
-                            } else {
-                                invalidated_count += 1;
+                            // Count by kind
+                            let kind_str = format!("{:?}", memory.kind).to_lowercase();
+                            *by_kind.entry(kind_str).or_insert(0) += 1;
+
+                            // Count by tag
+                            for tag in &memory.tags {
+                                *by_tag.entry(tag.clone()).or_insert(0) += 1;
                             }
+                        } else {
+                            invalidated_count += 1;
                         }
                     }
                 }
@@ -441,6 +454,8 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::MemoryNode;
+    use tempfile::TempDir;
 
     #[test]
     fn test_cosine_similarity_identical() {
@@ -461,5 +476,360 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![-1.0, 0.0, 0.0];
         assert!((cosine_similarity(&a, &b) + 1.0).abs() < 0.001);
+    }
+
+    /// Test that MemoryNode serializes/deserializes correctly with JSON
+    #[test]
+    fn test_memory_node_json_roundtrip() {
+        let memory = MemoryNode::builder()
+            .debug_context("Test problem", "Test solution")
+            .title("Test Memory")
+            .content("This is test content")
+            .tag("test")
+            .build()
+            .unwrap();
+
+        // Serialize to JSON
+        let json = serde_json::to_vec(&memory).expect("serialize to JSON");
+        println!(
+            "Serialized JSON ({} bytes): {}",
+            json.len(),
+            String::from_utf8_lossy(&json)
+        );
+
+        // Deserialize from JSON
+        let deserialized: MemoryNode =
+            serde_json::from_slice(&json).expect("deserialize from JSON");
+
+        assert_eq!(memory.id, deserialized.id);
+        assert_eq!(memory.title, deserialized.title);
+        assert_eq!(memory.content, deserialized.content);
+        assert_eq!(memory.tags, deserialized.tags);
+    }
+
+    /// Test basic store and get within same store instance
+    #[tokio::test]
+    async fn test_store_get_same_instance() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        let store = MemoryStore::new(temp_dir.path(), engine).expect("create store");
+
+        let memory = MemoryNode::builder()
+            .debug_context("Test problem", "Test solution")
+            .title("Test Memory")
+            .content("This is test content")
+            .tag("test")
+            .build()
+            .unwrap();
+
+        let id = store.put(memory.clone()).await.expect("store memory");
+        println!("Stored memory with id: {}", id);
+
+        // Get from same instance (should use cache)
+        let retrieved = store.get(&id);
+        assert!(
+            retrieved.is_some(),
+            "Memory should be retrievable from same instance"
+        );
+
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.title, "Test Memory");
+        assert_eq!(retrieved.content, "This is test content");
+    }
+
+    /// Test on-demand pattern: store in one instance, get in new instance
+    #[tokio::test]
+    async fn test_store_get_different_instances() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        let id: String;
+
+        // Store in first instance
+        {
+            let store = MemoryStore::new(temp_dir.path(), engine.clone()).expect("create store 1");
+
+            let memory = MemoryNode::builder()
+                .debug_context("Test problem", "Test solution")
+                .title("Test Memory for On-Demand")
+                .content("This is test content for on-demand pattern")
+                .tag("test")
+                .tag("on-demand")
+                .build()
+                .unwrap();
+
+            id = store.put(memory).await.expect("store memory");
+            println!("Stored memory with id: {}", id);
+
+            // Store should be dropped here, closing DB
+        }
+
+        // Get from second instance (simulating on-demand pattern)
+        {
+            let store2 = MemoryStore::new(temp_dir.path(), engine).expect("create store 2");
+
+            let retrieved = store2.get(&id);
+            assert!(
+                retrieved.is_some(),
+                "Memory should be retrievable from new instance"
+            );
+
+            let retrieved = retrieved.unwrap();
+            assert_eq!(retrieved.title, "Test Memory for On-Demand");
+            assert_eq!(
+                retrieved.content,
+                "This is test content for on-demand pattern"
+            );
+            assert!(retrieved.tags.contains(&"test".to_string()));
+            assert!(retrieved.tags.contains(&"on-demand".to_string()));
+        }
+    }
+
+    /// Test stats after storing memories
+    #[tokio::test]
+    async fn test_stats_after_store() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        // Store in first instance
+        {
+            let store = MemoryStore::new(temp_dir.path(), engine.clone()).expect("create store 1");
+
+            let memory1 = MemoryNode::builder()
+                .debug_context("Problem 1", "Solution 1")
+                .title("Memory 1")
+                .content("Content 1")
+                .tag("tag1")
+                .build()
+                .unwrap();
+
+            let memory2 = MemoryNode::builder()
+                .debug_context("Problem 2", "Solution 2")
+                .title("Memory 2")
+                .content("Content 2")
+                .tag("tag2")
+                .build()
+                .unwrap();
+
+            store.put(memory1).await.expect("store memory 1");
+            store.put(memory2).await.expect("store memory 2");
+        }
+
+        // Check stats from second instance
+        {
+            let store2 = MemoryStore::new(temp_dir.path(), engine).expect("create store 2");
+            let stats = store2.stats();
+
+            println!("Stats: {}", serde_json::to_string_pretty(&stats).unwrap());
+
+            assert_eq!(stats["totalMemories"], 2);
+            assert_eq!(stats["currentMemories"], 2);
+            assert_eq!(stats["invalidatedMemories"], 0);
+        }
+    }
+
+    /// Test get_all_current after storing memories
+    #[tokio::test]
+    async fn test_get_all_current() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        // Store in first instance
+        {
+            let store = MemoryStore::new(temp_dir.path(), engine.clone()).expect("create store 1");
+
+            for i in 0..3 {
+                let memory = MemoryNode::builder()
+                    .debug_context(format!("Problem {}", i), format!("Solution {}", i))
+                    .title(format!("Memory {}", i))
+                    .content(format!("Content {}", i))
+                    .build()
+                    .unwrap();
+
+                store.put(memory).await.expect("store memory");
+            }
+        }
+
+        // Get all from second instance
+        {
+            let store2 = MemoryStore::new(temp_dir.path(), engine).expect("create store 2");
+            let all = store2.get_all_current();
+
+            assert_eq!(all.len(), 3, "Should have 3 current memories");
+        }
+    }
+
+    /// Test invalidate persists across instances
+    #[tokio::test]
+    async fn test_invalidate_persists() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        let id: String;
+
+        // Store and invalidate in first instance
+        {
+            let store = MemoryStore::new(temp_dir.path(), engine.clone()).expect("create store 1");
+
+            let memory = MemoryNode::builder()
+                .debug_context("Problem", "Solution")
+                .title("To Be Invalidated")
+                .content("Content")
+                .build()
+                .unwrap();
+
+            id = store.put(memory).await.expect("store memory");
+            store.invalidate(&id, "testing").expect("invalidate");
+        }
+
+        // Check from second instance - should not be returned as current
+        {
+            let store2 = MemoryStore::new(temp_dir.path(), engine).expect("create store 2");
+
+            // get() only returns current memories
+            let retrieved = store2.get(&id);
+            assert!(
+                retrieved.is_none(),
+                "Invalidated memory should not be returned by get()"
+            );
+
+            // Stats should show it as invalidated
+            let stats = store2.stats();
+            assert_eq!(stats["currentMemories"], 0);
+            assert_eq!(stats["invalidatedMemories"], 1);
+        }
+    }
+
+    /// Debug test - check what's actually stored in DB
+    #[tokio::test]
+    async fn test_debug_db_contents() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        let id: String;
+
+        // Store memory
+        {
+            let store = MemoryStore::new(temp_dir.path(), engine.clone()).expect("create store");
+
+            let memory = MemoryNode::builder()
+                .debug_context("Debug Test Problem", "Debug Test Solution")
+                .title("Debug Test Memory")
+                .content("Debug test content")
+                .build()
+                .unwrap();
+
+            id = store.put(memory).await.expect("store memory");
+            println!("DEBUG: Stored memory with id: {}", id);
+        }
+
+        // Read raw bytes directly (no MemoryStore)
+        {
+            let mut opts = Options::default();
+            opts.set_wal_dir(temp_dir.path());
+            let db = DB::open(&opts, temp_dir.path()).expect("open DB directly");
+
+            // List all keys
+            println!("DEBUG: Listing all keys in DB:");
+            let iter = db.iterator(rocksdb::IteratorMode::Start);
+            for (key, value) in iter.flatten() {
+                let key_str = String::from_utf8_lossy(&key);
+                println!("  Key: '{}' ({} bytes)", key_str, value.len());
+
+                if key_str.starts_with("mem:") {
+                    // Try to parse as JSON
+                    match serde_json::from_slice::<serde_json::Value>(&value) {
+                        Ok(v) => println!(
+                            "    Valid JSON: {}",
+                            v.get("title").unwrap_or(&serde_json::json!("n/a"))
+                        ),
+                        Err(e) => {
+                            println!("    NOT valid JSON: {:?}", e);
+                            println!("    First 100 bytes: {:?}", &value[..value.len().min(100)]);
+                        }
+                    }
+                }
+            }
+
+            // Try to read the specific key
+            let mem_key = format!("mem:{}", id);
+            println!("DEBUG: Looking for key: '{}'", mem_key);
+            match db.get(mem_key.as_bytes()) {
+                Ok(Some(value)) => {
+                    println!("DEBUG: Found value ({} bytes)", value.len());
+                    match serde_json::from_slice::<MemoryNode>(&value) {
+                        Ok(m) => println!("DEBUG: Deserialized OK: {}", m.title),
+                        Err(e) => {
+                            println!("DEBUG: Deser failed: {:?}", e);
+                            println!(
+                                "DEBUG: First 200 bytes: {}",
+                                String::from_utf8_lossy(&value[..value.len().min(200)])
+                            );
+                        }
+                    }
+                }
+                Ok(None) => println!("DEBUG: Key not found!"),
+                Err(e) => println!("DEBUG: DB error: {:?}", e),
+            }
+        }
+
+        // Now try with MemoryStore
+        {
+            println!("\nDEBUG: Opening with MemoryStore...");
+            let store2 = MemoryStore::new(temp_dir.path(), engine).expect("create store 2");
+            let result = store2.get(&id);
+            println!(
+                "DEBUG: MemoryStore.get result: {:?}",
+                result.map(|m| m.title)
+            );
+        }
+    }
+
+    /// Test that raw DB read matches what was written
+    #[tokio::test]
+    async fn test_raw_db_read() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(VectorEngine::new(None).expect("create engine"));
+
+        let id: String;
+
+        // Store memory
+        {
+            let store = MemoryStore::new(temp_dir.path(), engine.clone()).expect("create store");
+
+            let memory = MemoryNode::builder()
+                .debug_context("Raw Test Problem", "Raw Test Solution")
+                .title("Raw Test Memory")
+                .content("Raw test content")
+                .build()
+                .unwrap();
+
+            id = store.put(memory).await.expect("store memory");
+        }
+
+        // Read raw bytes from DB
+        {
+            let opts = Options::default();
+            let db = DB::open(&opts, temp_dir.path()).expect("open DB directly");
+
+            let mem_key = format!("mem:{}", id);
+            let raw_value = db.get(mem_key.as_bytes()).expect("read from DB");
+
+            assert!(raw_value.is_some(), "Value should exist in DB");
+            let raw_bytes = raw_value.unwrap();
+
+            println!(
+                "Raw bytes ({} bytes): {}",
+                raw_bytes.len(),
+                String::from_utf8_lossy(&raw_bytes)
+            );
+
+            // Should be valid JSON
+            let parsed: MemoryNode =
+                serde_json::from_slice(&raw_bytes).expect("Raw bytes should be valid JSON");
+
+            assert_eq!(parsed.title, "Raw Test Memory");
+        }
     }
 }

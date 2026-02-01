@@ -57,7 +57,6 @@ pub enum IssueSeverity {
 
 /// Types of memories that can be stored
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub enum MemoryKind {
     /// Architectural decisions with rationale
     ArchitecturalDecision {

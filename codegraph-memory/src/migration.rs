@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Database version stored in metadata
 const DB_VERSION_KEY: &[u8] = b"_db_version";
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3; // v3 = JSON format with version key set at creation
 
 /// Check if database needs migration and perform if needed
 pub fn migrate_if_needed(db_path: impl AsRef<Path>) -> Result<()> {
@@ -71,7 +71,14 @@ pub fn migrate_if_needed(db_path: impl AsRef<Path>) -> Result<()> {
 /// Perform migration from old version to current
 fn perform_migration(db: &DB, from_version: u32) -> Result<()> {
     match from_version {
-        1 => migrate_v1_to_v2(db)?,
+        1 => {
+            // v1 was JSON without version key - just set version, no conversion needed
+            log::info!("Migrating v1 to v3: JSON format preserved");
+        }
+        2 => {
+            // v2 was bincode - need to convert back to JSON
+            migrate_v2_to_v3(db)?;
+        }
         _ => {
             return Err(MemoryError::InvalidPath(format!(
                 "Unknown database version: {}",
@@ -82,7 +89,84 @@ fn perform_migration(db: &DB, from_version: u32) -> Result<()> {
     Ok(())
 }
 
+/// Migrate from v2 (Bincode) back to v3 (JSON)
+fn migrate_v2_to_v3(db: &DB) -> Result<()> {
+    log::info!("Migrating database from v2 (bincode) to v3 (JSON)...");
+
+    let mut memories_to_migrate = Vec::new();
+    let iter = db.iterator(IteratorMode::Start);
+
+    // Collect all entries
+    for item in iter {
+        let (key, value) = item.map_err(|e| {
+            MemoryError::InvalidPath(format!("Failed to read database entry: {}", e))
+        })?;
+        let key_str = String::from_utf8_lossy(&key);
+
+        if key_str.starts_with("mem:") {
+            // Try deserializing as bincode (v2 format)
+            match bincode::deserialize::<MemoryNode>(&value) {
+                Ok(memory) => {
+                    let id = key_str.strip_prefix("mem:").unwrap().to_string();
+                    memories_to_migrate.push((id, memory));
+                    log::debug!("Successfully parsed memory as bincode: {}", key_str);
+                }
+                Err(bincode_err) => {
+                    // Try JSON (might already be v1/v3 format)
+                    match serde_json::from_slice::<MemoryNode>(&value) {
+                        Ok(memory) => {
+                            log::debug!("Memory already in JSON format: {}", key_str);
+                            let id = key_str.strip_prefix("mem:").unwrap().to_string();
+                            memories_to_migrate.push((id, memory));
+                        }
+                        Err(json_err) => {
+                            log::error!(
+                                "Failed to deserialize memory {}: Bincode error: {}, JSON error: {}. Skipping.",
+                                key_str,
+                                bincode_err,
+                                json_err
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Found {} memories to migrate to JSON",
+        memories_to_migrate.len()
+    );
+
+    // Reserialize memories as JSON
+    for (id, memory) in memories_to_migrate {
+        let key = format!("mem:{}", id);
+        match serde_json::to_vec(&memory) {
+            Ok(bytes) => {
+                db.put(key.as_bytes(), bytes).map_err(|e| {
+                    MemoryError::InvalidPath(format!(
+                        "Failed to write migrated memory {}: {}",
+                        id, e
+                    ))
+                })?;
+                log::debug!("Migrated memory to JSON: {}", id);
+            }
+            Err(e) => {
+                log::error!("Failed to serialize memory {}: {}. Skipping.", id, e);
+            }
+        }
+    }
+
+    db.flush()
+        .map_err(|e| MemoryError::InvalidPath(format!("Failed to flush database: {}", e)))?;
+
+    Ok(())
+}
+
 /// Migrate from v1 (JSON) to v2 (Bincode with updated format)
+/// Note: This function is kept for reference but no longer used since we skipped v2
+#[allow(dead_code)]
 fn migrate_v1_to_v2(db: &DB) -> Result<()> {
     log::info!("Migrating database from v1 to v2...");
 

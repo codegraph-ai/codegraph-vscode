@@ -18,7 +18,10 @@ pub fn find_model2vec_path(extension_path: Option<&Path>) -> Result<PathBuf> {
             log::info!("Using CODEGRAPH_MODELS_PATH: {}", path.display());
             return Ok(path);
         }
-        log::warn!("CODEGRAPH_MODELS_PATH set but model not found: {}", models_path);
+        log::warn!(
+            "CODEGRAPH_MODELS_PATH set but model not found: {}",
+            models_path
+        );
     }
 
     // Priority 2: Bundled with extension
