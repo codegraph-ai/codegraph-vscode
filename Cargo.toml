@@ -34,11 +34,11 @@ clap = { version = "4", features = ["derive"] }
 # CodeGraph ecosystem
 codegraph = "0.1.1"
 codegraph-parser-api = "0.2.0"
-codegraph-python = "0.3.1"
-codegraph-rust = "0.1.2"
-codegraph-typescript = "0.3.1"
-codegraph-go = "0.1.3"
-codegraph-c = "0.1.2"
+codegraph-python = "0.4.1"
+codegraph-rust = "0.2.1"
+codegraph-typescript = "0.3.2"
+codegraph-go = "0.1.5"
+codegraph-c = "0.1.3"
 
 [profile.release]
 opt-level = 3

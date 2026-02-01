@@ -366,8 +366,14 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(20);
+                let compact = args
+                    .get("compact")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
-                let options = crate::ai_query::SearchOptions::new().with_limit(limit);
+                let options = crate::ai_query::SearchOptions::new()
+                    .with_limit(limit)
+                    .with_compact(compact);
                 let result = self
                     .backend
                     .query_engine
@@ -414,10 +420,20 @@ impl McpServer {
                     ],
                 };
 
+                let compact = args
+                    .get("compact")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+
                 let result = self
                     .backend
                     .query_engine
-                    .find_entry_points(&entry_types)
+                    .find_entry_points_opts(&entry_types, compact, limit)
                     .await;
 
                 Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
@@ -507,6 +523,10 @@ impl McpServer {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
 
                 // param_count is Option<(min, max)>
                 let param_count = if let Some(exact) = exact_param_count {
@@ -527,7 +547,7 @@ impl McpServer {
                 let result = self
                     .backend
                     .query_engine
-                    .find_by_signature(&pattern)
+                    .find_by_signature(&pattern, limit)
                     .await;
 
                 Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
@@ -557,7 +577,22 @@ impl McpServer {
 
                 if let Some(start) = start_node {
                     let result = self.backend.query_engine.get_callers(start, depth).await;
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    if result.is_empty() {
+                        // Return diagnostic info when no callers found
+                        let graph = self.backend.graph.read().await;
+                        let edge_count = graph.edge_count();
+                        Ok(serde_json::json!({
+                            "callers": [],
+                            "diagnostic": {
+                                "node_found": true,
+                                "node_id": start,
+                                "total_edges_in_graph": edge_count,
+                                "note": "No callers found. This may indicate: (1) the function is not called anywhere, (2) the language parser doesn't extract call relationships, or (3) indexes need to be rebuilt."
+                            }
+                        }))
+                    } else {
+                        Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    }
                 } else {
                     Ok(serde_json::json!({
                         "callers": [],
@@ -589,7 +624,22 @@ impl McpServer {
 
                 if let Some(start) = start_node {
                     let result = self.backend.query_engine.get_callees(start, depth).await;
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    if result.is_empty() {
+                        // Return diagnostic info when no callees found
+                        let graph = self.backend.graph.read().await;
+                        let edge_count = graph.edge_count();
+                        Ok(serde_json::json!({
+                            "callees": [],
+                            "diagnostic": {
+                                "node_found": true,
+                                "node_id": start,
+                                "total_edges_in_graph": edge_count,
+                                "note": "No callees found. This may indicate: (1) the function doesn't call other functions, (2) the language parser doesn't extract call relationships, or (3) indexes need to be rebuilt."
+                            }
+                        }))
+                    } else {
+                        Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    }
                 } else {
                     Ok(serde_json::json!({
                         "callees": [],
@@ -914,10 +964,7 @@ impl McpServer {
 
             "codegraph_find_unused_code" => {
                 let uri = args.get("uri").and_then(|v| v.as_str());
-                let scope = args
-                    .get("scope")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("file");
+                let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("file");
                 let include_tests = args
                     .get("includeTests")
                     .or_else(|| args.get("include_tests"))
@@ -1069,8 +1116,8 @@ impl McpServer {
                     .unwrap_or(5);
 
                 // Find code nodes at the given location and search for related memories
-                let url = tower_lsp::lsp_types::Url::parse(uri)
-                    .map_err(|_| "Invalid URI".to_string())?;
+                let url =
+                    tower_lsp::lsp_types::Url::parse(uri).map_err(|_| "Invalid URI".to_string())?;
                 let path = url
                     .to_file_path()
                     .map_err(|_| "Invalid file path".to_string())?;
@@ -1218,12 +1265,41 @@ impl McpServer {
                 }))
             }
 
+            // ==================== Admin Tools ====================
+            "codegraph_reindex_workspace" => {
+                tracing::info!("Reindexing workspace...");
+
+                // Clear the graph
+                {
+                    let mut graph = self.backend.graph.write().await;
+                    *graph = codegraph::CodeGraph::in_memory()
+                        .map_err(|e| format!("Failed to create new graph: {}", e))?;
+                }
+
+                // Reindex the workspace
+                let indexed = self.backend.index_workspace().await;
+                tracing::info!("Reindexed {} files", indexed);
+
+                // Rebuild AI query engine indexes
+                self.backend.query_engine.build_indexes().await;
+
+                Ok(serde_json::json!({
+                    "status": "success",
+                    "message": format!("Reindexed {} files", indexed),
+                    "files_indexed": indexed
+                }))
+            }
+
             // ==================== Unknown Tool ====================
             _ => Err(format!("Unknown tool: {}", name)),
         }
     }
 
-    /// Helper to find a node at a given location
+    /// Helper to find a node at a given location with proximity-based fallback
+    ///
+    /// Strategy:
+    /// 1. First try exact match (line within symbol's [start_line, end_line] range)
+    /// 2. If no exact match, find the closest symbol within +/- 2 lines
     async fn find_node_at_location(&self, uri: &str, line: u32) -> Option<codegraph::NodeId> {
         let url = tower_lsp::lsp_types::Url::parse(uri).ok()?;
         let path = url.to_file_path().ok()?;
@@ -1232,9 +1308,9 @@ impl McpServer {
         let graph = self.backend.graph.read().await;
         let nodes = graph.query().property("path", path_str).execute().ok()?;
 
-        // Find closest node to the given line
-        for node_id in nodes {
-            if let Ok(node) = graph.get_node(node_id) {
+        // Strategy 1: Exact match (line within symbol range)
+        for node_id in &nodes {
+            if let Ok(node) = graph.get_node(*node_id) {
                 let start_line = node
                     .properties
                     .get_int("line_start")
@@ -1247,12 +1323,125 @@ impl McpServer {
                     .unwrap_or(start_line as i64) as u32;
 
                 if line >= start_line && line <= end_line {
-                    return Some(node_id);
+                    return Some(*node_id);
                 }
             }
         }
 
-        None
+        // Strategy 2: Proximity search (+/- 2 lines)
+        const PROXIMITY: u32 = 2;
+        let mut best_match: Option<(codegraph::NodeId, u32)> = None; // (node_id, distance)
+
+        for node_id in &nodes {
+            if let Ok(node) = graph.get_node(*node_id) {
+                let start_line = node
+                    .properties
+                    .get_int("line_start")
+                    .or_else(|| node.properties.get_int("start_line"))
+                    .unwrap_or(0) as u32;
+                let end_line = node
+                    .properties
+                    .get_int("line_end")
+                    .or_else(|| node.properties.get_int("end_line"))
+                    .unwrap_or(start_line as i64) as u32;
+
+                // Calculate distance to symbol
+                let distance = if line < start_line {
+                    start_line - line
+                } else {
+                    line.saturating_sub(end_line)
+                };
+
+                // Only consider if within proximity threshold
+                if distance <= PROXIMITY
+                    && (best_match.is_none() || distance < best_match.unwrap().1)
+                {
+                    best_match = Some((*node_id, distance));
+                }
+            }
+        }
+
+        best_match.map(|(id, _)| id)
+    }
+
+    /// Find a node at location with broader fallback, returning whether fallback was used.
+    ///
+    /// Strategy:
+    /// 1. First try exact match (line within symbol's range)
+    /// 2. If no exact match, find the closest symbol in the file (no distance limit)
+    ///
+    /// Returns (node_id, used_fallback) where used_fallback is true if not an exact match.
+    async fn find_nearest_node_with_fallback(
+        &self,
+        uri: &str,
+        line: u32,
+    ) -> Option<(codegraph::NodeId, bool)> {
+        let url = tower_lsp::lsp_types::Url::parse(uri).ok()?;
+        let path = url.to_file_path().ok()?;
+        let path_str = path.to_string_lossy().to_string();
+
+        let graph = self.backend.graph.read().await;
+        let nodes = graph.query().property("path", path_str).execute().ok()?;
+
+        if nodes.is_empty() {
+            return None;
+        }
+
+        // Strategy 1: Exact match (line within symbol range)
+        for node_id in &nodes {
+            if let Ok(node) = graph.get_node(*node_id) {
+                let start_line = node
+                    .properties
+                    .get_int("line_start")
+                    .or_else(|| node.properties.get_int("start_line"))
+                    .unwrap_or(0) as u32;
+                let end_line = node
+                    .properties
+                    .get_int("line_end")
+                    .or_else(|| node.properties.get_int("end_line"))
+                    .unwrap_or(start_line as i64) as u32;
+
+                if line >= start_line && line <= end_line {
+                    return Some((*node_id, false)); // Exact match, no fallback
+                }
+            }
+        }
+
+        // Strategy 2: Find nearest symbol (no distance limit)
+        // Prefer symbols that start after cursor (looking forward)
+        let mut best_match: Option<(codegraph::NodeId, i64)> = None;
+
+        for node_id in &nodes {
+            if let Ok(node) = graph.get_node(*node_id) {
+                let start_line = node
+                    .properties
+                    .get_int("line_start")
+                    .or_else(|| node.properties.get_int("start_line"))
+                    .unwrap_or(0);
+                let end_line = node
+                    .properties
+                    .get_int("line_end")
+                    .or_else(|| node.properties.get_int("end_line"))
+                    .unwrap_or(start_line);
+
+                let target_line = line as i64;
+
+                // Calculate distance - prefer symbols after cursor
+                let distance = if start_line > target_line {
+                    // Symbol starts after cursor - prefer these
+                    start_line - target_line
+                } else {
+                    // Symbol ends before cursor - add penalty for looking backward
+                    (target_line - end_line) + 1000
+                };
+
+                if best_match.is_none() || distance < best_match.unwrap().1 {
+                    best_match = Some((*node_id, distance));
+                }
+            }
+        }
+
+        best_match.map(|(id, _)| (id, true)) // Fallback was used
     }
 
     /// Get source code for a symbol
@@ -1351,10 +1540,7 @@ impl McpServer {
             }
 
             if let Ok(node) = graph.get_node(node_id) {
-                let name = node
-                    .properties
-                    .get_string("name")
-                    .unwrap_or_default();
+                let name = node.properties.get_string("name").unwrap_or_default();
                 let node_type = format!("{:?}", node.node_type);
 
                 nodes.push(serde_json::json!({
@@ -1367,7 +1553,10 @@ impl McpServer {
                 let directions: Vec<codegraph::Direction> = match direction {
                     "imports" => vec![codegraph::Direction::Outgoing],
                     "importedBy" => vec![codegraph::Direction::Incoming],
-                    _ => vec![codegraph::Direction::Outgoing, codegraph::Direction::Incoming],
+                    _ => vec![
+                        codegraph::Direction::Outgoing,
+                        codegraph::Direction::Incoming,
+                    ],
                 };
 
                 for dir in directions {
@@ -1492,11 +1681,27 @@ impl McpServer {
             }
         }
 
-        serde_json::json!({
-            "root": start.to_string(),
-            "nodes": nodes,
-            "edges": edges
-        })
+        // Return with diagnostic if no call relationships found
+        if nodes.is_empty() {
+            let graph = self.backend.graph.read().await;
+            let edge_count = graph.edge_count();
+            serde_json::json!({
+                "root": start.to_string(),
+                "nodes": nodes,
+                "edges": edges,
+                "diagnostic": {
+                    "node_found": true,
+                    "total_edges_in_graph": edge_count,
+                    "note": "No call relationships found. Call graph analysis depends on language parser support for extracting call edges. Some parsers may have limited call extraction capabilities."
+                }
+            })
+        } else {
+            serde_json::json!({
+                "root": start.to_string(),
+                "nodes": nodes,
+                "edges": edges
+            })
+        }
     }
 
     /// Analyze impact of changes to a symbol
@@ -1604,34 +1809,48 @@ impl McpServer {
         intent: &str,
         max_tokens: usize,
     ) -> serde_json::Value {
-        let node_id = self.find_node_at_location(uri, line).await;
-
-        let target = match node_id {
-            Some(id) => id,
+        // Use find_nearest_node_with_fallback for better symbol discovery
+        let (target, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
+            Some(result) => result,
             None => {
                 return serde_json::json!({
-                    "error": "Could not find symbol at location",
+                    "error": "No symbols found in file. Try indexing the workspace first.",
                     "uri": uri,
                     "line": line
                 })
             }
         };
 
-        let graph = self.backend.graph.read().await;
-        let node = match graph.get_node(target) {
-            Ok(n) => n,
-            Err(_) => {
-                return serde_json::json!({
-                    "error": "Could not load node"
-                })
-            }
+        // Get node info while holding graph lock, then release before async calls
+        let (name, node_type) = {
+            let graph = self.backend.graph.read().await;
+            let node = match graph.get_node(target) {
+                Ok(n) => n,
+                Err(_) => {
+                    return serde_json::json!({
+                        "error": "Could not load node"
+                    })
+                }
+            };
+
+            let name = node
+                .properties
+                .get_string("name")
+                .unwrap_or_default()
+                .to_string();
+            let node_type = format!("{:?}", node.node_type);
+            (name, node_type)
         };
 
-        let name = node
-            .properties
-            .get_string("name")
-            .unwrap_or_default();
-        let node_type = format!("{:?}", node.node_type);
+        // Build fallback message if applicable
+        let fallback_message = if used_fallback {
+            Some(format!(
+                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                line, name
+            ))
+        } else {
+            None
+        };
 
         // Get source code
         let source = self.get_symbol_source(target).await;
@@ -1660,7 +1879,7 @@ impl McpServer {
         let context_tokens = (callers.len() + callees.len()) * 50;
         let total_tokens = source_tokens + context_tokens;
 
-        serde_json::json!({
+        let mut response = serde_json::json!({
             "symbol": {
                 "id": target.to_string(),
                 "name": name,
@@ -1678,7 +1897,20 @@ impl McpServer {
             "intent": intent,
             "estimated_tokens": total_tokens.min(max_tokens),
             "truncated": total_tokens > max_tokens,
-        })
+        });
+
+        // Add fallback metadata if used
+        if used_fallback {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                obj.insert(
+                    "fallback_message".to_string(),
+                    serde_json::json!(fallback_message),
+                );
+            }
+        }
+
+        response
     }
 
     /// Find related tests for a symbol
@@ -1707,11 +1939,7 @@ impl McpServer {
         let mut related_tests = Vec::new();
 
         for test in tests.iter().take(limit * 2) {
-            let callees = self
-                .backend
-                .query_engine
-                .get_callees(test.node_id, 3)
-                .await;
+            let callees = self.backend.query_engine.get_callees(test.node_id, 3).await;
             if callees.iter().any(|c| c.node_id == target) {
                 related_tests.push(serde_json::json!({
                     "name": test.symbol.name,
@@ -1783,20 +2011,14 @@ impl McpServer {
 
                 // Check line filter
                 if let Some(target_line) = line {
-                    let start = node
-                        .properties
-                        .get_int("line_start")
-                        .unwrap_or(0) as u32;
+                    let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
                     let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
                     if target_line < start || target_line > end {
                         continue;
                     }
                 }
 
-                let name = node
-                    .properties
-                    .get_string("name")
-                    .unwrap_or_default();
+                let name = node.properties.get_string("name").unwrap_or_default();
 
                 // Simple complexity estimation based on edges and properties
                 let callees = self.backend.query_engine.get_callees(node_id, 1).await;
@@ -1831,16 +2053,31 @@ impl McpServer {
             0.0
         };
 
-        serde_json::json!({
-            "functions": functions,
-            "summary": {
-                "total_functions": functions.len(),
-                "average_complexity": avg_complexity,
-                "max_complexity": max_complexity,
-                "above_threshold": above_threshold,
-                "threshold": threshold,
-            }
-        })
+        // Include diagnostic note when no functions found
+        if functions.is_empty() {
+            serde_json::json!({
+                "functions": functions,
+                "summary": {
+                    "total_functions": 0,
+                    "average_complexity": 0.0,
+                    "max_complexity": 0,
+                    "above_threshold": 0,
+                    "threshold": threshold,
+                },
+                "note": "No functions found in this file. This may indicate: (1) the language parser doesn't extract function-level details for this file type, (2) the file doesn't contain any functions, or (3) the workspace needs to be re-indexed."
+            })
+        } else {
+            serde_json::json!({
+                "functions": functions,
+                "summary": {
+                    "total_functions": functions.len(),
+                    "average_complexity": avg_complexity,
+                    "max_complexity": max_complexity,
+                    "above_threshold": above_threshold,
+                    "threshold": threshold,
+                }
+            })
+        }
     }
 
     /// Find unused code
@@ -1896,10 +2133,7 @@ impl McpServer {
                 let callers = self.backend.query_engine.get_callers(node_id, 1).await;
 
                 if callers.is_empty() {
-                    let name = node
-                        .properties
-                        .get_string("name")
-                        .unwrap_or_default();
+                    let name = node.properties.get_string("name").unwrap_or_default();
 
                     // Skip entry points and test functions
                     if name.starts_with("test_")
@@ -1909,10 +2143,7 @@ impl McpServer {
                         continue;
                     }
 
-                    let is_public = node
-                        .properties
-                        .get_bool("is_public")
-                        .unwrap_or(false);
+                    let is_public = node.properties.get_bool("is_public").unwrap_or(false);
 
                     // Higher confidence for private functions
                     let item_confidence = if is_public { 0.5 } else { 0.9 };
@@ -2000,10 +2231,7 @@ impl McpServer {
                 builder.known_issue(description, severity_enum)
             }
             "convention" => {
-                let name = args
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(title);
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or(title);
                 let description = args
                     .get("description")
                     .and_then(|v| v.as_str())
@@ -2011,10 +2239,7 @@ impl McpServer {
                 builder.convention(name, description)
             }
             "project_context" => {
-                let topic = args
-                    .get("topic")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(title);
+                let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or(title);
                 let description = args
                     .get("description")
                     .and_then(|v| v.as_str())
@@ -2029,7 +2254,9 @@ impl McpServer {
             }
         };
 
-        builder.build().map_err(|e| format!("Failed to build memory: {:?}", e))
+        builder
+            .build()
+            .map_err(|e| format!("Failed to build memory: {:?}", e))
     }
 }
 

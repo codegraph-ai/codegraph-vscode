@@ -2,6 +2,16 @@
 
 All notable changes to the CodeGraph extension will be documented in this file.
 
+## [0.5.1] - 2026-01-31
+
+### Fixed
+
+- **Accurate symbol line numbers**: Symbol search results now return correct line numbers for Rust, Go, and Python files (previously all symbols showed line 1)
+
+### Changed
+
+- Updated parser dependencies: codegraph-rust 0.2.1, codegraph-go 0.1.5, codegraph-python 0.4.1
+
 ## [0.5.0] - 2026-01-29
 
 ### Added
