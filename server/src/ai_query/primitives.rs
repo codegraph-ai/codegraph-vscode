@@ -12,6 +12,23 @@
 use codegraph::NodeId;
 use serde::{Deserialize, Serialize};
 
+/// Maximum length for signatures before truncation (default: 500 chars)
+pub const MAX_SIGNATURE_LENGTH: usize = 500;
+
+/// Truncate a string to max_len characters, adding "..." if truncated
+pub fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+/// Truncate an optional string
+pub fn truncate_optional(s: Option<&str>, max_len: usize) -> Option<String> {
+    s.map(|s| truncate_string(s, max_len))
+}
+
 /// Search scope for queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -50,6 +67,8 @@ pub struct SearchOptions {
     pub limit: usize,
     /// Include private/internal symbols
     pub include_private: bool,
+    /// Compact mode: omit signatures and docstrings for smaller responses
+    pub compact: bool,
 }
 
 impl SearchOptions {
@@ -61,6 +80,7 @@ impl SearchOptions {
             languages: Vec::new(),
             limit: 20,
             include_private: false,
+            compact: false,
         }
     }
 
@@ -91,6 +111,18 @@ impl SearchOptions {
     /// Include private symbols.
     pub fn include_private(mut self) -> Self {
         self.include_private = true;
+        self
+    }
+
+    /// Enable compact mode (omit signatures and docstrings).
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// Set compact mode explicitly.
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
 }

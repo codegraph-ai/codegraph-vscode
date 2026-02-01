@@ -3,7 +3,12 @@
 //! Main query engine that provides fast, composable query primitives for AI agents.
 //! Integrates with CodeGraph for graph-based code intelligence.
 
-use super::primitives::*;
+use super::primitives::{
+    truncate_string, CallInfo, DetailedSymbolInfo, EntryPoint, EntryType, ImportMatchMode,
+    ImportSearchOptions, SearchOptions, SignaturePattern, SymbolInfo, SymbolLocation, SymbolMatch,
+    SymbolSearchResult, SymbolType, TraversalDirection, TraversalFilter, TraversalNode,
+    MAX_SIGNATURE_LENGTH,
+};
 use super::text_index::{TextIndex, TextIndexBuilder};
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -141,8 +146,9 @@ impl QueryEngine {
                     }
                 }
 
-                // Build symbol info
-                let symbol_info = self.node_to_symbol_info(&graph, text_result.node_id);
+                // Build symbol info (use compact mode if requested)
+                let symbol_info =
+                    self.node_to_symbol_info_opts(&graph, text_result.node_id, options.compact);
                 if let Some(symbol) = symbol_info {
                     // Apply visibility filter
                     if !options.include_private && !symbol.is_public {
@@ -368,7 +374,11 @@ impl QueryEngine {
     }
 
     /// Find functions by signature patterns.
-    pub async fn find_by_signature(&self, pattern: &SignaturePattern) -> Vec<SymbolMatch> {
+    pub async fn find_by_signature(
+        &self,
+        pattern: &SignaturePattern,
+        limit: Option<usize>,
+    ) -> Vec<SymbolMatch> {
         let graph = self.graph.read().await;
         let mut results = Vec::new();
 
@@ -451,6 +461,13 @@ impl QueryEngine {
                         score: 1.0, // All matches are equally relevant for signature search
                         match_reason,
                     });
+
+                    // Check limit and return early if reached
+                    if let Some(max) = limit {
+                        if results.len() >= max {
+                            return results;
+                        }
+                    }
                 }
             }
         }
@@ -528,6 +545,16 @@ impl QueryEngine {
 
     /// Find entry points in the codebase.
     pub async fn find_entry_points(&self, entry_types: &[EntryType]) -> Vec<EntryPoint> {
+        self.find_entry_points_opts(entry_types, false, None).await
+    }
+
+    /// Find entry points with compact option and optional limit.
+    pub async fn find_entry_points_opts(
+        &self,
+        entry_types: &[EntryType],
+        compact: bool,
+        limit: Option<usize>,
+    ) -> Vec<EntryPoint> {
         let graph = self.graph.read().await;
         let mut results = Vec::new();
 
@@ -548,7 +575,18 @@ impl QueryEngine {
                 if let Some(et) = entry_type {
                     // Filter by requested entry types
                     if entry_types.is_empty() || entry_types.contains(&et) {
-                        if let Some(symbol) = self.node_to_symbol_info(&graph, node_id) {
+                        if let Some(symbol) =
+                            self.node_to_symbol_info_opts(&graph, node_id, compact)
+                        {
+                            // In compact mode, also truncate description
+                            let description = if compact {
+                                None
+                            } else {
+                                node.properties
+                                    .get_string("doc")
+                                    .map(|s| truncate_string(s, MAX_SIGNATURE_LENGTH))
+                            };
+
                             results.push(EntryPoint {
                                 node_id,
                                 entry_type: et,
@@ -557,12 +595,16 @@ impl QueryEngine {
                                     .properties
                                     .get_string("http_method")
                                     .map(|s| s.to_string()),
-                                description: node
-                                    .properties
-                                    .get_string("doc")
-                                    .map(|s| s.to_string()),
+                                description,
                                 symbol,
                             });
+
+                            // Check limit and return early if reached
+                            if let Some(max) = limit {
+                                if results.len() >= max {
+                                    return results;
+                                }
+                            }
                         }
                     }
                 }
@@ -574,7 +616,20 @@ impl QueryEngine {
 
     // Helper methods
 
+    /// Convert a node to SymbolInfo with default options (truncated signatures)
     fn node_to_symbol_info(&self, graph: &CodeGraph, node_id: NodeId) -> Option<SymbolInfo> {
+        self.node_to_symbol_info_opts(graph, node_id, false)
+    }
+
+    /// Convert a node to SymbolInfo with options
+    /// - compact: if true, omit signature and docstring entirely
+    /// - if false, truncate signature to MAX_SIGNATURE_LENGTH
+    fn node_to_symbol_info_opts(
+        &self,
+        graph: &CodeGraph,
+        node_id: NodeId,
+        compact: bool,
+    ) -> Option<SymbolInfo> {
         let node = graph.get_node(node_id).ok()?;
 
         let name = node.properties.get_string("name")?.to_string();
@@ -612,11 +667,22 @@ impl QueryEngine {
             end_column,
         };
 
-        let signature = node
-            .properties
-            .get_string("signature")
-            .map(|s| s.to_string());
-        let docstring = node.properties.get_string("doc").map(|s| s.to_string());
+        // In compact mode, omit signature and docstring
+        // Otherwise, truncate signature to prevent huge responses
+        let (signature, docstring) = if compact {
+            (None, None)
+        } else {
+            let sig = node
+                .properties
+                .get_string("signature")
+                .map(|s| truncate_string(s, MAX_SIGNATURE_LENGTH));
+            let doc = node
+                .properties
+                .get_string("doc")
+                .map(|s| truncate_string(s, MAX_SIGNATURE_LENGTH));
+            (sig, doc)
+        };
+
         let is_public = node
             .properties
             .get_bool("is_public")
@@ -1185,7 +1251,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
@@ -1236,7 +1302,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "getString");
@@ -1285,7 +1351,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
@@ -1300,7 +1366,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
@@ -1352,7 +1418,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
@@ -1367,7 +1433,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "noParams");
@@ -1427,7 +1493,7 @@ mod tests {
             modifiers: vec!["async".to_string()],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
@@ -1442,7 +1508,7 @@ mod tests {
             modifiers: vec!["async".to_string(), "public".to_string()],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "asyncPublic");
@@ -1455,7 +1521,7 @@ mod tests {
             modifiers: vec!["static".to_string()],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "staticFunc");
@@ -1519,7 +1585,7 @@ mod tests {
             modifiers: vec!["async".to_string(), "public".to_string()],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "getUserById");
@@ -1555,7 +1621,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert!(results.is_empty());
     }
@@ -1620,7 +1686,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         // Should only match the function
         assert_eq!(results.len(), 1);
@@ -1663,7 +1729,7 @@ mod tests {
             modifiers: vec!["async".to_string()],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 1);
         let match_reason = &results[0].match_reason;
@@ -1714,7 +1780,7 @@ mod tests {
             modifiers: vec![],
         };
 
-        let results = engine.find_by_signature(&pattern).await;
+        let results = engine.find_by_signature(&pattern, None).await;
 
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();

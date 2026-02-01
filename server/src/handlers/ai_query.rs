@@ -684,7 +684,7 @@ impl CodeGraphBackend {
             modifiers: params.modifiers.unwrap_or_default(),
         };
 
-        let results = self.query_engine.find_by_signature(&pattern).await;
+        let results = self.query_engine.find_by_signature(&pattern, None).await;
 
         let response_results = results
             .into_iter()

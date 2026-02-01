@@ -38,6 +38,8 @@ pub fn get_all_tools() -> Vec<Tool> {
         memory_stats_tool(),
         mine_git_history_tool(),
         mine_git_file_tool(),
+        // Admin Tools (1)
+        reindex_workspace_tool(),
     ]
 }
 
@@ -470,6 +472,13 @@ fn symbol_search_tool() -> Tool {
         "includePrivate".to_string(),
         boolean_prop("Include private/internal symbols in results", true),
     );
+    properties.insert(
+        "compact".to_string(),
+        boolean_prop(
+            "Compact mode: return minimal info (name, kind, location) without signatures/docstrings for smaller responses",
+            false,
+        ),
+    );
 
     Tool {
         name: "codegraph_symbol_search".to_string(),
@@ -538,6 +547,13 @@ fn find_entry_points_tool() -> Tool {
     properties.insert(
         "limit".to_string(),
         number_prop("Maximum number of results", Some(50.0)),
+    );
+    properties.insert(
+        "compact".to_string(),
+        boolean_prop(
+            "Compact mode: return minimal info (name, kind, location) without signatures/docstrings for smaller responses",
+            false,
+        ),
     );
 
     Tool {
@@ -1034,6 +1050,20 @@ fn mine_git_file_tool() -> Tool {
     }
 }
 
+// === Admin Tools ===
+
+fn reindex_workspace_tool() -> Tool {
+    Tool {
+        name: "codegraph_reindex_workspace".to_string(),
+        description: Some("Reindex the workspace to refresh the code graph. USE WHEN: the graph data is stale or parsers have been updated. This clears the existing graph and re-parses all files.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: None,
+            required: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,8 +1071,8 @@ mod tests {
     #[test]
     fn test_get_all_tools_count() {
         let tools = get_all_tools();
-        // Analysis: 9, Search: 5, Navigation: 3, Memory: 9 = 26 tools
-        assert_eq!(tools.len(), 26, "Expected 26 tools, got {}", tools.len());
+        // Analysis: 9, Search: 5, Navigation: 3, Memory: 9, Admin: 1 = 27 tools
+        assert_eq!(tools.len(), 27, "Expected 27 tools, got {}", tools.len());
     }
 
     #[test]
