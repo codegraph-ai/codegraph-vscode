@@ -26,6 +26,7 @@
     ],
     "icon": "images/icon.png",
     "activationEvents": [
+        "onStartupFinished",
         "onLanguage:python",
         "onLanguage:rust",
         "onLanguage:typescript",
