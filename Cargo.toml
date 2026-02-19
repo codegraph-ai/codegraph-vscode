@@ -39,6 +39,10 @@ codegraph-rust = { path = "../codegraph-monorepo/crates/codegraph-rust" }
 codegraph-typescript = { path = "../codegraph-monorepo/crates/codegraph-typescript" }
 codegraph-go = { path = "../codegraph-monorepo/crates/codegraph-go" }
 codegraph-c = { path = "../codegraph-monorepo/crates/codegraph-c" }
+codegraph-java = { path = "../codegraph-monorepo/crates/codegraph-java" }
+codegraph-cpp = { path = "../codegraph-monorepo/crates/codegraph-cpp" }
+codegraph-kotlin = { path = "../codegraph-monorepo/crates/codegraph-kotlin" }
+codegraph-csharp = { path = "../codegraph-monorepo/crates/codegraph-csharp" }
 
 [profile.release]
 opt-level = 3

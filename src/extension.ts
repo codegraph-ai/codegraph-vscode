@@ -56,6 +56,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             { scheme: 'file', language: 'typescriptreact' },
             { scheme: 'file', language: 'javascriptreact' },
             { scheme: 'file', language: 'go' },
+            { scheme: 'file', language: 'c' },
+            { scheme: 'file', language: 'java' },
+            { scheme: 'file', language: 'cpp' },
+            { scheme: 'file', language: 'kotlin' },
+            { scheme: 'file', language: 'csharp' },
         ],
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*'),

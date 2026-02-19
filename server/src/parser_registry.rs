@@ -2,7 +2,11 @@
 
 use codegraph::CodeGraph;
 use codegraph_c::CParser;
+use codegraph_cpp::CppParser;
+use codegraph_csharp::CSharpParser;
 use codegraph_go::GoParser;
+use codegraph_java::JavaParser;
+use codegraph_kotlin::KotlinParser;
 use codegraph_parser_api::{CodeParser, FileInfo, ParserConfig, ParserError, ParserMetrics};
 use codegraph_python::PythonParser;
 use codegraph_rust::RustParser;
@@ -17,6 +21,10 @@ pub struct ParserRegistry {
     typescript: Arc<TypeScriptParser>,
     go: Arc<GoParser>,
     c: Arc<CParser>,
+    java: Arc<JavaParser>,
+    cpp: Arc<CppParser>,
+    kotlin: Arc<KotlinParser>,
+    csharp: Arc<CSharpParser>,
 }
 
 impl ParserRegistry {
@@ -32,7 +40,11 @@ impl ParserRegistry {
             rust: Arc::new(RustParser::with_config(config.clone())),
             typescript: Arc::new(TypeScriptParser::with_config(config.clone())),
             go: Arc::new(GoParser::with_config(config.clone())),
-            c: Arc::new(CParser::with_config(config)),
+            c: Arc::new(CParser::with_config(config.clone())),
+            java: Arc::new(JavaParser::with_config(config.clone())),
+            cpp: Arc::new(CppParser::with_config(config.clone())),
+            kotlin: Arc::new(KotlinParser::with_config(config.clone())),
+            csharp: Arc::new(CSharpParser::with_config(config)),
         }
     }
 
@@ -46,18 +58,26 @@ impl ParserRegistry {
             }
             "go" => Some(self.go.clone()),
             "c" => Some(self.c.clone()),
+            "java" => Some(self.java.clone()),
+            "cpp" | "c++" => Some(self.cpp.clone()),
+            "kotlin" => Some(self.kotlin.clone()),
+            "csharp" | "c#" => Some(self.csharp.clone()),
             _ => None,
         }
     }
 
     /// Find appropriate parser for a file path.
     pub fn parser_for_path(&self, path: &Path) -> Option<Arc<dyn CodeParser>> {
-        let parsers: [Arc<dyn CodeParser>; 5] = [
+        let parsers: [Arc<dyn CodeParser>; 9] = [
             self.python.clone(),
             self.rust.clone(),
             self.typescript.clone(),
             self.go.clone(),
             self.c.clone(),
+            self.java.clone(),
+            self.cpp.clone(),
+            self.kotlin.clone(),
+            self.csharp.clone(),
         ];
 
         parsers.into_iter().find(|p| p.can_parse(path))
@@ -71,6 +91,10 @@ impl ParserRegistry {
         extensions.extend(self.typescript.file_extensions().iter().copied());
         extensions.extend(self.go.file_extensions().iter().copied());
         extensions.extend(self.c.file_extensions().iter().copied());
+        extensions.extend(self.java.file_extensions().iter().copied());
+        extensions.extend(self.cpp.file_extensions().iter().copied());
+        extensions.extend(self.kotlin.file_extensions().iter().copied());
+        extensions.extend(self.csharp.file_extensions().iter().copied());
         extensions
     }
 
@@ -82,6 +106,10 @@ impl ParserRegistry {
             ("typescript", self.typescript.metrics()),
             ("go", self.go.metrics()),
             ("c", self.c.metrics()),
+            ("java", self.java.metrics()),
+            ("cpp", self.cpp.metrics()),
+            ("kotlin", self.kotlin.metrics()),
+            ("csharp", self.csharp.metrics()),
         ]
     }
 
@@ -134,6 +162,14 @@ impl ParserRegistry {
             Some("go")
         } else if self.c.can_parse(path) {
             Some("c")
+        } else if self.java.can_parse(path) {
+            Some("java")
+        } else if self.cpp.can_parse(path) {
+            Some("cpp")
+        } else if self.kotlin.can_parse(path) {
+            Some("kotlin")
+        } else if self.csharp.can_parse(path) {
+            Some("csharp")
         } else {
             None
         }
@@ -162,6 +198,10 @@ mod tests {
         assert!(registry.get_parser("typescript").is_some());
         assert!(registry.get_parser("go").is_some());
         assert!(registry.get_parser("c").is_some());
+        assert!(registry.get_parser("java").is_some());
+        assert!(registry.get_parser("cpp").is_some());
+        assert!(registry.get_parser("kotlin").is_some());
+        assert!(registry.get_parser("csharp").is_some());
     }
 
     #[test]
@@ -189,6 +229,13 @@ mod tests {
         assert!(registry.get_parser("TypeScript").is_some());
         assert!(registry.get_parser("Go").is_some());
         assert!(registry.get_parser("C").is_some());
+        assert!(registry.get_parser("Java").is_some());
+        assert!(registry.get_parser("JAVA").is_some());
+        assert!(registry.get_parser("Cpp").is_some());
+        assert!(registry.get_parser("C++").is_some());
+        assert!(registry.get_parser("Kotlin").is_some());
+        assert!(registry.get_parser("CSharp").is_some());
+        assert!(registry.get_parser("C#").is_some());
     }
 
     #[test]
@@ -231,6 +278,18 @@ mod tests {
             .is_some());
         assert!(registry.parser_for_path(&PathBuf::from("test.c")).is_some());
         assert!(registry.parser_for_path(&PathBuf::from("test.h")).is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.java"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.cpp"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.kt"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.cs"))
+            .is_some());
         assert!(registry
             .parser_for_path(&PathBuf::from("test.txt"))
             .is_none());
@@ -280,6 +339,22 @@ mod tests {
             registry.language_for_path(&PathBuf::from("test.h")),
             Some("c")
         );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("Test.java")),
+            Some("java")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.cpp")),
+            Some("cpp")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.kt")),
+            Some("kotlin")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.cs")),
+            Some("csharp")
+        );
     }
 
     #[test]
@@ -309,10 +384,10 @@ mod tests {
         let registry = ParserRegistry::new();
         let extensions = registry.supported_extensions();
 
-        // Check that we have extensions for all 5 languages
+        // Check that we have extensions for all 9 languages
         // (exact extension names may vary by parser implementation)
         assert!(!extensions.is_empty());
-        assert!(extensions.len() >= 5); // At least one extension per language
+        assert!(extensions.len() >= 9); // At least one extension per language
     }
 
     #[test]
@@ -326,6 +401,10 @@ mod tests {
         assert!(registry.can_parse(Path::new("test.go")));
         assert!(registry.can_parse(Path::new("test.c")));
         assert!(registry.can_parse(Path::new("test.h")));
+        assert!(registry.can_parse(Path::new("test.java")));
+        assert!(registry.can_parse(Path::new("test.cpp")));
+        assert!(registry.can_parse(Path::new("test.kt")));
+        assert!(registry.can_parse(Path::new("test.cs")));
         assert!(!registry.can_parse(Path::new("test.txt")));
         assert!(!registry.can_parse(Path::new("test.md")));
     }
@@ -335,12 +414,16 @@ mod tests {
         let registry = ParserRegistry::new();
         let metrics = registry.all_metrics();
 
-        assert_eq!(metrics.len(), 5);
+        assert_eq!(metrics.len(), 9);
         assert_eq!(metrics[0].0, "python");
         assert_eq!(metrics[1].0, "rust");
         assert_eq!(metrics[2].0, "typescript");
         assert_eq!(metrics[3].0, "go");
         assert_eq!(metrics[4].0, "c");
+        assert_eq!(metrics[5].0, "java");
+        assert_eq!(metrics[6].0, "cpp");
+        assert_eq!(metrics[7].0, "kotlin");
+        assert_eq!(metrics[8].0, "csharp");
     }
 
     #[test]
@@ -433,5 +516,51 @@ mod tests {
 
         let result = registry.parse_file(temp_file.path(), &mut graph);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_source_java() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source =
+            "public class Hello { public void greet() { System.out.println(\"hello\"); } }";
+        let path = Path::new("Hello.java");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_cpp() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "#include <iostream>\n\nvoid hello() { std::cout << \"hello\" << std::endl; }";
+        let path = Path::new("hello.cpp");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_kotlin() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "fun main() { println(\"hello\") }";
+        let path = Path::new("Main.kt");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_csharp() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source =
+            "using System;\n\nclass Hello { static void Main() { Console.WriteLine(\"hello\"); } }";
+        let path = Path::new("Hello.cs");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
     }
 }

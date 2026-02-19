@@ -32,7 +32,11 @@
         "onLanguage:typescript",
         "onLanguage:javascript",
         "onLanguage:go",
-        "onLanguage:c"
+        "onLanguage:c",
+        "onLanguage:java",
+        "onLanguage:cpp",
+        "onLanguage:kotlin",
+        "onLanguage:csharp"
     ],
     "main": "./out/extension.js",
     "contributes": {
@@ -144,7 +148,11 @@
                         "typescript",
                         "javascript",
                         "go",
-                        "c"
+                        "c",
+                        "java",
+                        "cpp",
+                        "kotlin",
+                        "csharp"
                     ],
                     "description": "Languages to index"
                 },

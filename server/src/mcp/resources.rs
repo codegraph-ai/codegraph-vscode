@@ -119,7 +119,7 @@ async fn get_index_status(
     workspace_folders: &[std::path::PathBuf],
 ) -> serde_json::Value {
     let graph = graph.read().await;
-    let total_nodes = graph.query().execute().map(|n| n.len()).unwrap_or(0);
+    let total_nodes = graph.query().count().unwrap_or(0);
 
     serde_json::json!({
         "indexed": true,
