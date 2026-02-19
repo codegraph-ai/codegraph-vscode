@@ -53,52 +53,43 @@ impl QueryEngine {
         let mut caller_map: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         let mut callee_map: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
 
-        // Iterate over all nodes by ID (0 to node_count)
-        let node_count = graph.node_count();
-        for node_id in 0..node_count as u64 {
-            if let Ok(node) = graph.get_node(node_id) {
-                let name = node.properties.get_string("name").unwrap_or("").to_string();
-                let docstring = node.properties.get_string("doc").map(|s| s.to_string());
+        // Iterate over all nodes using iter_nodes()
+        for (node_id, node) in graph.iter_nodes() {
+            let name = node.properties.get_string("name").unwrap_or("").to_string();
+            let docstring = node.properties.get_string("doc").map(|s| s.to_string());
 
-                // Add to text index
-                text_builder.add_document(node_id, &name, docstring.as_deref(), &[]);
+            // Add to text index
+            text_builder.add_document(node_id, &name, docstring.as_deref(), &[]);
 
-                // Build import index from Imports edges
-                if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Outgoing) {
-                    for neighbor_id in neighbors {
-                        if let Ok(edges) = graph.get_edges_between(node_id, neighbor_id) {
-                            for edge_id in edges {
-                                if let Ok(edge) = graph.get_edge(edge_id) {
-                                    match edge.edge_type {
-                                        EdgeType::Imports => {
-                                            // Get the imported module name
-                                            if let Ok(target_node) = graph.get_node(neighbor_id) {
-                                                let module_name = target_node
-                                                    .properties
-                                                    .get_string("name")
-                                                    .unwrap_or("")
-                                                    .to_string();
-                                                if !module_name.is_empty() {
-                                                    import_map
-                                                        .entry(module_name)
-                                                        .or_default()
-                                                        .push(node_id);
-                                                }
+            // Build import index from Imports edges
+            if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Outgoing) {
+                for neighbor_id in neighbors {
+                    if let Ok(edges) = graph.get_edges_between(node_id, neighbor_id) {
+                        for edge_id in edges {
+                            if let Ok(edge) = graph.get_edge(edge_id) {
+                                match edge.edge_type {
+                                    EdgeType::Imports => {
+                                        // Get the imported module name
+                                        if let Ok(target_node) = graph.get_node(neighbor_id) {
+                                            let module_name = target_node
+                                                .properties
+                                                .get_string("name")
+                                                .unwrap_or("")
+                                                .to_string();
+                                            if !module_name.is_empty() {
+                                                import_map
+                                                    .entry(module_name)
+                                                    .or_default()
+                                                    .push(node_id);
                                             }
                                         }
-                                        EdgeType::Calls => {
-                                            // Build caller/callee indexes
-                                            callee_map
-                                                .entry(node_id)
-                                                .or_default()
-                                                .push(neighbor_id);
-                                            caller_map
-                                                .entry(neighbor_id)
-                                                .or_default()
-                                                .push(node_id);
-                                        }
-                                        _ => {}
                                     }
+                                    EdgeType::Calls => {
+                                        // Build caller/callee indexes
+                                        callee_map.entry(node_id).or_default().push(neighbor_id);
+                                        caller_map.entry(neighbor_id).or_default().push(node_id);
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -388,85 +379,82 @@ impl QueryEngine {
             .as_ref()
             .and_then(|p| regex::Regex::new(p).ok());
 
-        // Iterate over all function nodes
-        let node_count = graph.node_count();
-        for node_id in 0..node_count as u64 {
-            if let Ok(node) = graph.get_node(node_id) {
-                // Only check functions
-                if node.node_type != NodeType::Function {
+        // Iterate over all function nodes using iter_nodes()
+        for (node_id, node) in graph.iter_nodes() {
+            // Only check functions
+            if node.node_type != NodeType::Function {
+                continue;
+            }
+
+            let name = node.properties.get_string("name").unwrap_or("");
+
+            // Check name pattern
+            if let Some(ref regex) = name_regex {
+                if !regex.is_match(name) {
                     continue;
                 }
+            }
 
-                let name = node.properties.get_string("name").unwrap_or("");
+            // Check return type
+            if let Some(ref expected_return) = pattern.return_type {
+                let actual_return = node.properties.get_string("return_type").unwrap_or("");
+                if !self.type_matches(actual_return, expected_return) {
+                    continue;
+                }
+            }
 
-                // Check name pattern
-                if let Some(ref regex) = name_regex {
-                    if !regex.is_match(name) {
-                        continue;
+            // Check parameter count
+            if let Some((min, max)) = pattern.param_count {
+                let param_count = node.properties.get_int("param_count").unwrap_or(0) as usize;
+                if param_count < min || param_count > max {
+                    continue;
+                }
+            }
+
+            // Check modifiers
+            if !pattern.modifiers.is_empty() {
+                let mut all_modifiers_match = true;
+                for modifier in &pattern.modifiers {
+                    let has_modifier = match modifier.as_str() {
+                        "async" => node.properties.get_bool("is_async").unwrap_or(false),
+                        "public" | "pub" => node
+                            .properties
+                            .get_bool("is_public")
+                            .or_else(|| node.properties.get_bool("exported"))
+                            .unwrap_or(false),
+                        "private" => !node
+                            .properties
+                            .get_bool("is_public")
+                            .or_else(|| node.properties.get_bool("exported"))
+                            .unwrap_or(true),
+                        "static" => node.properties.get_bool("is_static").unwrap_or(false),
+                        "const" => node.properties.get_bool("is_const").unwrap_or(false),
+                        _ => false,
+                    };
+                    if !has_modifier {
+                        all_modifiers_match = false;
+                        break;
                     }
                 }
-
-                // Check return type
-                if let Some(ref expected_return) = pattern.return_type {
-                    let actual_return = node.properties.get_string("return_type").unwrap_or("");
-                    if !self.type_matches(actual_return, expected_return) {
-                        continue;
-                    }
+                if !all_modifiers_match {
+                    continue;
                 }
+            }
 
-                // Check parameter count
-                if let Some((min, max)) = pattern.param_count {
-                    let param_count = node.properties.get_int("param_count").unwrap_or(0) as usize;
-                    if param_count < min || param_count > max {
-                        continue;
-                    }
-                }
+            // Build symbol info for matching function
+            if let Some(symbol) = self.node_to_symbol_info(&graph, node_id) {
+                let match_reason = self.build_signature_match_reason(pattern);
+                results.push(SymbolMatch {
+                    node_id,
+                    symbol,
+                    score: 1.0, // All matches are equally relevant for signature search
+                    match_reason,
+                });
 
-                // Check modifiers
-                if !pattern.modifiers.is_empty() {
-                    let mut all_modifiers_match = true;
-                    for modifier in &pattern.modifiers {
-                        let has_modifier = match modifier.as_str() {
-                            "async" => node.properties.get_bool("is_async").unwrap_or(false),
-                            "public" | "pub" => node
-                                .properties
-                                .get_bool("is_public")
-                                .or_else(|| node.properties.get_bool("exported"))
-                                .unwrap_or(false),
-                            "private" => !node
-                                .properties
-                                .get_bool("is_public")
-                                .or_else(|| node.properties.get_bool("exported"))
-                                .unwrap_or(true),
-                            "static" => node.properties.get_bool("is_static").unwrap_or(false),
-                            "const" => node.properties.get_bool("is_const").unwrap_or(false),
-                            _ => false,
-                        };
-                        if !has_modifier {
-                            all_modifiers_match = false;
-                            break;
-                        }
-                    }
-                    if !all_modifiers_match {
-                        continue;
-                    }
-                }
-
-                // Build symbol info for matching function
-                if let Some(symbol) = self.node_to_symbol_info(&graph, node_id) {
-                    let match_reason = self.build_signature_match_reason(pattern);
-                    results.push(SymbolMatch {
-                        node_id,
-                        symbol,
-                        score: 1.0, // All matches are equally relevant for signature search
-                        match_reason,
-                    });
-
-                    // Check limit and return early if reached
-                    if let Some(max) = limit {
-                        if results.len() >= max {
-                            return results;
-                        }
+                // Check limit and return early if reached
+                if let Some(max) = limit {
+                    if results.len() >= max {
+                        return results;
                     }
                 }
             }
@@ -558,52 +546,47 @@ impl QueryEngine {
         let graph = self.graph.read().await;
         let mut results = Vec::new();
 
-        // Iterate over all nodes by ID
-        let node_count = graph.node_count();
-        for node_id in 0..node_count as u64 {
-            if let Ok(node) = graph.get_node(node_id) {
-                // Only check functions
-                if node.node_type != NodeType::Function {
-                    continue;
-                }
+        // Iterate over all nodes using iter_nodes()
+        for (node_id, node) in graph.iter_nodes() {
+            // Only check functions
+            if node.node_type != NodeType::Function {
+                continue;
+            }
 
-                let name = node.properties.get_string("name").unwrap_or("");
+            let name = node.properties.get_string("name").unwrap_or("");
 
-                // Detect entry type
-                let entry_type = self.detect_entry_type(node, name);
+            // Detect entry type
+            let entry_type = self.detect_entry_type(node, name);
 
-                if let Some(et) = entry_type {
-                    // Filter by requested entry types
-                    if entry_types.is_empty() || entry_types.contains(&et) {
-                        if let Some(symbol) =
-                            self.node_to_symbol_info_opts(&graph, node_id, compact)
-                        {
-                            // In compact mode, also truncate description
-                            let description = if compact {
-                                None
-                            } else {
-                                node.properties
-                                    .get_string("doc")
-                                    .map(|s| truncate_string(s, MAX_SIGNATURE_LENGTH))
-                            };
+            if let Some(et) = entry_type {
+                // Filter by requested entry types
+                if entry_types.is_empty() || entry_types.contains(&et) {
+                    if let Some(symbol) = self.node_to_symbol_info_opts(&graph, node_id, compact) {
+                        // In compact mode, also truncate description
+                        let description = if compact {
+                            None
+                        } else {
+                            node.properties
+                                .get_string("doc")
+                                .map(|s| truncate_string(s, MAX_SIGNATURE_LENGTH))
+                        };
 
-                            results.push(EntryPoint {
-                                node_id,
-                                entry_type: et,
-                                route: node.properties.get_string("route").map(|s| s.to_string()),
-                                method: node
-                                    .properties
-                                    .get_string("http_method")
-                                    .map(|s| s.to_string()),
-                                description,
-                                symbol,
-                            });
+                        results.push(EntryPoint {
+                            node_id,
+                            entry_type: et,
+                            route: node.properties.get_string("route").map(|s| s.to_string()),
+                            method: node
+                                .properties
+                                .get_string("http_method")
+                                .map(|s| s.to_string()),
+                            description,
+                            symbol,
+                        });
 
-                            // Check limit and return early if reached
-                            if let Some(max) = limit {
-                                if results.len() >= max {
-                                    return results;
-                                }
+                        // Check limit and return early if reached
+                        if let Some(max) = limit {
+                            if results.len() >= max {
+                                return results;
                             }
                         }
                     }

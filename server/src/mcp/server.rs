@@ -2220,9 +2220,20 @@ impl McpServer {
 
                 let name = node.properties.get_string("name").unwrap_or_default();
 
-                // Simple complexity estimation based on edges and properties
-                let callees = self.backend.query_engine.get_callees(node_id, 1).await;
-                let complexity = (callees.len() as u32).max(1);
+                // Read AST-based complexity from node properties (populated by upstream parsers)
+                let complexity = node.properties.get_int("complexity").unwrap_or(1) as u32;
+
+                let grade = node
+                    .properties
+                    .get_string("complexity_grade")
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or(match complexity {
+                        0..=5 => 'A',
+                        6..=10 => 'B',
+                        11..=20 => 'C',
+                        21..=50 => 'D',
+                        _ => 'F',
+                    });
 
                 total_complexity += complexity;
                 max_complexity = max_complexity.max(complexity);
@@ -2230,19 +2241,17 @@ impl McpServer {
                     above_threshold += 1;
                 }
 
-                let grade = match complexity {
-                    0..=5 => 'A',
-                    6..=10 => 'B',
-                    11..=20 => 'C',
-                    21..=50 => 'D',
-                    _ => 'F',
-                };
-
                 functions.push(serde_json::json!({
                     "name": name,
                     "complexity": complexity,
                     "grade": grade.to_string(),
                     "node_id": node_id.to_string(),
+                    "details": {
+                        "branches": node.properties.get_int("complexity_branches").unwrap_or(0),
+                        "loops": node.properties.get_int("complexity_loops").unwrap_or(0),
+                        "logical_operators": node.properties.get_int("complexity_logical_ops").unwrap_or(0),
+                        "nesting_depth": node.properties.get_int("complexity_nesting").unwrap_or(0),
+                    }
                 }));
             }
         }

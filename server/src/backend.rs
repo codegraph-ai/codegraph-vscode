@@ -1100,7 +1100,7 @@ impl LanguageServer for CodeGraphBackend {
                     NodeType::Variable => SymbolKind::VARIABLE,
                     NodeType::Type => SymbolKind::TYPE_PARAMETER,
                     NodeType::CodeFile => SymbolKind::FILE,
-                    NodeType::Generic => SymbolKind::VARIABLE,
+                    _ => SymbolKind::VARIABLE,
                 };
 
                 if let Ok(location) = self.node_to_location(&graph, node_id) {
