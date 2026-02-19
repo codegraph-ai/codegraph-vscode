@@ -67,6 +67,10 @@ impl ParserRegistry {
     }
 
     /// Find appropriate parser for a file path.
+    ///
+    /// Note: C is checked before C++ so `.h` files default to C parsing.
+    /// C++-specific extensions (`.hpp`, `.cc`, `.cxx`, `.hh`, `.hxx`) are
+    /// only claimed by the C++ parser and resolve correctly.
     pub fn parser_for_path(&self, path: &Path) -> Option<Arc<dyn CodeParser>> {
         let parsers: [Arc<dyn CodeParser>; 9] = [
             self.python.clone(),
@@ -142,6 +146,9 @@ impl ParserRegistry {
     }
 
     /// Get language name for a file path.
+    ///
+    /// Note: `.h` files return `"c"` by convention (C-compatible headers).
+    /// Use `.hpp`/`.hh`/`.hxx` for C++ headers.
     pub fn language_for_path(&self, path: &Path) -> Option<&'static str> {
         if self.python.can_parse(path) {
             Some("python")
@@ -296,6 +303,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_for_path_cpp_variants() {
+        let registry = ParserRegistry::new();
+
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.cc"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.cxx"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.hpp"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.hh"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.hxx"))
+            .is_some());
+    }
+
+    #[test]
+    fn test_parser_for_path_kotlin_script() {
+        let registry = ParserRegistry::new();
+
+        assert!(registry
+            .parser_for_path(&PathBuf::from("build.gradle.kts"))
+            .is_some());
+    }
+
+    #[test]
     fn test_parser_for_path_react_extensions() {
         let registry = ParserRegistry::new();
 
@@ -358,6 +395,57 @@ mod tests {
     }
 
     #[test]
+    fn test_language_for_path_cpp_variants() {
+        let registry = ParserRegistry::new();
+
+        // C++-specific extensions all resolve to "cpp"
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.cpp")),
+            Some("cpp")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.cc")),
+            Some("cpp")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.cxx")),
+            Some("cpp")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.hpp")),
+            Some("cpp")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.hh")),
+            Some("cpp")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.hxx")),
+            Some("cpp")
+        );
+
+        // .h defaults to C (conventional: .h is C-compatible, .hpp signals C++)
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.h")),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn test_language_for_path_kotlin_variants() {
+        let registry = ParserRegistry::new();
+
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("test.kt")),
+            Some("kotlin")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("build.gradle.kts")),
+            Some("kotlin")
+        );
+    }
+
+    #[test]
     fn test_language_for_path_react_extensions() {
         let registry = ParserRegistry::new();
 
@@ -403,7 +491,10 @@ mod tests {
         assert!(registry.can_parse(Path::new("test.h")));
         assert!(registry.can_parse(Path::new("test.java")));
         assert!(registry.can_parse(Path::new("test.cpp")));
+        assert!(registry.can_parse(Path::new("test.hpp")));
+        assert!(registry.can_parse(Path::new("test.cc")));
         assert!(registry.can_parse(Path::new("test.kt")));
+        assert!(registry.can_parse(Path::new("test.kts")));
         assert!(registry.can_parse(Path::new("test.cs")));
         assert!(!registry.can_parse(Path::new("test.txt")));
         assert!(!registry.can_parse(Path::new("test.md")));
