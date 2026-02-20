@@ -245,12 +245,12 @@ impl QueryEngine {
         let graph = self.graph.read().await;
         let mut results = Vec::new();
         let mut visited = HashSet::new();
-        let mut queue: VecDeque<(NodeId, u32, Vec<NodeId>)> = VecDeque::new();
+        let mut queue: VecDeque<(NodeId, u32, Vec<NodeId>, String)> = VecDeque::new();
 
-        queue.push_back((start_node, 0, vec![start_node]));
+        queue.push_back((start_node, 0, vec![start_node], String::new()));
         visited.insert(start_node);
 
-        while let Some((current, depth, path)) = queue.pop_front() {
+        while let Some((current, depth, path, incoming_edge_type)) = queue.pop_front() {
             if depth > max_depth || results.len() >= filter.max_nodes {
                 break;
             }
@@ -281,7 +281,7 @@ impl QueryEngine {
                             node_id: current,
                             depth,
                             path: path.clone(),
-                            edge_type: "".to_string(), // TODO: capture edge type
+                            edge_type: incoming_edge_type.clone(),
                             symbol,
                         });
                     }
@@ -301,7 +301,17 @@ impl QueryEngine {
                         visited.insert(neighbor);
                         let mut new_path = path.clone();
                         new_path.push(neighbor);
-                        queue.push_back((neighbor, depth + 1, new_path));
+
+                        // Resolve the edge type between current and neighbor
+                        let edge_type_str = graph
+                            .get_edges_between(current, neighbor)
+                            .ok()
+                            .and_then(|edges| edges.into_iter().next())
+                            .and_then(|eid| graph.get_edge(eid).ok())
+                            .map(|e| e.edge_type.to_string())
+                            .unwrap_or_default();
+
+                        queue.push_back((neighbor, depth + 1, new_path, edge_type_str));
                     }
                 }
             }
@@ -349,15 +359,80 @@ impl QueryEngine {
         // Check if deprecated
         let is_deprecated = node.properties.get_bool("deprecated").unwrap_or(false);
 
+        // Collect dependencies (outgoing import edges)
+        let mut dependencies = Vec::new();
+        if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Outgoing) {
+            for neighbor_id in neighbors {
+                if let Ok(edges) = graph.get_edges_between(node_id, neighbor_id) {
+                    let is_import = edges.iter().any(|eid| {
+                        graph.get_edge(*eid).is_ok_and(|e| {
+                            matches!(e.edge_type, EdgeType::Imports | EdgeType::ImportsFrom)
+                        })
+                    });
+                    if is_import {
+                        if let Ok(target) = graph.get_node(neighbor_id) {
+                            let name = target
+                                .properties
+                                .get_string("name")
+                                .unwrap_or("")
+                                .to_string();
+                            if !name.is_empty() && !dependencies.contains(&name) {
+                                dependencies.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect dependents (incoming import edges)
+        let mut dependents = Vec::new();
+        if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Incoming) {
+            for neighbor_id in neighbors {
+                if let Ok(edges) = graph.get_edges_between(neighbor_id, node_id) {
+                    let is_import = edges.iter().any(|eid| {
+                        graph.get_edge(*eid).is_ok_and(|e| {
+                            matches!(e.edge_type, EdgeType::Imports | EdgeType::ImportsFrom)
+                        })
+                    });
+                    if is_import {
+                        if let Ok(source) = graph.get_node(neighbor_id) {
+                            let name = source
+                                .properties
+                                .get_string("name")
+                                .unwrap_or("")
+                                .to_string();
+                            if !name.is_empty() && !dependents.contains(&name) {
+                                dependents.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Detect test associations by checking if any caller is a test node
+        let has_tests = callers.iter().any(|caller| {
+            graph.get_node(caller.node_id).is_ok_and(|n| {
+                let name = n.properties.get_string("name").unwrap_or("");
+                let path = n.properties.get_string("path").unwrap_or("");
+                name.starts_with("test_")
+                    || name.ends_with("_test")
+                    || name.contains("test ")
+                    || path.contains("/test")
+                    || path.contains("/tests")
+            })
+        });
+
         Some(DetailedSymbolInfo {
             symbol,
             callers,
             callees,
-            dependencies: Vec::new(), // TODO: collect from import edges
-            dependents: Vec::new(),   // TODO: collect from incoming import edges
+            dependencies,
+            dependents,
             complexity,
             lines_of_code,
-            has_tests: false, // TODO: detect test associations
+            has_tests,
             is_public,
             is_deprecated,
             reference_count,
