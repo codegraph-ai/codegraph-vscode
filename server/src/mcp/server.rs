@@ -67,6 +67,11 @@ impl McpBackend {
         for folder in &self.workspace_folders {
             total += self.index_directory(folder).await;
 
+            // Ensure embedding model is available (auto-downloads on first run)
+            if let Err(e) = crate::model_download::ensure_model_downloaded() {
+                tracing::warn!("Model download failed: {}", e);
+            }
+
             // Initialize memory manager with workspace path
             // Note: Uses .codegraph/memory which may conflict with LSP if both run simultaneously
             if let Err(e) = self.memory_manager.initialize(folder).await {

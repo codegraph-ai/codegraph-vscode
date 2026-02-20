@@ -48,6 +48,9 @@ codegraph-csharp.workspace = true
 # Memory layer
 codegraph-memory = { path = "../codegraph-memory" }
 
+# HTTP client (model download)
+ureq.workspace = true
+
 # CLI
 clap.workspace = true
 

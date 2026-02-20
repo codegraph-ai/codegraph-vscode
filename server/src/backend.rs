@@ -766,6 +766,11 @@ impl LanguageServer for CodeGraphBackend {
             .log_message(MessageType::INFO, "AI query engine indexes built")
             .await;
 
+        // Ensure embedding model is available (auto-downloads on first run)
+        if let Err(e) = crate::model_download::ensure_model_downloaded() {
+            tracing::warn!("Model download failed: {}", e);
+        }
+
         // Initialize memory store for persistent AI context
         if let Some(first_folder) = folders.first() {
             tracing::info!(

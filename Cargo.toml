@@ -30,6 +30,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lru = "0.12"
 regex = "1"
 clap = { version = "4", features = ["derive"] }
+ureq = "2.9"
 
 # CodeGraph ecosystem (local path deps from monorepo)
 codegraph = { path = "../codegraph-monorepo/crates/codegraph" }
