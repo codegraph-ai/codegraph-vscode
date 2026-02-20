@@ -1,6 +1,6 @@
 # CodeGraph Crate Upgrade Recommendations
 
-> **Date**: 2026-02-18
+> **Date**: 2026-02-18 (updated 2026-02-19)
 > **Scope**: Upgrading codegraph ecosystem dependencies in codegraph-vscode
 > **Source**: codegraph-monorepo (latest) vs codegraph-vscode (current)
 
@@ -10,14 +10,18 @@
 
 | Crate | vscode uses | monorepo has | Status |
 |---|---|---|---|
-| **codegraph** | 0.1.1 | **0.2.0** | Behind (major) |
-| **codegraph-parser-api** | 0.2.0 | **0.2.1** | Behind (patch) |
-| **codegraph-typescript** | 0.3.2 | **0.4.0** | Behind (significant) |
+| **codegraph** | 0.2.0 | 0.2.0 | In sync |
+| **codegraph-parser-api** | 0.2.1 | 0.2.1 | In sync |
+| **codegraph-typescript** | 0.4.0 | 0.4.0 | In sync |
 | **codegraph-rust** | 0.2.1 | 0.2.1 | In sync |
 | **codegraph-python** | 0.4.1 | 0.4.1 | In sync |
 | **codegraph-go** | 0.1.5 | 0.1.4 | vscode ahead (crates.io has 0.1.5, monorepo not synced) |
 | **codegraph-c** | 0.1.3 | 0.1.3 | In sync |
-| **New parsers** | — | cpp, java, kotlin, csharp, php, ruby, swift, tcl | Not adopted |
+| **codegraph-cpp** | 0.2.0 | 0.2.0 | In sync |
+| **codegraph-java** | 0.1.1 | 0.1.1 | In sync |
+| **codegraph-kotlin** | 0.1.1 | 0.1.1 | In sync |
+| **codegraph-csharp** | 0.1.1 | 0.1.1 | In sync |
+| **Remaining parsers** | — | php, ruby, swift, tcl | Not adopted |
 
 ---
 
@@ -101,77 +105,65 @@ All require codegraph 0.2.0 + parser-api 0.2.1.
 
 ## Recommendations
 
-### Tier 1 — High Value (do first)
+### Tier 1 — High Value ✅ COMPLETED
 
-#### 1. Bump core dependencies
+#### 1. ✅ Bump core dependencies (77f597a)
 
-Update `Cargo.toml` workspace dependencies:
+Updated codegraph 0.2.0, codegraph-parser-api 0.2.1, codegraph-typescript 0.4.0.
 
-```toml
-codegraph = "0.2.0"
-codegraph-parser-api = "0.2.1"
-codegraph-typescript = "0.4.0"
-```
+#### 2. ✅ Replace hand-rolled graph traversal with built-in algorithms (681e68d)
 
-This is the prerequisite for everything else. The `codegraph-typescript` bump is bundled here because it requires the core bumps and delivers the most user-visible improvement.
+Replaced 3 of 5 hand-rolled BFS traversals with built-in algorithms:
+- Dependency graph handler → `transitive_dependencies()`/`transitive_dependents()`
+- Impact analysis → `graph.bfs()`
+- MCP dependency graph → `graph.bfs()`
 
-#### 2. Replace hand-rolled graph traversal with built-in algorithms
+Call graph handler and debug context kept hand-rolled (need edge-type-filtered BFS / budget-constrained single-path walk).
 
-The server currently implements BFS/DFS manually in `handlers/navigation.rs`, `handlers/ai_context.rs`, and `handlers/custom.rs`. Replace with:
+#### 3. ✅ Replace manual node iteration with `iter_nodes()` (77f597a)
 
-- `graph.transitive_dependencies(file_id, max_depth)` for dependency graph traversal
-- `graph.transitive_dependents(file_id, max_depth)` for reverse dependency traversal
-- `graph.call_chain(from_func, to_func, max_depth)` for call path finding
-- `graph.circular_deps()` for cycle detection
-- `graph.bfs()` / `graph.dfs()` for general traversal
+Replaced `node_count()` + ID loop in `ai_query/engine.rs` with `graph.iter_nodes()`.
 
-Estimated reduction: ~200 lines of traversal code.
+#### 4. ✅ Fix MCP complexity handler (77f597a)
 
-#### 3. Replace manual node iteration with `iter_nodes()` / `iter_edges()`
+MCP handler now reads real AST-derived complexity properties instead of estimating from callee count.
 
-In `ai_query/engine.rs`, the `build_indexes()` method iterates nodes by counting up to `node_count()` and calling `get_node()` on each ID. Replace with `graph.iter_nodes()`.
+#### Additional: ✅ Add Java, C++, Kotlin, C# parsers (e8b1918)
 
-#### 4. Fix MCP complexity handler
+Added 4 new language parsers with full test coverage.
 
-`server/src/mcp/server.rs` estimates complexity from callee count (`callees.len().max(1)`). The upgraded parsers populate real AST-derived `"complexity"` properties on function nodes. Update the MCP handler to read these properties (like the LSP handler in `handlers/metrics.rs` already does).
+#### Additional: ✅ Auto-download Model2Vec embeddings (231fad4)
 
-### Tier 2 — Moderate Value
+Added `ureq`-based auto-download of potion-base-8M model on first start. All 25 MCP tools now functional.
 
-#### 5. Use QueryBuilder enhancements in handlers
+### Tier 2 — Moderate Value ✅ COMPLETED
 
-Replace manual property filtering with:
-- `graph.query().name_contains(query)` in symbol search
-- `graph.query().file_pattern("**/*.rs")` in file-scoped queries
-- `graph.query().node_type(X).count()` instead of `.execute().len()`
-- `graph.query().node_type(X).exists()` for existence checks
+#### 5. ✅ Use QueryBuilder enhancements in handlers
 
-#### 6. Use built-in export formats for graph visualization
+Replaced 2 file-node lookups with `find_file_by_path()`:
+- `custom.rs` dependency graph handler
+- `mcp/server.rs` MCP dependency graph handler
 
-`views/graphPanel.ts` and the dependency/call graph handlers build custom JSON responses. The new `export_json()` / `export_json_filtered()` methods produce D3.js-compatible output directly, and `export_dot_styled(DotOptions)` could support Graphviz rendering.
+Investigated but skipped:
+- `name_contains()` — symbol search uses custom text index, not `graph.query()`. No handlers do name filtering via QueryBuilder.
+- `count()` — already used in `resources.rs`. No other standalone use cases (sites that check `is_empty()` also need the result nodes).
+- `exists()` — same issue; replaced by `find_file_by_path()` returning `Option<NodeId>` which is cleaner.
 
-#### 7. Use batch operations for faster indexing
+#### 6. Skipped — Export formats incompatible
 
-Replace sequential `add_node()` / `add_edge()` calls during workspace indexing with `add_nodes_batch()` / `add_edges_batch()` for atomic, faster bulk inserts.
+`export_json()` uses D3-style `source`/`target` keys. VSCode convention uses `from`/`to` with string IDs. Not a drop-in replacement.
 
-#### 8. Add new language parsers
+#### 7. Skipped — Batch operations semantic mismatch
 
-Priority order based on user demand:
-1. **Java** (`codegraph-java`) — enterprise users
-2. **C++** (`codegraph-cpp`) — systems programming users
-3. **Kotlin** (`codegraph-kotlin`) — Android/JVM users
-4. **C#** (`codegraph-csharp`) — .NET users
+`add_edges_batch()` is all-or-nothing (verifies all nodes exist, fails entire batch if any missing). Current code uses `let _ = add_edge()` (best-effort, silently ignores individual failures). Changing semantics would reduce resilience during incremental indexing.
 
-Each parser addition requires:
-- Adding the crate dependency to `server/Cargo.toml`
-- Adding the parser to `ParserRegistry::new()` in `parser_registry.rs`
-- Adding the language to `documentSelector` in `extension.ts`
-- Adding the language to `activationEvents` and `codegraph.languages` defaults in `package.json`
+#### 8. ✅ Add new language parsers (e8b1918)
 
-#### 9. Sync codegraph-go
+Java, C++, Kotlin, C# — all added with full test coverage.
 
-`codegraph-go 0.1.5` is published on crates.io and used by vscode, but the monorepo is at 0.1.4. Either:
-- Backport the 0.1.5 changes to the monorepo, or
-- Verify 0.1.5 is compatible with codegraph 0.2.0 + parser-api 0.2.1
+#### 9. Resolved — codegraph-go already in sync
+
+Uses path dependency (`../codegraph-monorepo/crates/codegraph-go`). Already compatible with codegraph 0.2.0 + parser-api 0.2.1. No action needed.
 
 ### Tier 3 — Nice-to-Have
 
@@ -179,9 +171,9 @@ Each parser addition requires:
 
 Instead of returning raw integers for complexity, use the `ComplexityMetrics` struct to provide richer responses including grade, breakdown by category, and threshold comparison.
 
-#### 11. Use `find_file_by_path()` helper
+#### 11. ✅ Use `find_file_by_path()` helper (promoted to Tier 2 #5)
 
-Replace manual `graph.query().property("path", path_value).execute()` lookups with the built-in `find_file_by_path(graph, path)` helper for cleaner, faster file node resolution.
+Completed as part of Tier 2 #5 above.
 
 #### 12. Add remaining parsers
 

@@ -1631,23 +1631,16 @@ impl McpServer {
         let graph = self.backend.graph.read().await;
         let path_str = path.to_string_lossy().to_string();
 
-        // Find nodes in this file
-        let file_nodes = match graph.query().property("path", path_str).execute() {
-            Ok(nodes) => nodes,
-            Err(_) => {
+        // Find the file node
+        let start_node = match codegraph::helpers::find_file_by_path(&graph, &path_str) {
+            Ok(Some(id)) => id,
+            _ => {
                 return serde_json::json!({
                     "nodes": [],
                     "edges": []
                 })
             }
         };
-
-        if file_nodes.is_empty() {
-            return serde_json::json!({
-                "nodes": [],
-                "edges": []
-            });
-        }
 
         // Use built-in BFS for dependency traversal
         let bfs_direction = match direction {
@@ -1657,11 +1650,9 @@ impl McpServer {
         };
 
         let mut reachable_set: HashSet<codegraph::NodeId> = HashSet::new();
-        for &start in &file_nodes {
-            reachable_set.insert(start);
-            if let Ok(reachable) = graph.bfs(start, bfs_direction, Some(depth)) {
-                reachable_set.extend(reachable);
-            }
+        reachable_set.insert(start_node);
+        if let Ok(reachable) = graph.bfs(start_node, bfs_direction, Some(depth)) {
+            reachable_set.extend(reachable);
         }
 
         // Build response nodes

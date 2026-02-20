@@ -129,20 +129,17 @@ impl CodeGraphBackend {
         // Find the file node
         let path_str = path.to_string_lossy().to_string();
 
-        let file_nodes = graph
-            .query()
-            .property("path", path_str.clone())
-            .execute()
-            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
-
-        if file_nodes.is_empty() {
-            return Ok(DependencyGraphResponse {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            });
-        }
-
-        let start_node = file_nodes[0];
+        let start_node = match codegraph::helpers::find_file_by_path(&graph, &path_str)
+            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?
+        {
+            Some(id) => id,
+            None => {
+                return Ok(DependencyGraphResponse {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                });
+            }
+        };
 
         // Use built-in import-aware graph traversal
         let dir_param = params.direction.as_deref().unwrap_or("both");
@@ -801,9 +798,7 @@ impl CodeGraphBackend {
         indirect_visited.insert(node_id);
 
         for impact in &direct_impact {
-            if let Ok(impact_nodes) =
-                graph.query().property("path", impact.uri.clone()).execute()
-            {
+            if let Ok(impact_nodes) = graph.query().property("path", impact.uri.clone()).execute() {
                 for n_id in impact_nodes {
                     if n_id == node_id {
                         continue;
@@ -813,9 +808,7 @@ impl CodeGraphBackend {
                     // Follow incoming edges up to 2 levels from each direct impact
                     if let Ok(indirect_ids) = graph.bfs(n_id, Direction::Incoming, Some(2)) {
                         for indirect_id in indirect_ids {
-                            if indirect_id == node_id
-                                || indirect_visited.contains(&indirect_id)
-                            {
+                            if indirect_id == node_id || indirect_visited.contains(&indirect_id) {
                                 continue;
                             }
                             indirect_visited.insert(indirect_id);
@@ -828,9 +821,7 @@ impl CodeGraphBackend {
                                     .or_else(|| {
                                         self.symbol_index
                                             .find_file_for_node(indirect_id)
-                                            .and_then(|p| {
-                                                p.to_str().map(|s| format!("file://{s}"))
-                                            })
+                                            .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
                                     })
                                     .unwrap_or_default();
 
