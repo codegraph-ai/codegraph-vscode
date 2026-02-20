@@ -1,17 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-02-19
-
-## High Priority
-
-### 1. Fill in AI query engine TODOs
-Four incomplete fields in `ai_query/engine.rs`:
-- Line 284: `edge_type: ""` — should capture actual edge type in callee/caller results
-- Line 356: `dependencies: Vec::new()` — should collect from import edges
-- Line 357: `dependents: Vec::new()` — should collect from incoming import edges
-- Line 360: `has_tests: false` — should detect test associations
-
-These affect `codegraph_get_detailed_symbol` and `codegraph_get_ai_context` tool responses.
+> Last updated: 2026-02-20
 
 ## Medium Priority
 
@@ -27,7 +16,7 @@ Adopt `StringList` / `IntList` property variants for multi-valued properties (e.
 PHP, Ruby, Swift, and Tcl parsers are available in codegraph-monorepo if demand arises. Tcl includes EDA/VLSI domain support.
 
 ### 6. Publish to VS Code Marketplace
-Currently at v0.5.0 locally. Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
+Currently at v0.6.0 locally. Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
 
 ---
 
@@ -46,5 +35,6 @@ Currently at v0.5.0 locally. Requires marketplace publisher setup, CI/CD pipelin
 - ~~Implement remaining 18 MCP tools~~ (689bd36)
 - ~~Add memory layer with git mining~~ (87a2c01)
 - ~~Implement AI Agent Query Engine~~ (a40d75f)
-- ~~Implement MCP git mining tools~~ (uncommitted — wired GitMiner into MCP handlers)
-- ~~Broaden git mining to catch non-conventional commits~~ (uncommitted — keyword detection + fetch-all approach)
+- ~~Implement MCP git mining tools~~ (ae3b0b0)
+- ~~Broaden git mining to catch non-conventional commits~~ (ae3b0b0)
+- ~~Fill in AI query engine TODOs~~ (4bbf24a) — edge_type, dependencies, dependents, has_tests

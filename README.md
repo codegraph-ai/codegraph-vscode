@@ -51,7 +51,19 @@ Persistent memory system for AI agents:
 - Enables AI agents to learn from past debugging sessions and architectural decisions
 
 ### 🌐 Multi-Language Support
-Works with **TypeScript**, **JavaScript**, **Python**, **Rust**, **Go**, and **C** in the same project.
+Works with **10 languages** in the same project:
+
+| Language | Call Graph | Dependencies | Complexity |
+|----------|:----------:|:------------:|:----------:|
+| TypeScript/JavaScript | Yes | Yes | Yes |
+| Python | Yes | Yes | Yes |
+| Rust | Yes | Yes | Yes |
+| Go | Yes | Yes | Yes |
+| C | Yes | Yes | Yes |
+| C++ | — | Yes | Yes |
+| Java | — | Yes | Yes |
+| Kotlin | — | Yes | Yes |
+| C# | — | Yes | Yes |
 
 > **C/Kernel Code**: The C parser includes tolerant mode for parsing Linux kernel drivers and system code without requiring `compile_commands.json`. For full semantic analysis (call graphs, cross-file references), generate a compilation database using `bear -- make` or the kernel build system.
 
@@ -91,7 +103,7 @@ In any VS Code AI chat, mention `@codegraph` to get code intelligence:
 
 ### Language Model Tools
 
-CodeGraph registers **26 tools** that AI agents can use autonomously:
+CodeGraph registers **28 tools** that AI agents can use autonomously:
 
 **Code Analysis** (9 tools)
 | Tool | Purpose |
@@ -116,7 +128,7 @@ CodeGraph registers **26 tools** that AI agents can use autonomously:
 - `codegraph_find_entry_points` - Discover entry points (main, handlers, tests)
 - Plus 3 more specialized tools
 
-**Memory Layer** (7 tools) 🆕
+**Memory Layer** (9 tools)
 - `codegraph_memory_store` - Create memories with code links
 - `codegraph_memory_search` - Hybrid BM25 + semantic + graph search
 - `codegraph_memory_list` - Browse memories with filters
@@ -125,6 +137,7 @@ CodeGraph registers **26 tools** that AI agents can use autonomously:
 - `codegraph_memory_context` - Find relevant memories for code location
 - `codegraph_memory_stats` - Store statistics
 - `codegraph_mine_git_history` - Auto-create memories from git commits
+- `codegraph_mine_git_file` - Mine history for a specific file
 
 The **Memory Layer** enables AI agents to persist and recall context from debugging sessions, architectural decisions, and project history.
 
@@ -137,7 +150,7 @@ See [AI_TOOL_EXAMPLES.md](docs/AI_TOOL_EXAMPLES.md) for detailed usage examples 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `codegraph.enabled` | Enable/disable the extension | `true` |
-| `codegraph.languages` | Languages to index | `["python", "rust", "typescript", "javascript", "go", "c"]` |
+| `codegraph.languages` | Languages to index | `["python", "rust", "typescript", "javascript", "go", "c", "cpp", "java", "kotlin", "csharp"]` |
 | `codegraph.indexOnStartup` | Index workspace on startup | `true` |
 | `codegraph.maxFileSizeKB` | Maximum file size to index (KB) | `1024` |
 | `codegraph.excludePatterns` | Glob patterns to exclude | `["**/node_modules/**", "**/target/**", ...]` |
@@ -172,9 +185,13 @@ A high-performance LSP server built with [tower-lsp](https://github.com/ebkalder
 | `codegraph-parser-api` | Unified parser trait for all languages |
 | `codegraph-typescript` | TypeScript/JavaScript parser (tree-sitter) |
 | `codegraph-python` | Python parser (rustpython-parser) |
-| `codegraph-rust` | Rust parser (syn + tree-sitter) |
+| `codegraph-rust` | Rust parser (tree-sitter) |
 | `codegraph-go` | Go parser (tree-sitter) |
 | `codegraph-c` | C parser (tree-sitter) with kernel code support |
+| `codegraph-cpp` | C++ parser (tree-sitter) |
+| `codegraph-java` | Java parser (tree-sitter) |
+| `codegraph-kotlin` | Kotlin parser (tree-sitter) |
+| `codegraph-csharp` | C# parser (tree-sitter) |
 | `codegraph-memory` | Memory layer with RocksDB and HNSW vector search |
 
 ```
@@ -191,9 +208,9 @@ A high-performance LSP server built with [tower-lsp](https://github.com/ebkalder
 │                  Rust LSP Server (tower-lsp)                 │
 ├─────────────────────────────────────────────────────────────┤
 │                     Parser Registry                          │
-│  ┌────────────┐ ┌────────┐ ┌──────┐ ┌────┐ ┌───┐            │
-│  │ TypeScript │ │ Python │ │ Rust │ │ Go │ │ C │            │
-│  └────────────┘ └────────┘ └──────┘ └────┘ └───┘            │
+│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌───┐ ┌───┐ ┌────┐ ┌──┐ ┌──┐ ┌──┐│
+│  │ TS │ │ Py │ │ Rs │ │ Go │ │ C │ │C++│ │Java│ │Kt│ │C#│ │  ││
+│  └────┘ └────┘ └────┘ └────┘ └───┘ └───┘ └────┘ └──┘ └──┘ └──┘│
 ├─────────────────────────────────────────────────────────────┤
 │  CodeGraph Core: Semantic Graph │ Query Engine │ Caching    │
 └─────────────────────────────────┴─────────────┴─────────────┘

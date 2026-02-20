@@ -2,6 +2,33 @@
 
 All notable changes to the CodeGraph extension will be documented in this file.
 
+## [0.6.0] - 2026-02-20
+
+### Added
+
+- **4 new language parsers**: Java, C++, Kotlin, and C# — bringing total to 10 supported languages
+- **Call extraction for Rust, Go, and C parsers**: `get_call_graph`, `get_callers`, `get_callees`, and `get_detailed_symbol` now return call edges for these languages (previously only TypeScript/JavaScript and Python had call support)
+- **MCP git mining tools**: `mine_git_history` and `mine_git_file` now wired through MCP transport with broadened commit detection beyond conventional prefixes
+- **AI query engine improvements**: `traverse_graph` now reports edge types, `get_detailed_symbol` returns dependencies, dependents, and has_tests fields
+- **Auto-download embedding model**: Model2Vec model is automatically downloaded on first start instead of requiring manual setup
+- **Proximity fallback for symbol lookup**: MCP tools now fall back to nearest symbol when exact line match fails
+- **Compact mode**: `symbol_search`, `find_entry_points`, and `find_by_signature` support compact output to reduce token usage
+- **Windows support**: Added Windows-specific spawn options and build script
+
+### Changed
+
+- Replaced hand-rolled BFS implementations with built-in graph algorithms from codegraph 0.2.0
+- File-node lookups now use `find_file_by_path()` for more reliable matching
+- Language server now starts on VS Code startup for faster first query
+- Memory serialization switched from bincode to JSON for better debuggability
+- Updated all parser crate dependencies to latest versions
+
+### Fixed
+
+- Syntax error detection added to 7 parsers that were missing `has_error()` checks
+- C parser: strict syntax errors, import mapping, and async/decorator capture
+- Python parser: `is_external` flag and strict error handling
+
 ## [0.5.1] - 2026-01-31
 
 ### Fixed
