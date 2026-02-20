@@ -1604,7 +1604,7 @@ impl McpServer {
         direction: &str,
         _include_external: bool,
     ) -> serde_json::Value {
-        use std::collections::{HashSet, VecDeque};
+        use std::collections::HashSet;
 
         let url = match tower_lsp::lsp_types::Url::parse(uri) {
             Ok(u) => u,
@@ -1649,61 +1649,66 @@ impl McpServer {
             });
         }
 
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
+        // Use built-in BFS for dependency traversal
+        let bfs_direction = match direction {
+            "imports" => codegraph::Direction::Outgoing,
+            "importedBy" => codegraph::Direction::Incoming,
+            _ => codegraph::Direction::Both,
+        };
 
-        // Start BFS from file nodes
-        for node_id in &file_nodes {
-            queue.push_back((*node_id, 0usize));
-            visited.insert(*node_id);
+        let mut reachable_set: HashSet<codegraph::NodeId> = HashSet::new();
+        for &start in &file_nodes {
+            reachable_set.insert(start);
+            if let Ok(reachable) = graph.bfs(start, bfs_direction, Some(depth)) {
+                reachable_set.extend(reachable);
+            }
         }
 
-        while let Some((node_id, current_depth)) = queue.pop_front() {
-            if current_depth > depth {
-                continue;
-            }
-
+        // Build response nodes
+        let mut nodes = Vec::new();
+        for &node_id in &reachable_set {
             if let Ok(node) = graph.get_node(node_id) {
                 let name = node.properties.get_string("name").unwrap_or_default();
                 let node_type = format!("{:?}", node.node_type);
-
                 nodes.push(serde_json::json!({
                     "id": node_id.to_string(),
                     "name": name,
                     "type": node_type,
                 }));
+            }
+        }
 
-                // Get neighbors based on direction
-                let directions: Vec<codegraph::Direction> = match direction {
-                    "imports" => vec![codegraph::Direction::Outgoing],
-                    "importedBy" => vec![codegraph::Direction::Incoming],
-                    _ => vec![
-                        codegraph::Direction::Outgoing,
-                        codegraph::Direction::Incoming,
-                    ],
-                };
+        // Collect edges between reachable nodes
+        let mut edges = Vec::new();
+        let mut seen_edges: HashSet<(codegraph::NodeId, codegraph::NodeId)> = HashSet::new();
 
-                for dir in directions {
-                    if let Ok(neighbors) = graph.get_neighbors(node_id, dir) {
-                        for neighbor_id in neighbors {
-                            let (from, to) = match dir {
-                                codegraph::Direction::Outgoing => (node_id, neighbor_id),
-                                codegraph::Direction::Incoming => (neighbor_id, node_id),
-                                codegraph::Direction::Both => (node_id, neighbor_id),
-                            };
+        let edge_directions = match direction {
+            "imports" => vec![codegraph::Direction::Outgoing],
+            "importedBy" => vec![codegraph::Direction::Incoming],
+            _ => vec![
+                codegraph::Direction::Outgoing,
+                codegraph::Direction::Incoming,
+            ],
+        };
 
+        for &node_id in &reachable_set {
+            for &dir in &edge_directions {
+                if let Ok(neighbors) = graph.get_neighbors(node_id, dir) {
+                    for neighbor_id in neighbors {
+                        if !reachable_set.contains(&neighbor_id) {
+                            continue;
+                        }
+                        let (from, to) = match dir {
+                            codegraph::Direction::Outgoing => (node_id, neighbor_id),
+                            codegraph::Direction::Incoming => (neighbor_id, node_id),
+                            codegraph::Direction::Both => (node_id, neighbor_id),
+                        };
+                        if seen_edges.insert((from, to)) {
                             edges.push(serde_json::json!({
                                 "from": from.to_string(),
                                 "to": to.to_string(),
                                 "type": "depends_on",
                             }));
-
-                            if !visited.contains(&neighbor_id) && current_depth < depth {
-                                visited.insert(neighbor_id);
-                                queue.push_back((neighbor_id, current_depth + 1));
-                            }
                         }
                     }
                 }

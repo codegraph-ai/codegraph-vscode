@@ -144,20 +144,33 @@ impl CodeGraphBackend {
 
         let start_node = file_nodes[0];
 
-        // BFS to collect dependency subgraph
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
+        // Use built-in import-aware graph traversal
+        let dir_param = params.direction.as_deref().unwrap_or("both");
+        let mut reachable_set: HashSet<NodeId> = HashSet::new();
+        reachable_set.insert(start_node);
+
+        if dir_param != "importedBy" {
+            // "imports" or "both": follow outgoing import edges
+            if let Ok(deps) =
+                codegraph::helpers::transitive_dependencies(&graph, start_node, Some(depth))
+            {
+                reachable_set.extend(deps);
+            }
+        }
+        if dir_param != "imports" {
+            // "importedBy" or "both": follow incoming import edges
+            if let Ok(deps) =
+                codegraph::helpers::transitive_dependents(&graph, start_node, Some(depth))
+            {
+                reachable_set.extend(deps);
+            }
+        }
+
+        // Build response nodes
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
 
-        queue.push_back((start_node, 0));
-        visited.insert(start_node);
-
-        while let Some((node_id, current_depth)) = queue.pop_front() {
-            if current_depth > depth {
-                continue;
-            }
-
+        for &node_id in &reachable_set {
             if let Ok(node) = graph.get_node(node_id) {
                 // Skip external if not requested
                 let is_external = node
@@ -178,7 +191,6 @@ impl CodeGraphBackend {
                     .unwrap_or("unknown")
                     .to_string();
 
-                // Try to get path from node properties first, then fall back to symbol index
                 let node_path = node
                     .properties
                     .get_string("path")
@@ -197,36 +209,26 @@ impl CodeGraphBackend {
                     language,
                     uri: node_path,
                 });
+            }
+        }
 
-                // Get import edges based on direction
-                let dir_param = params.direction.as_deref().unwrap_or("both");
-
-                // Collect edges based on direction
-                let collected_edges = Self::collect_edges_for_direction(
-                    &graph,
-                    node_id,
-                    dir_param,
-                    "importedBy",
-                    "imports",
-                );
-
-                for (source_id, target_id, edge_type) in collected_edges {
-                    if edge_type == EdgeType::Imports {
-                        edges.push(DependencyEdge {
-                            from: source_id.to_string(),
-                            to: target_id.to_string(),
-                            edge_type: "import".to_string(),
-                        });
-
-                        let next_node = if source_id == node_id {
-                            target_id
-                        } else {
-                            source_id
-                        };
-
-                        if !visited.contains(&next_node) {
-                            visited.insert(next_node);
-                            queue.push_back((next_node, current_depth + 1));
+        // Collect import edges between reachable nodes
+        for &node_id in &reachable_set {
+            if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Outgoing) {
+                for neighbor_id in neighbors {
+                    if reachable_set.contains(&neighbor_id) {
+                        if let Ok(edge_ids) = graph.get_edges_between(node_id, neighbor_id) {
+                            for edge_id in edge_ids {
+                                if let Ok(edge) = graph.get_edge(edge_id) {
+                                    if edge.edge_type == EdgeType::Imports {
+                                        edges.push(DependencyEdge {
+                                            from: node_id.to_string(),
+                                            to: neighbor_id.to_string(),
+                                            edge_type: "import".to_string(),
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -794,54 +796,52 @@ impl CodeGraphBackend {
             }
         }
 
-        // Find indirect impact (transitive dependencies)
-        let mut visited = HashSet::new();
-        let mut queue: VecDeque<(NodeId, Vec<String>)> = VecDeque::new();
+        // Find indirect impact using built-in graph traversal
+        let mut indirect_visited: HashSet<NodeId> = HashSet::new();
+        indirect_visited.insert(node_id);
 
         for impact in &direct_impact {
-            // Get node IDs for direct impacts and trace further
-            if let Ok(nodes) = graph.query().property("path", impact.uri.clone()).execute() {
-                for n_id in nodes {
-                    if !visited.contains(&n_id) && n_id != node_id {
-                        visited.insert(n_id);
-                        queue.push_back((n_id, vec![impact.uri.clone()]));
+            if let Ok(impact_nodes) =
+                graph.query().property("path", impact.uri.clone()).execute()
+            {
+                for n_id in impact_nodes {
+                    if n_id == node_id {
+                        continue;
                     }
-                }
-            }
-        }
+                    indirect_visited.insert(n_id);
 
-        while let Some((current_id, path_chain)) = queue.pop_front() {
-            if path_chain.len() >= 3 {
-                continue; // Limit depth
-            }
+                    // Follow incoming edges up to 2 levels from each direct impact
+                    if let Ok(indirect_ids) = graph.bfs(n_id, Direction::Incoming, Some(2)) {
+                        for indirect_id in indirect_ids {
+                            if indirect_id == node_id
+                                || indirect_visited.contains(&indirect_id)
+                            {
+                                continue;
+                            }
+                            indirect_visited.insert(indirect_id);
 
-            let incoming_edges = Self::get_incoming_edges(&graph, current_id);
-            for (source_id, _target_id, _edge_type) in incoming_edges {
-                if source_id != node_id && !visited.contains(&source_id) {
-                    if let Ok(ref_node) = graph.get_node(source_id) {
-                        let ref_path = ref_node
-                            .properties
-                            .get_string("path")
-                            .map(|s| s.to_string())
-                            .or_else(|| {
-                                self.symbol_index
-                                    .find_file_for_node(source_id)
-                                    .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                            })
-                            .unwrap_or_default();
+                            if let Ok(ref_node) = graph.get_node(indirect_id) {
+                                let ref_path = ref_node
+                                    .properties
+                                    .get_string("path")
+                                    .map(|s| s.to_string())
+                                    .or_else(|| {
+                                        self.symbol_index
+                                            .find_file_for_node(indirect_id)
+                                            .and_then(|p| {
+                                                p.to_str().map(|s| format!("file://{s}"))
+                                            })
+                                    })
+                                    .unwrap_or_default();
 
-                        if !affected_files.contains(&ref_path) {
-                            let mut new_path = path_chain.clone();
-                            new_path.push(ref_path.clone());
-
-                            indirect_impact.push(IndirectImpact {
-                                uri: ref_path,
-                                path: new_path.clone(),
-                                severity: "warning".to_string(),
-                            });
-
-                            visited.insert(source_id);
-                            queue.push_back((source_id, new_path));
+                                if !affected_files.contains(&ref_path) {
+                                    indirect_impact.push(IndirectImpact {
+                                        uri: ref_path.clone(),
+                                        path: vec![impact.uri.clone(), ref_path],
+                                        severity: "warning".to_string(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
