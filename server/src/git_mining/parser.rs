@@ -204,48 +204,47 @@ pub fn parse_log_output(output: &str) -> Result<Vec<CommitInfo>, GitMiningError>
 }
 
 /// Detect the pattern of a commit from its subject and body.
+///
+/// Uses a two-tier approach:
+/// - **Tier 1 (high confidence)**: Conventional prefixes like `fix:`, `feat:`
+/// - **Tier 2 (moderate confidence)**: Keywords anywhere in the message,
+///   catching lazy commit messages like "fixed the login bug" or "added auth"
 pub fn detect_pattern(commit: &CommitInfo) -> (CommitPattern, f32) {
     let subject_lower = commit.subject.to_lowercase();
     let body_lower = commit.body.to_lowercase();
 
-    // Check for bug fix patterns
+    // === Tier 1: Conventional prefix patterns (high confidence) ===
+
+    // Bug fixes — conventional
     if subject_lower.starts_with("fix:")
         || subject_lower.starts_with("fix(")
         || subject_lower.starts_with("bug:")
         || subject_lower.starts_with("bugfix:")
-        || subject_lower.contains("fixed ")
-        || subject_lower.contains("fixes #")
-        || subject_lower.contains("closes #")
     {
         let issue_ref = extract_issue_reference(&commit.subject);
         return (CommitPattern::BugFix { issue_ref }, 0.9);
     }
 
-    // Check for breaking changes
-    if subject_lower.contains("breaking")
-        || subject_lower.starts_with("breaking:")
+    // Breaking changes
+    if subject_lower.starts_with("breaking:")
         || body_lower.contains("breaking change")
-        || body_lower.contains("breaking:")
+        || body_lower.starts_with("breaking:")
     {
         return (CommitPattern::BreakingChange, 0.95);
     }
 
-    // Check for deprecations
-    if subject_lower.starts_with("deprecate:")
-        || subject_lower.starts_with("deprecated:")
-        || subject_lower.contains("deprecat")
-        || body_lower.contains("deprecat")
-    {
+    // Deprecations — conventional
+    if subject_lower.starts_with("deprecate:") || subject_lower.starts_with("deprecated:") {
         return (CommitPattern::Deprecation, 0.9);
     }
 
-    // Check for reverts
+    // Reverts
     if subject_lower.starts_with("revert") {
         let reverted_hash = extract_revert_hash(&commit.subject);
         return (CommitPattern::Revert { reverted_hash }, 0.95);
     }
 
-    // Check for architectural decisions
+    // Architectural decisions — conventional
     if subject_lower.starts_with("arch:")
         || subject_lower.starts_with("adr:")
         || subject_lower.starts_with("decision:")
@@ -255,7 +254,7 @@ pub fn detect_pattern(commit: &CommitInfo) -> (CommitPattern, f32) {
         return (CommitPattern::ArchitecturalDecision, 0.85);
     }
 
-    // Check for features
+    // Features — conventional
     if subject_lower.starts_with("feat:")
         || subject_lower.starts_with("feat(")
         || subject_lower.starts_with("feature:")
@@ -264,7 +263,7 @@ pub fn detect_pattern(commit: &CommitInfo) -> (CommitPattern, f32) {
         return (CommitPattern::Feature, 0.8);
     }
 
-    // Check for refactoring
+    // Refactoring — conventional
     if subject_lower.starts_with("refactor:")
         || subject_lower.starts_with("refactor(")
         || subject_lower.starts_with("cleanup:")
@@ -273,7 +272,7 @@ pub fn detect_pattern(commit: &CommitInfo) -> (CommitPattern, f32) {
         return (CommitPattern::Refactor, 0.8);
     }
 
-    // Check for documentation
+    // Documentation — conventional
     if subject_lower.starts_with("docs:")
         || subject_lower.starts_with("doc:")
         || subject_lower.starts_with("documentation:")
@@ -281,12 +280,89 @@ pub fn detect_pattern(commit: &CommitInfo) -> (CommitPattern, f32) {
         return (CommitPattern::Documentation, 0.9);
     }
 
-    // Check for tests
+    // Tests — conventional
     if subject_lower.starts_with("test:")
         || subject_lower.starts_with("tests:")
         || subject_lower.starts_with("testing:")
     {
         return (CommitPattern::Test, 0.9);
+    }
+
+    // === Tier 2: Keyword detection anywhere in message (moderate confidence) ===
+    // Catches lazy messages like "fixed login bug", "added new endpoint", etc.
+
+    // Bug fixes — keyword matching
+    if subject_lower.contains("fixed ")
+        || subject_lower.contains("fixes ")
+        || subject_lower.contains("fixing ")
+        || subject_lower.contains("closes #")
+        || subject_lower.contains("fixes #")
+        || subject_lower.contains("bug ")
+        || subject_lower.contains("bugfix")
+        || subject_lower.contains("hotfix")
+        || subject_lower.contains("patch ")
+        || subject_lower.contains("resolve ")
+        || subject_lower.contains("resolved ")
+        || subject_lower.contains("resolves ")
+        || subject_lower.contains("crash")
+        || subject_lower.contains("error handling")
+        || subject_lower.contains("workaround")
+    {
+        let issue_ref = extract_issue_reference(&commit.subject);
+        return (CommitPattern::BugFix { issue_ref }, 0.75);
+    }
+
+    // Breaking changes — keyword matching
+    if subject_lower.contains("breaking") || subject_lower.contains("incompatible") {
+        return (CommitPattern::BreakingChange, 0.8);
+    }
+
+    // Deprecations — keyword matching
+    if subject_lower.contains("deprecat") || body_lower.contains("deprecat") {
+        return (CommitPattern::Deprecation, 0.75);
+    }
+
+    // Tests — keyword matching (before features, since "added tests" should be Test not Feature)
+    if subject_lower.contains("test")
+        || subject_lower.contains("spec ")
+        || subject_lower.contains("coverage")
+    {
+        return (CommitPattern::Test, 0.7);
+    }
+
+    // Documentation — keyword matching (before features, since "added docs" should be Docs)
+    if subject_lower.contains("readme")
+        || subject_lower.contains("document")
+        || subject_lower.contains("comment")
+        || subject_lower.contains("changelog")
+    {
+        return (CommitPattern::Documentation, 0.7);
+    }
+
+    // Refactoring — keyword matching (before features, since "restructured" is not a feature)
+    if subject_lower.contains("refactor")
+        || subject_lower.contains("restructur")
+        || subject_lower.contains("reorganiz")
+        || subject_lower.contains("simplif")
+        || subject_lower.contains("clean up")
+        || subject_lower.contains("cleanup")
+        || subject_lower.contains("move ")
+        || subject_lower.contains("rename ")
+        || subject_lower.contains("extract ")
+    {
+        return (CommitPattern::Refactor, 0.7);
+    }
+
+    // Features — keyword matching (last among content patterns, most generic)
+    if subject_lower.contains("added ")
+        || subject_lower.contains("adding ")
+        || subject_lower.contains("implement")
+        || subject_lower.contains("introduce")
+        || subject_lower.contains("new ")
+        || subject_lower.contains("support for")
+        || subject_lower.contains("enable ")
+    {
+        return (CommitPattern::Feature, 0.7);
     }
 
     (CommitPattern::Other, 0.5)
@@ -373,5 +449,74 @@ mod tests {
             Some("#456".to_string())
         );
         assert_eq!(extract_issue_reference("no issue"), None);
+    }
+
+    fn make_commit(subject: &str) -> CommitInfo {
+        CommitInfo {
+            hash: "abc123".to_string(),
+            subject: subject.to_string(),
+            body: String::new(),
+            author_name: "Test".to_string(),
+            author_email: "test@example.com".to_string(),
+            author_date: "2024-01-01".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_detect_lazy_bug_fix() {
+        // "fixed" without conventional prefix
+        let (pattern, confidence) = detect_pattern(&make_commit("Fixed the login page crash"));
+        assert!(matches!(pattern, CommitPattern::BugFix { .. }));
+        assert!(confidence >= 0.7);
+        assert!(confidence < 0.9); // Lower than conventional
+
+        // "resolved" keyword
+        let (pattern, _) = detect_pattern(&make_commit("Resolved null pointer in parser"));
+        assert!(matches!(pattern, CommitPattern::BugFix { .. }));
+    }
+
+    #[test]
+    fn test_detect_lazy_feature() {
+        let (pattern, confidence) = detect_pattern(&make_commit("Added dark mode support"));
+        assert!(matches!(pattern, CommitPattern::Feature));
+        assert!(confidence >= 0.7);
+
+        let (pattern, _) = detect_pattern(&make_commit("Implement user authentication"));
+        assert!(matches!(pattern, CommitPattern::Feature));
+    }
+
+    #[test]
+    fn test_detect_lazy_refactor() {
+        let (pattern, _) = detect_pattern(&make_commit("Refactored the database layer"));
+        assert!(matches!(pattern, CommitPattern::Refactor));
+
+        let (pattern, _) = detect_pattern(&make_commit("Rename UserService to AuthService"));
+        assert!(matches!(pattern, CommitPattern::Refactor));
+    }
+
+    #[test]
+    fn test_detect_lazy_docs() {
+        let (pattern, _) = detect_pattern(&make_commit("Updated README with install instructions"));
+        assert!(matches!(pattern, CommitPattern::Documentation));
+    }
+
+    #[test]
+    fn test_detect_lazy_test() {
+        let (pattern, _) = detect_pattern(&make_commit("Added unit tests for auth module"));
+        assert!(matches!(pattern, CommitPattern::Test));
+    }
+
+    #[test]
+    fn test_conventional_higher_confidence_than_keyword() {
+        let (_, conv_confidence) = detect_pattern(&make_commit("fix: null pointer"));
+        let (_, kw_confidence) = detect_pattern(&make_commit("Fixed null pointer"));
+        assert!(conv_confidence > kw_confidence);
+    }
+
+    #[test]
+    fn test_unknown_commit_stays_other() {
+        let (pattern, confidence) = detect_pattern(&make_commit("wip"));
+        assert!(matches!(pattern, CommitPattern::Other));
+        assert!(confidence < 0.7);
     }
 }

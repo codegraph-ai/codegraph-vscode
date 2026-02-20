@@ -31,8 +31,6 @@ pub struct MiningConfig {
     pub mine_features: bool,
     /// Whether to mine deprecations as known issues.
     pub mine_deprecations: bool,
-    /// Patterns to search for (grep patterns).
-    pub grep_patterns: Vec<String>,
 }
 
 impl Default for MiningConfig {
@@ -44,18 +42,8 @@ impl Default for MiningConfig {
             mine_arch_decisions: true,
             mine_breaking_changes: true,
             mine_reverts: true,
-            mine_features: false, // Off by default to avoid noise
+            mine_features: true,
             mine_deprecations: true,
-            grep_patterns: vec![
-                "fix:".to_string(),
-                "bug:".to_string(),
-                "BREAKING".to_string(),
-                "revert".to_string(),
-                "arch:".to_string(),
-                "adr:".to_string(),
-                "feat:".to_string(),
-                "deprecate".to_string(),
-            ],
         }
     }
 }
@@ -211,30 +199,18 @@ impl GitMiner {
         Ok(result)
     }
 
-    /// Collect commits that match configured patterns.
+    /// Collect recent commits for mining.
+    ///
+    /// Fetches the last `max_commits` commits directly (no grep filter),
+    /// so commits with non-conventional messages are still processed.
     fn collect_relevant_commits(
         &self,
         config: &MiningConfig,
     ) -> Result<Vec<CommitInfo>, GitMiningError> {
-        let mut all_commits = Vec::new();
-        let mut seen_hashes = std::collections::HashSet::new();
-
-        for pattern in &config.grep_patterns {
-            let output = self
-                .executor
-                .log_grep(pattern, LOG_FORMAT, Some(config.max_commits))?;
-
-            let commits = parser::parse_log_output(&output)?;
-            for commit in commits {
-                if seen_hashes.insert(commit.hash.clone()) {
-                    all_commits.push(commit);
-                }
-            }
-        }
-
-        // Limit total commits
-        all_commits.truncate(config.max_commits);
-        Ok(all_commits)
+        let output = self
+            .executor
+            .log(LOG_FORMAT, Some(config.max_commits), None)?;
+        parser::parse_log_output(&output)
     }
 
     /// Process a single commit and optionally create a memory.

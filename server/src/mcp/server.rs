@@ -7,6 +7,7 @@ use super::resources::get_all_resources;
 use super::tools::get_all_tools;
 use super::transport::AsyncStdioTransport;
 use crate::ai_query::QueryEngine;
+use crate::git_mining::{GitMiner, MiningConfig};
 use crate::memory::MemoryManager;
 use crate::parser_registry::ParserRegistry;
 use codegraph::CodeGraph;
@@ -1429,15 +1430,39 @@ impl McpServer {
                     .get("minConfidence")
                     .or_else(|| args.get("min_confidence"))
                     .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
                     .unwrap_or(0.7);
 
-                // Git mining is a complex operation - return status for now
-                Ok(serde_json::json!({
-                    "status": "not_fully_implemented",
-                    "message": "Git history mining requires additional setup. Use the VS Code extension for full git mining capabilities.",
-                    "requested_max_commits": max_commits,
-                    "requested_min_confidence": min_confidence
-                }))
+                let repo_path = self
+                    .backend
+                    .workspace_folders
+                    .first()
+                    .ok_or("No workspace folder available for git mining")?;
+
+                let miner = GitMiner::new(repo_path).map_err(|e| e.to_string())?;
+                let config = MiningConfig {
+                    max_commits,
+                    min_confidence,
+                    ..MiningConfig::default()
+                };
+
+                match miner
+                    .mine_repository(&self.backend.memory_manager, &self.backend.graph, &config)
+                    .await
+                {
+                    Ok(result) => Ok(serde_json::json!({
+                        "status": "success",
+                        "commits_processed": result.commits_processed,
+                        "memories_created": result.memories_created,
+                        "commits_skipped": result.commits_skipped,
+                        "memory_ids": result.memory_ids,
+                        "warnings": result.warnings
+                    })),
+                    Err(e) => Ok(serde_json::json!({
+                        "status": "error",
+                        "message": e.to_string()
+                    })),
+                }
             }
 
             "codegraph_mine_git_file" => {
@@ -1451,13 +1476,63 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(100);
+                let min_confidence = args
+                    .get("minConfidence")
+                    .or_else(|| args.get("min_confidence"))
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(0.7);
 
-                Ok(serde_json::json!({
-                    "status": "not_fully_implemented",
-                    "message": "File-specific git mining requires additional setup. Use the VS Code extension for full git mining capabilities.",
-                    "uri": uri,
-                    "requested_max_commits": max_commits
-                }))
+                let file_path = match tower_lsp::lsp_types::Url::parse(uri) {
+                    Ok(url) => match url.to_file_path() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            return Ok(serde_json::json!({
+                                "status": "error",
+                                "message": "Invalid file URI"
+                            }))
+                        }
+                    },
+                    Err(_) => std::path::PathBuf::from(uri),
+                };
+
+                let repo_path = self
+                    .backend
+                    .workspace_folders
+                    .first()
+                    .ok_or("No workspace folder available for git mining")?;
+
+                let miner = GitMiner::new(repo_path).map_err(|e| e.to_string())?;
+                let config = MiningConfig {
+                    max_commits,
+                    min_confidence,
+                    ..MiningConfig::default()
+                };
+
+                match miner
+                    .mine_file(
+                        &file_path,
+                        &self.backend.memory_manager,
+                        &self.backend.graph,
+                        &config,
+                    )
+                    .await
+                {
+                    Ok(result) => Ok(serde_json::json!({
+                        "status": "success",
+                        "uri": uri,
+                        "commits_processed": result.commits_processed,
+                        "memories_created": result.memories_created,
+                        "commits_skipped": result.commits_skipped,
+                        "memory_ids": result.memory_ids,
+                        "warnings": result.warnings
+                    })),
+                    Err(e) => Ok(serde_json::json!({
+                        "status": "error",
+                        "uri": uri,
+                        "message": e.to_string()
+                    })),
+                }
             }
 
             // ==================== Admin Tools ====================

@@ -2469,16 +2469,6 @@ impl CodeGraphBackend {
             mine_reverts,
             mine_features,
             mine_deprecations,
-            grep_patterns: vec![
-                "fix:".to_string(),
-                "bug:".to_string(),
-                "BREAKING".to_string(),
-                "revert".to_string(),
-                "arch:".to_string(),
-                "adr:".to_string(),
-                "feat:".to_string(),
-                "deprecate".to_string(),
-            ],
         };
 
         // Create miner and run
