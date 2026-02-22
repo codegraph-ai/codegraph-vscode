@@ -7,7 +7,7 @@ use super::{
 };
 use crate::memory::MemoryManager;
 use codegraph::CodeGraph;
-use codegraph_memory::{LinkedNodeType, MemoryNode};
+use codegraph_memory::{LinkedNodeType, MemoryNode, MemorySource};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -112,16 +112,23 @@ impl GitMiner {
     ) -> Result<MiningResult, GitMiningError> {
         let mut result = MiningResult::default();
 
+        // Collect already-mined commit hashes to avoid duplicates
+        let already_mined = Self::collect_mined_commits(memory_manager).await;
+
         // Collect commits matching our patterns
         let commits = self.collect_relevant_commits(config)?;
         result.commits_processed = commits.len();
 
-        tracing::info!("Found {} relevant commits to process", commits.len());
+        tracing::info!(
+            "Found {} relevant commits to process ({} already mined)",
+            commits.len(),
+            already_mined.len()
+        );
 
         // Process each commit
         for commit in commits {
             match self
-                .process_commit(&commit, memory_manager, graph, config)
+                .process_commit(&commit, memory_manager, graph, config, &already_mined)
                 .await
             {
                 Ok(Some(memory_id)) => {
@@ -161,6 +168,9 @@ impl GitMiner {
     ) -> Result<MiningResult, GitMiningError> {
         let mut result = MiningResult::default();
 
+        // Collect already-mined commit hashes to avoid duplicates
+        let already_mined = Self::collect_mined_commits(memory_manager).await;
+
         // Get commits that touched this file
         let output = self
             .executor
@@ -169,14 +179,15 @@ impl GitMiner {
         result.commits_processed = commits.len();
 
         tracing::info!(
-            "Found {} commits for file {}",
+            "Found {} commits for file {} ({} already mined)",
             commits.len(),
-            file_path.display()
+            file_path.display(),
+            already_mined.len()
         );
 
         for commit in commits {
             match self
-                .process_commit(&commit, memory_manager, graph, config)
+                .process_commit(&commit, memory_manager, graph, config, &already_mined)
                 .await
             {
                 Ok(Some(memory_id)) => {
@@ -197,6 +208,27 @@ impl GitMiner {
         }
 
         Ok(result)
+    }
+
+    /// Collect commit hashes that have already been mined into memories.
+    async fn collect_mined_commits(
+        memory_manager: &MemoryManager,
+    ) -> std::collections::HashSet<String> {
+        let memories = memory_manager
+            .get_all_memories(false) // include invalidated too — still counts as mined
+            .await
+            .unwrap_or_default();
+
+        memories
+            .into_iter()
+            .filter_map(|m| {
+                if let MemorySource::GitHistory { commit_hash } = m.source {
+                    Some(commit_hash)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Collect recent commits for mining.
@@ -220,7 +252,13 @@ impl GitMiner {
         memory_manager: &MemoryManager,
         graph: &Arc<RwLock<CodeGraph>>,
         config: &MiningConfig,
+        already_mined: &std::collections::HashSet<String>,
     ) -> Result<Option<String>, GitMiningError> {
+        // Skip commits that have already been mined
+        if already_mined.contains(&commit.hash) {
+            return Ok(None);
+        }
+
         // Detect pattern
         let (pattern, confidence) = parser::detect_pattern(commit);
 

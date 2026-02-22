@@ -51,7 +51,7 @@ Persistent memory system for AI agents:
 - Enables AI agents to learn from past debugging sessions and architectural decisions
 
 ### 🌐 Multi-Language Support
-Works with **10 languages** in the same project:
+Works with **14 languages** in the same project:
 
 | Language | Call Graph | Dependencies | Complexity |
 |----------|:----------:|:------------:|:----------:|
@@ -64,6 +64,10 @@ Works with **10 languages** in the same project:
 | Java | — | Yes | Yes |
 | Kotlin | — | Yes | Yes |
 | C# | — | Yes | Yes |
+| PHP | — | Yes | Yes |
+| Ruby | — | Yes | Yes |
+| Swift | — | Yes | Yes |
+| Tcl | — | Yes | Yes |
 
 > **C/Kernel Code**: The C parser includes tolerant mode for parsing Linux kernel drivers and system code without requiring `compile_commands.json`. For full semantic analysis (call graphs, cross-file references), generate a compilation database using `bear -- make` or the kernel build system.
 
@@ -150,7 +154,7 @@ See [AI_TOOL_EXAMPLES.md](docs/AI_TOOL_EXAMPLES.md) for detailed usage examples 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `codegraph.enabled` | Enable/disable the extension | `true` |
-| `codegraph.languages` | Languages to index | `["python", "rust", "typescript", "javascript", "go", "c", "cpp", "java", "kotlin", "csharp"]` |
+| `codegraph.languages` | Languages to index | `["python", "rust", "typescript", "javascript", "go", "c", "cpp", "java", "kotlin", "csharp", "php", "ruby", "swift", "tcl"]` |
 | `codegraph.indexOnStartup` | Index workspace on startup | `true` |
 | `codegraph.maxFileSizeKB` | Maximum file size to index (KB) | `1024` |
 | `codegraph.excludePatterns` | Glob patterns to exclude | `["**/node_modules/**", "**/target/**", ...]` |
@@ -192,6 +196,10 @@ A high-performance LSP server built with [tower-lsp](https://github.com/ebkalder
 | `codegraph-java` | Java parser (tree-sitter) |
 | `codegraph-kotlin` | Kotlin parser (tree-sitter) |
 | `codegraph-csharp` | C# parser (tree-sitter) |
+| `codegraph-php` | PHP parser (tree-sitter) |
+| `codegraph-ruby` | Ruby parser (tree-sitter) |
+| `codegraph-swift` | Swift parser (tree-sitter) |
+| `codegraph-tcl` | Tcl parser (tree-sitter) |
 | `codegraph-memory` | Memory layer with RocksDB and HNSW vector search |
 
 ```
@@ -208,9 +216,12 @@ A high-performance LSP server built with [tower-lsp](https://github.com/ebkalder
 │                  Rust LSP Server (tower-lsp)                 │
 ├─────────────────────────────────────────────────────────────┤
 │                     Parser Registry                          │
-│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌───┐ ┌───┐ ┌────┐ ┌──┐ ┌──┐ ┌──┐│
-│  │ TS │ │ Py │ │ Rs │ │ Go │ │ C │ │C++│ │Java│ │Kt│ │C#│ │  ││
-│  └────┘ └────┘ └────┘ └────┘ └───┘ └───┘ └────┘ └──┘ └──┘ └──┘│
+│  ┌────┐ ┌────┐ ┌────┐ ┌──┐ ┌──┐ ┌───┐ ┌────┐ ┌──┐ ┌──┐          │
+│  │ TS │ │ Py │ │ Rs │ │Go│ │ C│ │C++│ │Java│ │Kt│ │C#│          │
+│  └────┘ └────┘ └────┘ └──┘ └──┘ └───┘ └────┘ └──┘ └──┘          │
+│  ┌─────┐ ┌────┐ ┌─────┐ ┌─────┐                                  │
+│  │ PHP │ │ Rb │ │Swift│ │ Tcl │                                   │
+│  └─────┘ └────┘ └─────┘ └─────┘                                  │
 ├─────────────────────────────────────────────────────────────┤
 │  CodeGraph Core: Semantic Graph │ Query Engine │ Caching    │
 └─────────────────────────────────┴─────────────┴─────────────┘

@@ -44,6 +44,10 @@ codegraph-java = { path = "../codegraph-monorepo/crates/codegraph-java" }
 codegraph-cpp = { path = "../codegraph-monorepo/crates/codegraph-cpp" }
 codegraph-kotlin = { path = "../codegraph-monorepo/crates/codegraph-kotlin" }
 codegraph-csharp = { path = "../codegraph-monorepo/crates/codegraph-csharp" }
+codegraph-php = { path = "../codegraph-monorepo/crates/codegraph-php" }
+codegraph-ruby = { path = "../codegraph-monorepo/crates/codegraph-ruby" }
+codegraph-swift = { path = "../codegraph-monorepo/crates/codegraph-swift" }
+codegraph-tcl = { path = "../codegraph-monorepo/crates/codegraph-tcl" }
 
 [profile.release]
 opt-level = 3

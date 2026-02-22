@@ -250,64 +250,62 @@ impl CodeGraphBackend {
         let graph = self.graph.read().await;
         let limit = params.limit.unwrap_or(10);
 
-        // Find node at position
-        let Some(node_id) = self.find_node_at_position(&graph, &path, params.position)? else {
-            return Ok(RelatedTestsResponse {
-                tests: Vec::new(),
-                truncated: None,
-            });
-        };
+        // Find node at position — optional, used for stage 1 only
+        let node_id = self.find_node_at_position(&graph, &path, params.position)?;
 
         let mut tests = Vec::new();
         let mut seen = HashSet::new();
 
-        // First, look for direct callers/references that are tests
-        for (source_id, _target_id, edge_type) in Self::get_incoming_edges(&graph, node_id) {
-            if let Ok(node) = graph.get_node(source_id) {
-                if !Self::is_test_node(node) {
-                    continue;
+        // Stage 1: look for direct callers/references that are tests (requires a resolved node)
+        if let Some(node_id) = node_id {
+            seen.insert(node_id);
+            for (source_id, _target_id, edge_type) in Self::get_incoming_edges(&graph, node_id) {
+                if let Ok(node) = graph.get_node(source_id) {
+                    if !Self::is_test_node(node) {
+                        continue;
+                    }
+
+                    if !seen.insert(source_id) {
+                        continue;
+                    }
+
+                    if let Some(range) = Self::node_to_range(node) {
+                        let node_path = node
+                            .properties
+                            .get_string("path")
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                self.symbol_index
+                                    .find_file_for_node(source_id)
+                                    .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
+                            })
+                            .unwrap_or_default();
+
+                        tests.push(RelatedTest {
+                            uri: node_path,
+                            test_name: node.properties.get_string("name").unwrap_or("").to_string(),
+                            relationship: match edge_type {
+                                EdgeType::Calls => "calls_target".to_string(),
+                                EdgeType::References => "references_target".to_string(),
+                                _ => "related".to_string(),
+                            },
+                            range,
+                        });
+                    }
                 }
 
-                if !seen.insert(source_id) {
-                    continue;
+                if tests.len() >= limit {
+                    break;
                 }
-
-                if let Some(range) = Self::node_to_range(node) {
-                    let node_path = node
-                        .properties
-                        .get_string("path")
-                        .map(|s| s.to_string())
-                        .or_else(|| {
-                            self.symbol_index
-                                .find_file_for_node(source_id)
-                                .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                        })
-                        .unwrap_or_default();
-
-                    tests.push(RelatedTest {
-                        uri: node_path,
-                        test_name: node.properties.get_string("name").unwrap_or("").to_string(),
-                        relationship: match edge_type {
-                            EdgeType::Calls => "calls_target".to_string(),
-                            EdgeType::References => "references_target".to_string(),
-                            _ => "related".to_string(),
-                        },
-                        range,
-                    });
-                }
-            }
-
-            if tests.len() >= limit {
-                break;
             }
         }
 
-        // If we did not find enough, look for siblings in the same file with test-like names
+        // Stage 2: look for siblings in the same file with test-like names
         if tests.len() < limit {
             let path_str = path.to_string_lossy().to_string();
             if let Ok(same_file_nodes) = graph.query().property("path", path_str).execute() {
                 for sibling_id in same_file_nodes {
-                    if sibling_id == node_id || seen.contains(&sibling_id) {
+                    if seen.contains(&sibling_id) {
                         continue;
                     }
                     if let Ok(node) = graph.get_node(sibling_id) {
@@ -348,6 +346,43 @@ impl CodeGraphBackend {
             }
         }
 
+        // Stage 3: look for test functions in adjacent test files (.test.ts, _test.rs, etc.)
+        if tests.len() < limit {
+            let path_str = path.to_string_lossy().to_string();
+            let test_path_patterns = Self::generate_test_path_patterns(&path_str);
+            for test_path in &test_path_patterns {
+                if tests.len() >= limit {
+                    break;
+                }
+                if let Ok(adjacent_nodes) =
+                    graph.query().property("path", test_path.as_str()).execute()
+                {
+                    for sibling_id in adjacent_nodes {
+                        if !seen.insert(sibling_id) || tests.len() >= limit {
+                            continue;
+                        }
+                        if let Ok(node) = graph.get_node(sibling_id) {
+                            if !Self::is_test_node(node) {
+                                continue;
+                            }
+                            if let Some(range) = Self::node_to_range(node) {
+                                tests.push(RelatedTest {
+                                    uri: test_path.clone(),
+                                    test_name: node
+                                        .properties
+                                        .get_string("name")
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    relationship: "adjacent_file".to_string(),
+                                    range,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let truncated = if tests.len() >= limit {
             Some(true)
         } else {
@@ -355,6 +390,38 @@ impl CodeGraphBackend {
         };
 
         Ok(RelatedTestsResponse { tests, truncated })
+    }
+
+    /// Generate candidate test file paths for a source file.
+    /// Given `/src/foo.ts`, generates patterns like `/src/foo.test.ts`, `/src/foo.spec.ts`, etc.
+    fn generate_test_path_patterns(source_path: &str) -> Vec<String> {
+        let path = std::path::Path::new(source_path);
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => return vec![],
+        };
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let dir = path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let mut patterns = Vec::new();
+
+        if !ext.is_empty() {
+            // Adjacent test files: foo.test.ts, foo.spec.ts
+            patterns.push(format!("{dir}/{stem}.test.{ext}"));
+            patterns.push(format!("{dir}/{stem}.spec.{ext}"));
+            // Rust/Go convention: foo_test.rs
+            patterns.push(format!("{dir}/{stem}_test.{ext}"));
+            // Subdirectory conventions
+            patterns.push(format!("{dir}/tests/{stem}.{ext}"));
+            patterns.push(format!("{dir}/__tests__/{stem}.{ext}"));
+            patterns.push(format!("{dir}/test/{stem}.{ext}"));
+            patterns.push(format!("{dir}/tests/{stem}_test.{ext}"));
+        }
+
+        patterns
     }
 
     fn is_test_node(node: &Node) -> bool {

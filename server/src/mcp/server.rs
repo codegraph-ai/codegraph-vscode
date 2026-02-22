@@ -117,6 +117,8 @@ impl McpBackend {
                         || name == "build"
                         || name == "out"
                         || name == "vendor"
+                        || name == "DerivedData"
+                        || name == "tmp"
                     {
                         continue;
                     }
@@ -1399,11 +1401,22 @@ impl McpServer {
                     .await
                     .map_err(|e| format!("Memory search failed: {:?}", e))?;
 
-                // Deduplicate by title (git-mined commits can create duplicate memories)
+                // Deduplicate by title and commit hash (git-mined commits create duplicates)
                 let mut seen_titles = std::collections::HashSet::new();
+                let mut seen_commits = std::collections::HashSet::new();
                 let results_json: Vec<serde_json::Value> = results
                     .iter()
-                    .filter(|r| seen_titles.insert(r.memory.title.clone()))
+                    .filter(|r| {
+                        // Skip if commit hash already seen
+                        if let crate::memory::MemorySource::GitHistory { ref commit_hash } =
+                            r.memory.source
+                        {
+                            if !seen_commits.insert(commit_hash.clone()) {
+                                return false;
+                            }
+                        }
+                        seen_titles.insert(r.memory.title.clone())
+                    })
                     .map(|r| {
                         serde_json::json!({
                             "id": r.memory.id,
@@ -1537,11 +1550,21 @@ impl McpServer {
                     .await
                     .map_err(|e| format!("Memory search failed: {:?}", e))?;
 
-                // Deduplicate by title (git-mined commits can create multiple memories)
+                // Deduplicate by title and commit hash (git-mined commits create duplicates)
                 let mut seen_titles = std::collections::HashSet::new();
+                let mut seen_commits = std::collections::HashSet::new();
                 let results_json: Vec<serde_json::Value> = results
                     .iter()
-                    .filter(|r| seen_titles.insert(r.memory.title.clone()))
+                    .filter(|r| {
+                        if let crate::memory::MemorySource::GitHistory { ref commit_hash } =
+                            r.memory.source
+                        {
+                            if !seen_commits.insert(commit_hash.clone()) {
+                                return false;
+                            }
+                        }
+                        seen_titles.insert(r.memory.title.clone())
+                    })
                     .map(|r| {
                         serde_json::json!({
                             "id": r.memory.id,
@@ -1617,8 +1640,9 @@ impl McpServer {
                     .await
                     .map_err(|e| format!("Failed to list memories: {:?}", e))?;
 
-                // Apply kinds/tags filters and deduplicate by title
+                // Apply kinds/tags filters and deduplicate by title + commit hash
                 let mut seen_titles = std::collections::HashSet::new();
+                let mut seen_commits = std::collections::HashSet::new();
                 let filtered: Vec<&crate::memory::MemoryNode> = all_memories
                     .iter()
                     .filter(|m| {
@@ -1630,7 +1654,14 @@ impl McpServer {
                         if !tags.is_empty() && !tags.iter().any(|t| m.tags.contains(t)) {
                             return false;
                         }
-                        // Deduplicate by title (git-mined commits create duplicates)
+                        // Deduplicate by commit hash (git-mined commits create duplicates)
+                        if let crate::memory::MemorySource::GitHistory { ref commit_hash } =
+                            m.source
+                        {
+                            if !seen_commits.insert(commit_hash.clone()) {
+                                return false;
+                            }
+                        }
                         seen_titles.insert(m.title.clone())
                     })
                     .collect();
@@ -2061,37 +2092,43 @@ impl McpServer {
 
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(start); // Don't include start node in results
 
         // Get callers and/or callees based on direction
         match direction {
             "callers" => {
                 let callers = self.backend.query_engine.get_callers(start, depth).await;
                 for caller in callers {
-                    nodes.push(serde_json::json!({
-                        "id": caller.node_id.to_string(),
-                        "name": caller.symbol.name,
-                        "depth": caller.depth,
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": caller.node_id.to_string(),
-                        "to": start.to_string(),
-                        "type": "calls",
-                    }));
+                    if seen.insert(caller.node_id) {
+                        nodes.push(serde_json::json!({
+                            "id": caller.node_id.to_string(),
+                            "name": caller.symbol.name,
+                            "depth": caller.depth,
+                        }));
+                        edges.push(serde_json::json!({
+                            "from": caller.node_id.to_string(),
+                            "to": start.to_string(),
+                            "type": "calls",
+                        }));
+                    }
                 }
             }
             "callees" => {
                 let callees = self.backend.query_engine.get_callees(start, depth).await;
                 for callee in callees {
-                    nodes.push(serde_json::json!({
-                        "id": callee.node_id.to_string(),
-                        "name": callee.symbol.name,
-                        "depth": callee.depth,
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": start.to_string(),
-                        "to": callee.node_id.to_string(),
-                        "type": "calls",
-                    }));
+                    if seen.insert(callee.node_id) {
+                        nodes.push(serde_json::json!({
+                            "id": callee.node_id.to_string(),
+                            "name": callee.symbol.name,
+                            "depth": callee.depth,
+                        }));
+                        edges.push(serde_json::json!({
+                            "from": start.to_string(),
+                            "to": callee.node_id.to_string(),
+                            "type": "calls",
+                        }));
+                    }
                 }
             }
             _ => {
@@ -2100,31 +2137,35 @@ impl McpServer {
                 let callees = self.backend.query_engine.get_callees(start, depth).await;
 
                 for caller in callers {
-                    nodes.push(serde_json::json!({
-                        "id": caller.node_id.to_string(),
-                        "name": caller.symbol.name,
-                        "depth": caller.depth,
-                        "direction": "caller",
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": caller.node_id.to_string(),
-                        "to": start.to_string(),
-                        "type": "calls",
-                    }));
+                    if seen.insert(caller.node_id) {
+                        nodes.push(serde_json::json!({
+                            "id": caller.node_id.to_string(),
+                            "name": caller.symbol.name,
+                            "depth": caller.depth,
+                            "direction": "caller",
+                        }));
+                        edges.push(serde_json::json!({
+                            "from": caller.node_id.to_string(),
+                            "to": start.to_string(),
+                            "type": "calls",
+                        }));
+                    }
                 }
 
                 for callee in callees {
-                    nodes.push(serde_json::json!({
-                        "id": callee.node_id.to_string(),
-                        "name": callee.symbol.name,
-                        "depth": callee.depth,
-                        "direction": "callee",
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": start.to_string(),
-                        "to": callee.node_id.to_string(),
-                        "type": "calls",
-                    }));
+                    if seen.insert(callee.node_id) {
+                        nodes.push(serde_json::json!({
+                            "id": callee.node_id.to_string(),
+                            "name": callee.symbol.name,
+                            "depth": callee.depth,
+                            "direction": "callee",
+                        }));
+                        edges.push(serde_json::json!({
+                            "from": start.to_string(),
+                            "to": callee.node_id.to_string(),
+                            "type": "calls",
+                        }));
+                    }
                 }
             }
         }
@@ -2449,6 +2490,8 @@ impl McpServer {
     ) -> Vec<serde_json::Value> {
         use codegraph::{Direction, EdgeType};
         let mut symbols = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(node_id); // Don't include the target itself
 
         let outgoing = self.get_edges(graph, node_id, Direction::Outgoing);
         let incoming = self.get_edges(graph, node_id, Direction::Incoming);
@@ -2460,9 +2503,12 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Some(sym) = self.make_related_symbol(graph, *target, "uses", 1.0, budget)
-                    {
-                        symbols.push(sym);
+                    if seen.insert(*target) {
+                        if let Some(sym) =
+                            self.make_related_symbol(graph, *target, "uses", 1.0, budget)
+                        {
+                            symbols.push(sym);
+                        }
                     }
                 }
                 // Priority 2: Direct callers
@@ -2474,10 +2520,12 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Some(sym) =
-                        self.make_related_symbol(graph, *source, "called_by", 0.8, budget)
-                    {
-                        symbols.push(sym);
+                    if seen.insert(*source) {
+                        if let Some(sym) =
+                            self.make_related_symbol(graph, *source, "called_by", 0.8, budget)
+                        {
+                            symbols.push(sym);
+                        }
                     }
                 }
                 // Priority 3: Parent type (for methods)
@@ -2485,10 +2533,12 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Some(sym) =
-                        self.make_related_symbol(graph, *source, "inherits", 0.9, budget)
-                    {
-                        symbols.push(sym);
+                    if seen.insert(*source) {
+                        if let Some(sym) =
+                            self.make_related_symbol(graph, *source, "inherits", 0.9, budget)
+                        {
+                            symbols.push(sym);
+                        }
                     }
                 }
             }
@@ -2502,13 +2552,15 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Ok(n) = graph.get_node(*source) {
-                        let n_name = n.properties.get_string("name").unwrap_or("");
-                        if n_name.starts_with("test_") || n_name.ends_with("_test") {
-                            if let Some(sym) =
-                                self.make_related_symbol(graph, *source, "tests", 1.0, budget)
-                            {
-                                symbols.push(sym);
+                    if seen.insert(*source) {
+                        if let Ok(n) = graph.get_node(*source) {
+                            let n_name = n.properties.get_string("name").unwrap_or("");
+                            if n_name.starts_with("test_") || n_name.ends_with("_test") {
+                                if let Some(sym) =
+                                    self.make_related_symbol(graph, *source, "tests", 1.0, budget)
+                                {
+                                    symbols.push(sym);
+                                }
                             }
                         }
                     }
@@ -2522,22 +2574,26 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Ok(n) = graph.get_node(*source) {
-                        let n_name = n.properties.get_string("name").unwrap_or("");
-                        if !n_name.starts_with("test_") && !n_name.ends_with("_test") {
-                            if let Some(sym) =
-                                self.make_related_symbol(graph, *source, "called_by", 0.9, budget)
-                            {
-                                symbols.push(sym);
+                    if seen.insert(*source) {
+                        if let Ok(n) = graph.get_node(*source) {
+                            let n_name = n.properties.get_string("name").unwrap_or("");
+                            if !n_name.starts_with("test_") && !n_name.ends_with("_test") {
+                                if let Some(sym) = self.make_related_symbol(
+                                    graph,
+                                    *source,
+                                    "called_by",
+                                    0.9,
+                                    budget,
+                                ) {
+                                    symbols.push(sym);
+                                }
                             }
                         }
                     }
                 }
             }
             "debug" => {
-                // Call chain up to entry point
-                let mut visited = std::collections::HashSet::new();
-                visited.insert(node_id);
+                // Call chain up to entry point (uses seen for dedup)
                 let mut current = node_id;
                 let mut depth = 0;
 
@@ -2546,10 +2602,10 @@ impl McpServer {
                     let caller = cur_incoming
                         .iter()
                         .filter(|(_, _, t)| *t == EdgeType::Calls)
-                        .find(|(source, _, _)| !visited.contains(source));
+                        .find(|(source, _, _)| !seen.contains(source));
 
                     if let Some((source, _, _)) = caller {
-                        visited.insert(*source);
+                        seen.insert(*source);
                         let relevance = 1.0 - (depth as f64 * 0.1);
                         let relationship = format!("call_chain_depth_{depth}");
                         if let Some(sym) = self.make_related_symbol(
@@ -2572,10 +2628,12 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Some(sym) =
-                        self.make_related_symbol(graph, *target, "data_flow", 0.8, budget)
-                    {
-                        symbols.push(sym);
+                    if seen.insert(*target) {
+                        if let Some(sym) =
+                            self.make_related_symbol(graph, *target, "data_flow", 0.8, budget)
+                        {
+                            symbols.push(sym);
+                        }
                     }
                 }
             }
@@ -2589,17 +2647,19 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Ok(n) = graph.get_node(*source) {
-                        let n_name = n.properties.get_string("name").unwrap_or("");
-                        if n_name.starts_with("test_") || n_name.ends_with("_test") {
-                            if let Some(sym) = self.make_related_symbol(
-                                graph,
-                                *source,
-                                "example_test",
-                                0.9,
-                                budget,
-                            ) {
-                                symbols.push(sym);
+                    if seen.insert(*source) {
+                        if let Ok(n) = graph.get_node(*source) {
+                            let n_name = n.properties.get_string("name").unwrap_or("");
+                            if n_name.starts_with("test_") || n_name.ends_with("_test") {
+                                if let Some(sym) = self.make_related_symbol(
+                                    graph,
+                                    *source,
+                                    "example_test",
+                                    0.9,
+                                    budget,
+                                ) {
+                                    symbols.push(sym);
+                                }
                             }
                         }
                     }
@@ -2609,10 +2669,16 @@ impl McpServer {
                     if *budget == 0 {
                         break;
                     }
-                    if let Some(sym) =
-                        self.make_related_symbol(graph, *target, "dependency_to_mock", 0.7, budget)
-                    {
-                        symbols.push(sym);
+                    if seen.insert(*target) {
+                        if let Some(sym) = self.make_related_symbol(
+                            graph,
+                            *target,
+                            "dependency_to_mock",
+                            0.7,
+                            budget,
+                        ) {
+                            symbols.push(sym);
+                        }
                     }
                 }
             }
@@ -3040,84 +3106,132 @@ impl McpServer {
         parts.join(" ")
     }
 
-    /// Find related tests for a symbol
+    /// Find related tests for a symbol or file.
+    ///
+    /// Strategy:
+    /// 1. If a target symbol is found, search for test entry points that call it.
+    /// 2. Search for test functions in the same file.
+    /// 3. Search for test functions in adjacent test files (foo.test.ts, tests/foo.rs, etc).
     async fn find_related_tests(&self, uri: &str, line: u32, limit: usize) -> serde_json::Value {
-        // Use fallback for better symbol discovery
-        let (target, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
-            Some((id, fallback)) => (id, fallback),
-            None => {
+        let url = match tower_lsp::lsp_types::Url::parse(uri) {
+            Ok(u) => u,
+            Err(_) => {
                 return serde_json::json!({
                     "tests": [],
-                    "message": "Could not find symbol at location"
+                    "message": "Invalid URI"
                 })
             }
         };
-
-        // Get symbol name for fallback message
-        let symbol_name = {
-            let graph = self.backend.graph.read().await;
-            graph
-                .get_node(target)
-                .ok()
-                .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
-                .unwrap_or_default()
+        let file_path = match url.to_file_path() {
+            Ok(p) => p,
+            Err(_) => {
+                return serde_json::json!({
+                    "tests": [],
+                    "message": "Invalid file path"
+                })
+            }
         };
+        let path_str = file_path.to_string_lossy().to_string();
 
-        // Find test entry points that call this symbol
-        let entry_types = vec![crate::ai_query::EntryType::TestEntry];
-        let tests = self
-            .backend
-            .query_engine
-            .find_entry_points(&entry_types)
-            .await;
+        // Try to find the target symbol (optional — test discovery works without it)
+        let (target, used_fallback, symbol_name) =
+            match self.find_nearest_node_with_fallback(uri, line).await {
+                Some((id, fallback)) => {
+                    let name = {
+                        let graph = self.backend.graph.read().await;
+                        graph
+                            .get_node(id)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    };
+                    (Some(id), fallback, name)
+                }
+                None => (None, false, String::new()),
+            };
 
-        // Filter tests that might be related (by checking if they call the target)
         let mut related_tests = Vec::new();
+        let mut seen_ids = std::collections::HashSet::<codegraph::NodeId>::new();
 
-        for test in tests.iter().take(limit * 2) {
-            let callees = self.backend.query_engine.get_callees(test.node_id, 3).await;
-            if callees.iter().any(|c| c.node_id == target) {
-                related_tests.push(serde_json::json!({
-                    "name": test.symbol.name,
-                    "id": test.node_id.to_string(),
-                    "relationship": "calls_target",
-                }));
+        // Stage 1: If we have a target, find test entry points that call it
+        if let Some(target_id) = target {
+            seen_ids.insert(target_id);
+            let entry_types = vec![crate::ai_query::EntryType::TestEntry];
+            let tests = self
+                .backend
+                .query_engine
+                .find_entry_points(&entry_types)
+                .await;
+
+            for test in tests.iter().take(limit * 2) {
                 if related_tests.len() >= limit {
                     break;
+                }
+                let callees = self.backend.query_engine.get_callees(test.node_id, 3).await;
+                if callees.iter().any(|c| c.node_id == target_id)
+                    && seen_ids.insert(test.node_id)
+                {
+                    related_tests.push(serde_json::json!({
+                        "name": test.symbol.name,
+                        "id": test.node_id.to_string(),
+                        "relationship": "calls_target",
+                    }));
                 }
             }
         }
 
-        // Fallback: find test-named functions in same file
-        if related_tests.is_empty() {
-            if let Ok(url) = tower_lsp::lsp_types::Url::parse(uri) {
-                if let Ok(path) = url.to_file_path() {
-                    let path_str = path.to_string_lossy().to_string();
-                    let graph = self.backend.graph.read().await;
-                    if let Ok(file_nodes) = graph.query().property("path", path_str).execute() {
-                        for node_id in file_nodes {
-                            if node_id == target {
+        // Stage 2: Find test functions in the same file
+        if related_tests.len() < limit {
+            let graph = self.backend.graph.read().await;
+            if let Ok(file_nodes) = graph.query().property("path", path_str.clone()).execute() {
+                for node_id in file_nodes {
+                    if !seen_ids.insert(node_id) || related_tests.len() >= limit {
+                        continue;
+                    }
+                    if let Ok(node) = graph.get_node(node_id) {
+                        if node.node_type != codegraph::NodeType::Function {
+                            continue;
+                        }
+                        if Self::is_mcp_test_node(node) {
+                            let test_name =
+                                node.properties.get_string("name").unwrap_or("").to_string();
+                            related_tests.push(serde_json::json!({
+                                "name": test_name,
+                                "id": node_id.to_string(),
+                                "relationship": "same_file",
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 3: Find test functions in adjacent test files
+        if related_tests.len() < limit {
+            let graph = self.backend.graph.read().await;
+            let test_path_patterns = Self::generate_test_path_patterns(&path_str);
+            for test_path in &test_path_patterns {
+                if related_tests.len() >= limit {
+                    break;
+                }
+                if let Ok(test_nodes) = graph.query().property("path", test_path.as_str()).execute()
+                {
+                    for node_id in test_nodes {
+                        if !seen_ids.insert(node_id) || related_tests.len() >= limit {
+                            continue;
+                        }
+                        if let Ok(node) = graph.get_node(node_id) {
+                            if node.node_type != codegraph::NodeType::Function {
                                 continue;
                             }
-                            if let Ok(node) = graph.get_node(node_id) {
-                                if node.node_type != codegraph::NodeType::Function {
-                                    continue;
-                                }
-                                if Self::is_mcp_test_node(node) {
-                                    let test_name = node
-                                        .properties
-                                        .get_string("name")
-                                        .unwrap_or("")
-                                        .to_string();
-                                    related_tests.push(serde_json::json!({
-                                        "name": test_name,
-                                        "id": node_id.to_string(),
-                                        "relationship": "same_file",
-                                    }));
-                                    if related_tests.len() >= limit {
-                                        break;
-                                    }
-                                }
+                            if Self::is_mcp_test_node(node) {
+                                let test_name =
+                                    node.properties.get_string("name").unwrap_or("").to_string();
+                                related_tests.push(serde_json::json!({
+                                    "name": test_name,
+                                    "id": node_id.to_string(),
+                                    "relationship": "adjacent_file",
+                                }));
                             }
                         }
                     }
@@ -3125,14 +3239,21 @@ impl McpServer {
             }
         }
 
-        let mut response = serde_json::json!({
-            "target_id": target.to_string(),
-            "symbol_name": symbol_name,
-            "tests": related_tests,
-            "total": related_tests.len(),
-        });
+        let mut response = if let Some(target_id) = target {
+            serde_json::json!({
+                "target_id": target_id.to_string(),
+                "symbol_name": symbol_name,
+                "tests": related_tests,
+                "total": related_tests.len(),
+            })
+        } else {
+            serde_json::json!({
+                "file": path_str,
+                "tests": related_tests,
+                "total": related_tests.len(),
+            })
+        };
 
-        // Add fallback metadata if used
         if used_fallback {
             if let Some(obj) = response.as_object_mut() {
                 obj.insert("used_fallback".to_string(), serde_json::json!(true));
@@ -3319,6 +3440,16 @@ impl McpServer {
                     all.extend(ids);
                 }
             }
+            // Exclude build output directories to avoid counting compiled duplicates
+            all.retain(|&node_id| {
+                graph
+                    .get_node(node_id)
+                    .map(|node| {
+                        let path = node.properties.get_string("path").unwrap_or("");
+                        !Self::is_build_output_path(path)
+                    })
+                    .unwrap_or(true)
+            });
             all.into_iter().take(2000).collect()
         } else {
             vec![]
@@ -3590,6 +3721,48 @@ impl McpServer {
             || path.contains("_test.");
 
         name_is_test || path_is_test
+    }
+
+    /// Generate candidate test file paths for a source file.
+    /// Given `/src/foo.ts`, generates patterns like `/src/foo.test.ts`, `/src/foo.spec.ts`,
+    /// `/src/tests/foo.ts`, `/src/__tests__/foo.ts`, `/src/foo_test.rs`, etc.
+    fn generate_test_path_patterns(source_path: &str) -> Vec<String> {
+        let path = std::path::Path::new(source_path);
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => return vec![],
+        };
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let dir = path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let mut patterns = Vec::new();
+
+        if !ext.is_empty() {
+            // Adjacent test files: foo.test.ts, foo.spec.ts
+            patterns.push(format!("{dir}/{stem}.test.{ext}"));
+            patterns.push(format!("{dir}/{stem}.spec.{ext}"));
+            // Rust/Go convention: foo_test.rs
+            patterns.push(format!("{dir}/{stem}_test.{ext}"));
+            // Subdirectory conventions: tests/foo.ts, __tests__/foo.ts, test/foo.ts
+            patterns.push(format!("{dir}/tests/{stem}.{ext}"));
+            patterns.push(format!("{dir}/__tests__/{stem}.{ext}"));
+            patterns.push(format!("{dir}/test/{stem}.{ext}"));
+            // Test file with _test suffix in subdirectory
+            patterns.push(format!("{dir}/tests/{stem}_test.{ext}"));
+        }
+
+        patterns
+    }
+
+    /// Check if a path is inside a build output directory.
+    /// Handles both absolute (/Users/.../out/foo.js) and relative (out/foo.js) paths.
+    fn is_build_output_path(path: &str) -> bool {
+        const EXCLUDED_DIRS: &[&str] = &["out", "dist", "target", "node_modules", "build"];
+        path.split(['/', '\\'])
+            .any(|component| EXCLUDED_DIRS.contains(&component))
     }
 
     /// Check if a name is a well-known framework entry point or lifecycle hook

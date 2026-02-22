@@ -2,6 +2,21 @@
 
 All notable changes to the CodeGraph extension will be documented in this file.
 
+## [0.7.0] - 2026-02-22
+
+### Added
+
+- **4 new language parsers**: PHP, Ruby, Swift, and Tcl — bringing total to 14 supported languages
+
+### Fixed
+
+- Graph re-indexing no longer creates duplicate nodes (root cause of many MCP tool issues)
+- `find_related_tests` now returns results when no specific line is targeted
+- `find_unused_code` workspace scope no longer includes build output directories
+- `get_call_graph` deduplication for callers and callees
+- `mine_git_history` no longer stores duplicate entries for the same commit
+- RocksDB LOG file accumulation in `.codegraph/memory`
+
 ## [0.6.0] - 2026-02-20
 
 ### Added

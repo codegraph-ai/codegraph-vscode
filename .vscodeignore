@@ -39,6 +39,8 @@ node_modules/**
 logs/**
 .fastembed_cache/**
 .codegraph/**
+.smelt/**
+.stellarion/**
 
 # Rust crates (source only, not needed at runtime)
 codegraph-memory/**
@@ -57,6 +59,9 @@ docs/**
 BUILD.md
 CONTRIBUTING.md
 PROGRESS.md
+TODO.md
+test_results*.md
+test_scenarios*.md
 
 # Config files
 .eslintrc*

@@ -211,7 +211,16 @@ impl CodeGraphBackend {
                         let dir_name = path.file_name().unwrap().to_string_lossy();
                         if matches!(
                             dir_name.as_ref(),
-                            "node_modules" | "target" | "dist" | "build" | ".git" | "__pycache__"
+                            "node_modules"
+                                | "target"
+                                | "dist"
+                                | "build"
+                                | "out"
+                                | ".git"
+                                | "__pycache__"
+                                | "vendor"
+                                | "DerivedData"
+                                | "tmp"
                         ) {
                             continue;
                         }
@@ -229,6 +238,17 @@ impl CodeGraphBackend {
                                 // Parse the file using parse_file (which updates metrics)
                                 if let Some(parser) = self.parsers.parser_for_path(&path) {
                                     let mut graph = self.graph.write().await;
+
+                                    // Remove old nodes for this file to prevent duplicates on re-index
+                                    let path_str = path.to_string_lossy().to_string();
+                                    if let Ok(old_nodes) =
+                                        graph.query().property("path", path_str).execute()
+                                    {
+                                        for old_id in old_nodes {
+                                            let _ = graph.delete_node(old_id);
+                                        }
+                                    }
+
                                     match parser.parse_file(&path, &mut graph) {
                                         Ok(file_info) => {
                                             self.symbol_index.add_file(
@@ -1340,6 +1360,12 @@ impl LanguageServer for CodeGraphBackend {
                     tracing::info!("Indexing folder: {:?}", folder);
                     let count = self.index_directory(&folder).await;
                     total_indexed += count;
+                }
+
+                // Resolve cross-file imports and calls before building indexes
+                {
+                    let mut graph = self.graph.write().await;
+                    GraphUpdater::resolve_cross_file_imports(&mut graph);
                 }
 
                 // Rebuild AI query engine indexes

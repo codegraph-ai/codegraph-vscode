@@ -60,6 +60,10 @@ impl MemoryStore {
         // Ensure WAL is synced for durability across on-demand open/close cycles
         opts.set_wal_dir(path);
         opts.set_manual_wal_flush(false);
+        // Limit info log file accumulation (DB opens/closes per operation create LOG.old files)
+        opts.set_keep_log_file_num(1);
+        opts.set_recycle_log_file_num(1);
+        opts.set_log_level(rocksdb::LogLevel::Error);
 
         let db = DB::open(&opts, path)?;
 

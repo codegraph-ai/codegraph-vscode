@@ -299,10 +299,17 @@ impl QueryEngine {
                 for neighbor in neighbors {
                     if !visited.contains(&neighbor) {
                         // Resolve the edge type between current and neighbor
+                        // Try current→neighbor first, then neighbor→current for incoming edges
                         let edge_type_str = graph
                             .get_edges_between(current, neighbor)
                             .ok()
                             .and_then(|edges| edges.into_iter().next())
+                            .or_else(|| {
+                                graph
+                                    .get_edges_between(neighbor, current)
+                                    .ok()
+                                    .and_then(|edges| edges.into_iter().next())
+                            })
                             .and_then(|eid| graph.get_edge(eid).ok())
                             .map(|e| e.edge_type.to_string())
                             .unwrap_or_default();
@@ -1021,10 +1028,22 @@ impl QueryEngine {
             return Some(EntryType::Main);
         }
 
-        // Check for test functions
+        // Check for test functions (by name, property, or file path)
         if name_lower.starts_with("test_")
-            || name_lower.starts_with("test")
+            || name_lower.ends_with("_test")
+            || name.starts_with("Test")
             || node.properties.get_bool("is_test").unwrap_or(false)
+        {
+            return Some(EntryType::TestEntry);
+        }
+        // Check if function lives in a test file (path-based detection)
+        let path = node.properties.get_string("path").unwrap_or("");
+        if path.contains("/test/")
+            || path.contains("/tests/")
+            || path.contains("/__tests__/")
+            || path.contains(".test.")
+            || path.contains(".spec.")
+            || path.contains("_test.")
         {
             return Some(EntryType::TestEntry);
         }

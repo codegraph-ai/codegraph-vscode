@@ -8,8 +8,12 @@ use codegraph_go::GoParser;
 use codegraph_java::JavaParser;
 use codegraph_kotlin::KotlinParser;
 use codegraph_parser_api::{CodeParser, FileInfo, ParserConfig, ParserError, ParserMetrics};
+use codegraph_php::PhpParser;
 use codegraph_python::PythonParser;
+use codegraph_ruby::RubyParser;
 use codegraph_rust::RustParser;
+use codegraph_swift::SwiftParser;
+use codegraph_tcl::TclParser;
 use codegraph_typescript::TypeScriptParser;
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +29,10 @@ pub struct ParserRegistry {
     cpp: Arc<CppParser>,
     kotlin: Arc<KotlinParser>,
     csharp: Arc<CSharpParser>,
+    php: Arc<PhpParser>,
+    ruby: Arc<RubyParser>,
+    swift: Arc<SwiftParser>,
+    tcl: Arc<TclParser>,
 }
 
 impl ParserRegistry {
@@ -44,7 +52,11 @@ impl ParserRegistry {
             java: Arc::new(JavaParser::with_config(config.clone())),
             cpp: Arc::new(CppParser::with_config(config.clone())),
             kotlin: Arc::new(KotlinParser::with_config(config.clone())),
-            csharp: Arc::new(CSharpParser::with_config(config)),
+            csharp: Arc::new(CSharpParser::with_config(config.clone())),
+            php: Arc::new(PhpParser::with_config(config.clone())),
+            ruby: Arc::new(RubyParser::with_config(config.clone())),
+            swift: Arc::new(SwiftParser::with_config(config.clone())),
+            tcl: Arc::new(TclParser::with_config(config)),
         }
     }
 
@@ -62,6 +74,10 @@ impl ParserRegistry {
             "cpp" | "c++" => Some(self.cpp.clone()),
             "kotlin" => Some(self.kotlin.clone()),
             "csharp" | "c#" => Some(self.csharp.clone()),
+            "php" => Some(self.php.clone()),
+            "ruby" => Some(self.ruby.clone()),
+            "swift" => Some(self.swift.clone()),
+            "tcl" => Some(self.tcl.clone()),
             _ => None,
         }
     }
@@ -72,7 +88,7 @@ impl ParserRegistry {
     /// C++-specific extensions (`.hpp`, `.cc`, `.cxx`, `.hh`, `.hxx`) are
     /// only claimed by the C++ parser and resolve correctly.
     pub fn parser_for_path(&self, path: &Path) -> Option<Arc<dyn CodeParser>> {
-        let parsers: [Arc<dyn CodeParser>; 9] = [
+        let parsers: [Arc<dyn CodeParser>; 13] = [
             self.python.clone(),
             self.rust.clone(),
             self.typescript.clone(),
@@ -82,6 +98,10 @@ impl ParserRegistry {
             self.cpp.clone(),
             self.kotlin.clone(),
             self.csharp.clone(),
+            self.php.clone(),
+            self.ruby.clone(),
+            self.swift.clone(),
+            self.tcl.clone(),
         ];
 
         parsers.into_iter().find(|p| p.can_parse(path))
@@ -99,6 +119,10 @@ impl ParserRegistry {
         extensions.extend(self.cpp.file_extensions().iter().copied());
         extensions.extend(self.kotlin.file_extensions().iter().copied());
         extensions.extend(self.csharp.file_extensions().iter().copied());
+        extensions.extend(self.php.file_extensions().iter().copied());
+        extensions.extend(self.ruby.file_extensions().iter().copied());
+        extensions.extend(self.swift.file_extensions().iter().copied());
+        extensions.extend(self.tcl.file_extensions().iter().copied());
         extensions
     }
 
@@ -114,6 +138,10 @@ impl ParserRegistry {
             ("cpp", self.cpp.metrics()),
             ("kotlin", self.kotlin.metrics()),
             ("csharp", self.csharp.metrics()),
+            ("php", self.php.metrics()),
+            ("ruby", self.ruby.metrics()),
+            ("swift", self.swift.metrics()),
+            ("tcl", self.tcl.metrics()),
         ]
     }
 
@@ -177,6 +205,14 @@ impl ParserRegistry {
             Some("kotlin")
         } else if self.csharp.can_parse(path) {
             Some("csharp")
+        } else if self.php.can_parse(path) {
+            Some("php")
+        } else if self.ruby.can_parse(path) {
+            Some("ruby")
+        } else if self.swift.can_parse(path) {
+            Some("swift")
+        } else if self.tcl.can_parse(path) {
+            Some("tcl")
         } else {
             None
         }
@@ -199,7 +235,6 @@ mod tests {
     #[test]
     fn test_parser_registry_new() {
         let registry = ParserRegistry::new();
-        // Should have parsers for all five languages
         assert!(registry.get_parser("python").is_some());
         assert!(registry.get_parser("rust").is_some());
         assert!(registry.get_parser("typescript").is_some());
@@ -209,6 +244,10 @@ mod tests {
         assert!(registry.get_parser("cpp").is_some());
         assert!(registry.get_parser("kotlin").is_some());
         assert!(registry.get_parser("csharp").is_some());
+        assert!(registry.get_parser("php").is_some());
+        assert!(registry.get_parser("ruby").is_some());
+        assert!(registry.get_parser("swift").is_some());
+        assert!(registry.get_parser("tcl").is_some());
     }
 
     #[test]
@@ -243,6 +282,10 @@ mod tests {
         assert!(registry.get_parser("Kotlin").is_some());
         assert!(registry.get_parser("CSharp").is_some());
         assert!(registry.get_parser("C#").is_some());
+        assert!(registry.get_parser("PHP").is_some());
+        assert!(registry.get_parser("Ruby").is_some());
+        assert!(registry.get_parser("Swift").is_some());
+        assert!(registry.get_parser("TCL").is_some());
     }
 
     #[test]
@@ -298,7 +341,53 @@ mod tests {
             .parser_for_path(&PathBuf::from("test.cs"))
             .is_some());
         assert!(registry
+            .parser_for_path(&PathBuf::from("test.php"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.rb"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.swift"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("test.tcl"))
+            .is_some());
+        assert!(registry
             .parser_for_path(&PathBuf::from("test.txt"))
+            .is_none());
+    }
+
+    #[test]
+    fn test_parser_for_path_php_variants() {
+        let registry = ParserRegistry::new();
+
+        // PHP parser only supports .php extension
+        assert!(registry
+            .parser_for_path(&PathBuf::from("index.php"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("artisan.php"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("template.phtml"))
+            .is_none());
+    }
+
+    #[test]
+    fn test_parser_for_path_ruby_variants() {
+        let registry = ParserRegistry::new();
+
+        // Ruby parser supports .rb, .rake, .gemspec
+        assert!(registry.parser_for_path(&PathBuf::from("app.rb")).is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("Rakefile.rake"))
+            .is_some());
+        assert!(registry
+            .parser_for_path(&PathBuf::from("my_gem.gemspec"))
+            .is_some());
+        // Bare Rakefile/Gemfile (no extension) are not supported
+        assert!(registry
+            .parser_for_path(&PathBuf::from("Rakefile"))
             .is_none());
     }
 
@@ -395,6 +484,28 @@ mod tests {
     }
 
     #[test]
+    fn test_language_for_path_new_parsers() {
+        let registry = ParserRegistry::new();
+
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("index.php")),
+            Some("php")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("app.rb")),
+            Some("ruby")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("ContentView.swift")),
+            Some("swift")
+        );
+        assert_eq!(
+            registry.language_for_path(&PathBuf::from("script.tcl")),
+            Some("tcl")
+        );
+    }
+
+    #[test]
     fn test_language_for_path_cpp_variants() {
         let registry = ParserRegistry::new();
 
@@ -472,10 +583,10 @@ mod tests {
         let registry = ParserRegistry::new();
         let extensions = registry.supported_extensions();
 
-        // Check that we have extensions for all 9 languages
+        // Check that we have extensions for all 13 languages
         // (exact extension names may vary by parser implementation)
         assert!(!extensions.is_empty());
-        assert!(extensions.len() >= 9); // At least one extension per language
+        assert!(extensions.len() >= 13); // At least one extension per language
     }
 
     #[test]
@@ -496,6 +607,10 @@ mod tests {
         assert!(registry.can_parse(Path::new("test.kt")));
         assert!(registry.can_parse(Path::new("test.kts")));
         assert!(registry.can_parse(Path::new("test.cs")));
+        assert!(registry.can_parse(Path::new("test.php")));
+        assert!(registry.can_parse(Path::new("test.rb")));
+        assert!(registry.can_parse(Path::new("test.swift")));
+        assert!(registry.can_parse(Path::new("test.tcl")));
         assert!(!registry.can_parse(Path::new("test.txt")));
         assert!(!registry.can_parse(Path::new("test.md")));
     }
@@ -505,7 +620,7 @@ mod tests {
         let registry = ParserRegistry::new();
         let metrics = registry.all_metrics();
 
-        assert_eq!(metrics.len(), 9);
+        assert_eq!(metrics.len(), 13);
         assert_eq!(metrics[0].0, "python");
         assert_eq!(metrics[1].0, "rust");
         assert_eq!(metrics[2].0, "typescript");
@@ -515,6 +630,10 @@ mod tests {
         assert_eq!(metrics[6].0, "cpp");
         assert_eq!(metrics[7].0, "kotlin");
         assert_eq!(metrics[8].0, "csharp");
+        assert_eq!(metrics[9].0, "php");
+        assert_eq!(metrics[10].0, "ruby");
+        assert_eq!(metrics[11].0, "swift");
+        assert_eq!(metrics[12].0, "tcl");
     }
 
     #[test]
@@ -650,6 +769,94 @@ mod tests {
         let source =
             "using System;\n\nclass Hello { static void Main() { Console.WriteLine(\"hello\"); } }";
         let path = Path::new("Hello.cs");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_php() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "<?php\nfunction hello(): void {\n    echo 'hello';\n}\n";
+        let path = Path::new("hello.php");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_php_class() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "<?php\nnamespace App\\Http\\Controllers;\n\nclass UserController {\n    public function index(): array {\n        return [];\n    }\n}\n";
+        let path = Path::new("UserController.php");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_ruby() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "def hello\n  puts 'hello'\nend\n";
+        let path = Path::new("hello.rb");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_ruby_class() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "class Greeter\n  def initialize(name)\n    @name = name\n  end\n\n  def greet\n    puts \"Hello, #{@name}!\"\n  end\nend\n";
+        let path = Path::new("greeter.rb");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_swift() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "func hello() {\n    print(\"hello\")\n}\n";
+        let path = Path::new("hello.swift");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_swift_class() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "import Foundation\n\nclass Greeter {\n    let name: String\n\n    init(name: String) {\n        self.name = name\n    }\n\n    func greet() -> String {\n        return \"Hello, \\(name)!\"\n    }\n}\n";
+        let path = Path::new("Greeter.swift");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_tcl() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "proc hello {} {\n    puts \"hello\"\n}\n";
+        let path = Path::new("hello.tcl");
+
+        let result = registry.parse_source(source, path, &mut graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_source_tcl_namespace() {
+        let registry = ParserRegistry::new();
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let source = "namespace eval Greeter {\n    proc new {name} {\n        return $name\n    }\n    proc greet {name} {\n        puts \"Hello, $name!\"\n    }\n}\n";
+        let path = Path::new("greeter.tcl");
 
         let result = registry.parse_source(source, path, &mut graph);
         assert!(result.is_ok());
