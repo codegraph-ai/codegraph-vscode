@@ -2,7 +2,10 @@
 .codemender/
 .codegraph/
 .smelt/
+.stellarion/
 .vscode/
+.mcp.json
+package-lock.json
 models/
 # Build outputs
 out/

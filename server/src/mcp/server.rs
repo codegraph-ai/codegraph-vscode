@@ -80,6 +80,12 @@ impl McpBackend {
             }
         }
 
+        // Resolve cross-file imports and calls before building indexes
+        {
+            let mut graph = self.graph.write().await;
+            crate::watcher::GraphUpdater::resolve_cross_file_imports(&mut graph);
+        }
+
         // Build query engine indexes
         self.query_engine.build_indexes().await;
 
@@ -2211,6 +2217,43 @@ impl McpServer {
             }
         }
 
+        // Fallback: find test-named functions in same file
+        if related_tests.is_empty() {
+            if let Ok(url) = tower_lsp::lsp_types::Url::parse(uri) {
+                if let Ok(path) = url.to_file_path() {
+                    let path_str = path.to_string_lossy().to_string();
+                    let graph = self.backend.graph.read().await;
+                    if let Ok(file_nodes) = graph.query().property("path", path_str).execute() {
+                        for node_id in file_nodes {
+                            if node_id == target {
+                                continue;
+                            }
+                            if let Ok(node) = graph.get_node(node_id) {
+                                if node.node_type != codegraph::NodeType::Function {
+                                    continue;
+                                }
+                                if Self::is_mcp_test_node(node) {
+                                    let test_name = node
+                                        .properties
+                                        .get_string("name")
+                                        .unwrap_or("")
+                                        .to_string();
+                                    related_tests.push(serde_json::json!({
+                                        "name": test_name,
+                                        "id": node_id.to_string(),
+                                        "relationship": "same_file",
+                                    }));
+                                    if related_tests.len() >= limit {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut response = serde_json::json!({
             "target_id": target.to_string(),
             "symbol_name": symbol_name,
@@ -2414,20 +2457,56 @@ impl McpServer {
                     continue;
                 }
 
-                // Check if anyone calls this
+                let name = node.properties.get_string("name").unwrap_or_default();
+
+                // Skip anonymous arrow functions, constructors, and empty names
+                if name == "arrow_function"
+                    || name.is_empty()
+                    || name == "anonymous"
+                    || name == "constructor"
+                    || name == "new"
+                {
+                    continue;
+                }
+
+                // Skip entry points and test functions
+                if name.starts_with("test_")
+                    || name.ends_with("_test")
+                    || name.starts_with("main")
+                    || name.contains("handler")
+                    || name.contains("Test")
+                    || name == "it"
+                    || name == "describe"
+                    || name == "beforeEach"
+                    || name == "afterEach"
+                {
+                    continue;
+                }
+
+                // Check if anyone calls this or it's contained by a parent
                 let callers = self.backend.query_engine.get_callers(node_id, 1).await;
+                let has_incoming_edge = graph
+                    .get_neighbors(node_id, codegraph::Direction::Incoming)
+                    .map(|neighbors| {
+                        neighbors.iter().any(|&neighbor_id| {
+                            graph
+                                .get_edges_between(neighbor_id, node_id)
+                                .unwrap_or_default()
+                                .iter()
+                                .any(|&edge_id| {
+                                    graph
+                                        .get_edge(edge_id)
+                                        .map(|e| {
+                                            e.edge_type == codegraph::EdgeType::Contains
+                                                || e.edge_type == codegraph::EdgeType::Imports
+                                        })
+                                        .unwrap_or(false)
+                                })
+                        })
+                    })
+                    .unwrap_or(false);
 
-                if callers.is_empty() {
-                    let name = node.properties.get_string("name").unwrap_or_default();
-
-                    // Skip entry points and test functions
-                    if name.starts_with("test_")
-                        || name.starts_with("main")
-                        || name.contains("handler")
-                    {
-                        continue;
-                    }
-
+                if callers.is_empty() && !has_incoming_edge {
                     let is_public = node.properties.get_bool("is_public").unwrap_or(false);
 
                     // Higher confidence for private functions
@@ -2542,6 +2621,32 @@ impl McpServer {
         builder
             .build()
             .map_err(|e| format!("Failed to build memory: {:?}", e))
+    }
+
+    /// Check if a node is a test function
+    fn is_mcp_test_node(node: &codegraph::Node) -> bool {
+        // Check is_test property (set by Rust parser for #[test] functions)
+        if node.properties.get_bool("is_test").unwrap_or(false) {
+            return true;
+        }
+
+        let name = node.properties.get_string("name").unwrap_or("");
+        let path = node.properties.get_string("path").unwrap_or("");
+
+        let name_is_test = name.starts_with("test_")
+            || name.ends_with("_test")
+            || name.contains("test ")
+            || name.starts_with("Test");
+
+        let path_is_test = path.contains("/test")
+            || path.contains("/tests")
+            || path.contains("\\test")
+            || path.contains("\\tests")
+            || path.contains(".test.")
+            || path.contains(".spec.")
+            || path.contains("_test.");
+
+        name_is_test || path_is_test
     }
 }
 

@@ -414,16 +414,31 @@ impl CodeGraphBackend {
 
                 let name = node.properties.get_string("name").unwrap_or("").to_string();
 
-                // Skip test functions unless requested
-                if !include_tests
-                    && (name.starts_with("test_")
-                        || name.ends_with("_test")
-                        || name.contains("Test"))
+                // Skip anonymous arrow functions — they're callbacks/arguments, not standalone symbols
+                if name == "arrow_function"
+                    || name.is_empty()
+                    || name == "anonymous"
+                    || name == "constructor"
+                    || name == "new"
                 {
                     continue;
                 }
 
-                // Check if node has any incoming calls OR is imported by another file
+                // Skip test functions unless requested
+                if !include_tests
+                    && (name.starts_with("test_")
+                        || name.ends_with("_test")
+                        || name.contains("Test")
+                        || name.starts_with("it_")
+                        || name == "it"
+                        || name == "describe"
+                        || name == "beforeEach"
+                        || name == "afterEach")
+                {
+                    continue;
+                }
+
+                // Check if node has any incoming calls, is imported, or is contained by a class
                 let incoming = self.get_connected_edges(&graph, node_id, Direction::Incoming);
                 let has_callers = incoming
                     .iter()
@@ -431,9 +446,12 @@ impl CodeGraphBackend {
                 let is_imported = incoming
                     .iter()
                     .any(|(_, _, edge_type)| *edge_type == EdgeType::Imports);
+                let is_contained = incoming
+                    .iter()
+                    .any(|(_, _, edge_type)| *edge_type == EdgeType::Contains);
 
-                // A symbol is "used" if it's called OR imported
-                let is_used = has_callers || is_imported;
+                // A symbol is "used" if it's called, imported, or contained by a parent
+                let is_used = has_callers || is_imported || is_contained;
 
                 if !is_used {
                     // Determine if this might be exported or an entry point

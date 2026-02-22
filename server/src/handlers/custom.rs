@@ -358,15 +358,26 @@ impl CodeGraphBackend {
     }
 
     fn is_test_node(node: &Node) -> bool {
+        // Check is_test property (set by Rust parser for #[test] functions)
+        if node.properties.get_bool("is_test").unwrap_or(false) {
+            return true;
+        }
+
         let name = node.properties.get_string("name").unwrap_or("");
         let path = node.properties.get_string("path").unwrap_or("");
 
-        let name_is_test =
-            name.starts_with("test_") || name.ends_with("_test") || name.contains("test ");
+        let name_is_test = name.starts_with("test_")
+            || name.ends_with("_test")
+            || name.contains("test ")
+            || name.starts_with("Test");
+
         let path_is_test = path.contains("/test")
             || path.contains("/tests")
             || path.contains("\\test")
-            || path.contains("\\tests");
+            || path.contains("\\tests")
+            || path.contains(".test.")
+            || path.contains(".spec.")
+            || path.contains("_test.");
 
         name_is_test || path_is_test
     }
