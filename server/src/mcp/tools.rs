@@ -146,7 +146,7 @@ fn get_dependency_graph_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_dependency_graph".to_string(),
-        description: Some("Analyzes file import/dependency relationships. USE WHEN: understanding module architecture, finding circular dependencies, planning refactoring, or tracing import chains.".to_string()),
+        description: Some("Analyzes file import/dependency relationships. USE WHEN: understanding module architecture, finding circular dependencies, planning refactoring, or tracing import chains. Returns a graph of files connected by import edges. direction='imports' shows what this file depends on, 'importedBy' shows what depends on this file, 'both' shows full picture. depth controls how many levels to traverse (1=direct only).".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -164,10 +164,6 @@ fn get_call_graph_tool() -> Tool {
     properties.insert(
         "line".to_string(),
         number_prop("Line number of the function (0-indexed)", None),
-    );
-    properties.insert(
-        "character".to_string(),
-        number_prop("Character position in the line (0-indexed)", Some(0.0)),
     );
     properties.insert(
         "depth".to_string(),
@@ -188,7 +184,7 @@ fn get_call_graph_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_call_graph".to_string(),
-        description: Some("Maps function call relationships showing callers and callees. USE WHEN: tracing execution flow, understanding function usage, finding dead code, or debugging.".to_string()),
+        description: Some("Maps function call relationships showing callers and callees. USE WHEN: tracing execution flow, understanding function usage, finding dead code, or debugging. Returns nodes with name, type, file path, and line range for each caller/callee in the chain. Use depth to control how many levels to traverse.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -208,10 +204,6 @@ fn analyze_impact_tool() -> Tool {
         number_prop("Line number of the symbol (0-indexed)", None),
     );
     properties.insert(
-        "character".to_string(),
-        number_prop("Character position (0-indexed)", Some(0.0)),
-    );
-    properties.insert(
         "changeType".to_string(),
         enum_prop(
             "Type of change to analyze",
@@ -229,7 +221,7 @@ fn analyze_impact_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_impact".to_string(),
-        description: Some("Predicts blast radius of code changes before making them. USE WHEN: planning refactoring, renaming symbols, deleting code, or assessing risk.".to_string()),
+        description: Some("Predicts blast radius of code changes before making them. USE WHEN: planning refactoring, renaming symbols, deleting code, or assessing risk. Returns: list of affected symbols (direct and transitive), risk assessment, and change type analysis. changeType affects the analysis: 'modify' shows callers/dependents, 'delete' shows all references that would break, 'rename' shows all sites needing updates.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -249,10 +241,6 @@ fn get_ai_context_tool() -> Tool {
         number_prop("Line number (0-indexed)", None),
     );
     properties.insert(
-        "character".to_string(),
-        number_prop("Character position (0-indexed)", Some(0.0)),
-    );
-    properties.insert(
         "intent".to_string(),
         enum_prop(
             "What you plan to do with the context. Affects which related code is selected.",
@@ -267,7 +255,7 @@ fn get_ai_context_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_ai_context".to_string(),
-        description: Some("Gathers comprehensive code context optimized for AI understanding. USE WHEN: explaining code, planning modifications, debugging issues, or writing tests. THIS IS YOUR PRIMARY TOOL for understanding unfamiliar code.".to_string()),
+        description: Some("Gathers comprehensive code context optimized for AI understanding. USE WHEN: explaining code, planning modifications, debugging issues, or writing tests. THIS IS YOUR PRIMARY TOOL for understanding unfamiliar code. Returns: primaryContext (full source code, language, location), relatedSymbols (with source code, relationship type, relevance scores), dependencies (imports), usageExamples (callers with descriptions), and architecture (module name, detected layer, neighbor modules). Intent controls which related symbols are prioritized: 'explain' returns dependencies + callers, 'modify' returns tests + callers, 'debug' traces the call chain to entry point, 'test' returns example tests + mockable dependencies. maxTokens controls how many related symbols fit — primary source is always included.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -293,7 +281,7 @@ fn find_related_tests_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_related_tests".to_string(),
-        description: Some("Discovers test files and functions that exercise specific code. USE WHEN: modifying code to know which tests to run/update, debugging to find test cases, or assessing test coverage.".to_string()),
+        description: Some("Discovers test files and functions that exercise specific code. USE WHEN: modifying code to know which tests to run/update, debugging to find test cases, or assessing test coverage. Returns tests array (name, id, relationship) for the target symbol, plus total count. Finds tests by tracing Calls edges to functions with test-like names (test_, _test).".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -313,10 +301,6 @@ fn get_symbol_info_tool() -> Tool {
         number_prop("Line number of the symbol (0-indexed)", None),
     );
     properties.insert(
-        "character".to_string(),
-        number_prop("Character position (0-indexed)", Some(0.0)),
-    );
-    properties.insert(
         "includeReferences".to_string(),
         boolean_prop(
             "Whether to include all references to the symbol. Can be slow on large workspaces.",
@@ -326,7 +310,7 @@ fn get_symbol_info_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_symbol_info".to_string(),
-        description: Some("Gets quick metadata about any symbol (function, class, variable, type). USE WHEN: you need to quickly understand what a symbol is, check its signature, or see usage count. FASTER than codegraph_get_ai_context when you only need basic info.".to_string()),
+        description: Some("Gets quick metadata about any symbol (function, class, variable, type). USE WHEN: you need to quickly understand what a symbol is, check its signature, or see usage count. FASTER than codegraph_get_ai_context when you only need basic info. Returns: name, kind, signature, visibility, file path, line range, and properties (is_async, is_static, etc.). Set includeReferences=true to also get all reference locations (slower).".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -359,7 +343,7 @@ fn analyze_complexity_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_complexity".to_string(),
-        description: Some("Measures code complexity metrics for refactoring decisions. USE WHEN: identifying functions that need simplification, reviewing code quality, or prioritizing technical debt. Scores >10 typically indicate refactoring candidates.".to_string()),
+        description: Some("Measures code complexity metrics for refactoring decisions. USE WHEN: identifying functions that need simplification, reviewing code quality, or prioritizing technical debt. Returns cyclomatic complexity score per function, with name, line range, and file path. Scores >10 typically indicate refactoring candidates, >20 is high complexity. Use threshold to filter — only functions at or above the threshold are returned. Omit line to analyze all functions in a file.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -400,7 +384,7 @@ fn find_unused_code_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_unused_code".to_string(),
-        description: Some("Detects dead code that can be safely removed. USE WHEN: cleaning up codebase, reducing bundle size, or finding abandoned features. LIMITATIONS: May flag entry points, event handlers, or dynamically-called code.".to_string()),
+        description: Some("Detects dead code that can be safely removed. USE WHEN: cleaning up codebase, reducing bundle size, or finding abandoned features. Returns unused_items array (name, type, confidence 0-1, is_public) plus summary (total_checked, unused_count). confidence filters results — higher values mean more certain the code is unused. LIMITATIONS: May flag entry points, event handlers, or dynamically-called code.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -430,7 +414,7 @@ fn analyze_coupling_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_coupling".to_string(),
-        description: Some("Measures module coupling for architectural analysis. USE WHEN: evaluating module boundaries, planning decoupling refactoring, or assessing architectural health. High instability (>0.8) suggests fragile module.".to_string()),
+        description: Some("Measures module coupling for architectural analysis. USE WHEN: evaluating module boundaries, planning decoupling refactoring, or assessing architectural health. Returns metrics: afferent_coupling (incoming), efferent_coupling (outgoing), instability (0.0=stable, 1.0=unstable), total_dependencies, total_connections, plus a dependency_graph with nodes and edges. High instability (>0.8) suggests fragile module.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -482,7 +466,7 @@ fn symbol_search_tool() -> Tool {
 
     Tool {
         name: "codegraph_symbol_search".to_string(),
-        description: Some("Searches codebase for symbols by name or pattern. USE WHEN: finding function/class implementations, exploring unfamiliar code, or locating specific functionality. THIS IS YOUR STARTING POINT when you don't know where code is located.".to_string()),
+        description: Some("Searches codebase for symbols by name or pattern. USE WHEN: finding function/class implementations, exploring unfamiliar code, or locating specific functionality. THIS IS YOUR STARTING POINT when you don't know where code is located. Returns array of matches, each with: name, kind (function/class/method/variable/interface/type/module), file path, line range, signature, and docstring. Use compact=true for minimal output (name, kind, location only). symbolType filters by kind — use 'any' to search all types.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -514,7 +498,7 @@ fn find_by_imports_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_by_imports".to_string(),
-        description: Some("Finds all files importing a specific module or package. USE WHEN: planning library migrations, finding all React component usages, or discovering internal module consumers.".to_string()),
+        description: Some("Finds all files importing a specific module or package. USE WHEN: planning library migrations, finding all React component usages, or discovering internal module consumers. Returns array of files that import the specified module, with file path and import details. matchMode controls matching: 'exact' for full name, 'prefix' for starts-with, 'contains' for substring, 'fuzzy' for approximate matching.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -558,7 +542,7 @@ fn find_entry_points_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_entry_points".to_string(),
-        description: Some("Discovers application entry points and execution starting points. USE WHEN: understanding app architecture, tracing request flow, or finding where to start debugging. START HERE when exploring unfamiliar backend applications.".to_string()),
+        description: Some("Discovers application entry points and execution starting points. USE WHEN: understanding app architecture, tracing request flow, or finding where to start debugging. START HERE when exploring unfamiliar backend applications. Returns array of entry points with name, kind, file path, line range, and signature. Filter by entryType: 'main' for program entry, 'http_handler' for API routes, 'cli_command' for CLI handlers, 'event_handler' for event listeners, 'test' for test functions. Use compact=true for minimal output.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -614,7 +598,7 @@ fn traverse_graph_tool() -> Tool {
 
     Tool {
         name: "codegraph_traverse_graph".to_string(),
-        description: Some("Advanced graph traversal for complex code exploration. USE WHEN: specialized analysis requiring custom traversal (not covered by get_callers/get_callees/get_dependency_graph). PREFER simpler tools for common cases.".to_string()),
+        description: Some("Advanced graph traversal for complex code exploration. USE WHEN: specialized analysis requiring custom traversal (not covered by get_callers/get_callees/get_dependency_graph). PREFER simpler tools for common cases. Returns nodes and edges discovered during traversal. edgeTypes filters which relationships to follow (e.g., ['calls', 'imports']). nodeTypes filters which node kinds appear in results. Identify start node via uri+line or startNodeId from symbol_search.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -659,7 +643,7 @@ fn find_by_signature_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_by_signature".to_string(),
-        description: Some("Finds functions matching signature patterns. USE WHEN: searching by structural characteristics rather than names - parameter count, return types, or modifiers.".to_string()),
+        description: Some("Finds functions matching signature patterns. USE WHEN: searching by structural characteristics rather than names - parameter count, return types, or modifiers. namePattern supports wildcards: 'get*' matches getUser, getData; '*Handler' matches requestHandler. paramCount filters by exact count; use minParams/maxParams for ranges. returnType matches against the function's return type string. modifiers filters by async, static, public, private, etc.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -694,7 +678,7 @@ fn get_callers_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_callers".to_string(),
-        description: Some("Finds all functions that call a target function (reverse call graph). USE WHEN: understanding function usage, finding all invocation sites, or assessing change impact. SIMPLER than traverse_graph for this common use case.".to_string()),
+        description: Some("Finds all functions that call a target function (reverse call graph). USE WHEN: understanding function usage, finding all invocation sites, or assessing change impact. SIMPLER than traverse_graph for this common use case. Returns callers array with symbol name and node ID. Use depth>1 to trace the full caller chain (who calls the callers). Identify target via uri+line or nodeId from symbol_search.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -727,7 +711,7 @@ fn get_callees_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_callees".to_string(),
-        description: Some("Finds all functions called by a target function (forward call graph). USE WHEN: understanding function dependencies, tracing execution flow, or analyzing what code a function touches. SIMPLER than traverse_graph for this common use case.".to_string()),
+        description: Some("Finds all functions called by a target function (forward call graph). USE WHEN: understanding function dependencies, tracing execution flow, or analyzing what code a function touches. SIMPLER than traverse_graph for this common use case. Returns callees array with symbol name and node ID. Use depth>1 to trace the full callee chain (what those callees call). Identify target via uri+line or nodeId from symbol_search.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -768,7 +752,7 @@ fn get_detailed_symbol_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_detailed_symbol".to_string(),
-        description: Some("Gets comprehensive symbol details including source code and relationships. USE WHEN: you need full context about a symbol - source code, callers, callees, complexity, and metadata together. MORE COMPLETE than get_symbol_info but heavier.".to_string()),
+        description: Some("Gets comprehensive symbol details including source code and relationships. USE WHEN: you need full context about a symbol — source code, callers, callees, complexity, and metadata together. MORE COMPLETE than get_symbol_info but heavier. Returns: symbol (name, kind, signature, visibility, uri, line_range, properties), source (full source code string), callers (array), callees (array). Toggle includeSource/includeCallers/includeCallees to control response size. Identify symbol via uri+line or nodeId.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -842,7 +826,7 @@ fn memory_store_tool() -> Tool {
 
     Tool {
         name: "codegraph_memory_store".to_string(),
-        description: Some("Persists knowledge for future sessions. USE WHEN: discovering important context worth remembering - debugging insights, architectural decisions, known issues, coding conventions, or project-specific knowledge.".to_string()),
+        description: Some("Persists knowledge for future sessions. USE WHEN: discovering important context worth remembering — debugging insights, architectural decisions, known issues, coding conventions, or project-specific knowledge. Returns the stored memory ID. Each kind has specific optional fields: debug_context uses problem+solution, architectural_decision uses decision+rationale, known_issue uses description+severity. Tags improve future retrieval.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -877,7 +861,7 @@ fn memory_search_tool() -> Tool {
 
     Tool {
         name: "codegraph_memory_search".to_string(),
-        description: Some("Searches memories with hybrid BM25 + semantic + graph proximity. USE WHEN: recalling past knowledge - previous debugging sessions, architectural decisions, known issues. ALWAYS SEARCH before starting complex tasks.".to_string()),
+        description: Some("Searches memories with hybrid BM25 + semantic + graph proximity. USE WHEN: recalling past knowledge — previous debugging sessions, architectural decisions, known issues. ALWAYS SEARCH before starting complex tasks. Returns results array (id, title, content, kind, score, tags, created_at) sorted by relevance. Filter with kinds (debug_context, architectural_decision, known_issue, convention, project_context), tags, or codeContext (node IDs for proximity boosting). Set currentOnly=false to include invalidated memories.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -926,7 +910,7 @@ fn memory_context_tool() -> Tool {
 
     Tool {
         name: "codegraph_memory_context".to_string(),
-        description: Some("Finds memories relevant to current code location. USE WHEN: starting work on a file/function to see past context. THIS SHOULD BE YOUR FIRST CALL when starting work on unfamiliar code.".to_string()),
+        description: Some("Finds memories relevant to current code location. USE WHEN: starting work on a file/function to see past context. THIS SHOULD BE YOUR FIRST CALL when starting work on unfamiliar code. Returns memories array (id, title, content, kind, score, tags) ranked by relevance to the file/line. Optionally filter by kinds. Provide line for function-level precision.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),

@@ -2301,7 +2301,9 @@ impl McpServer {
         intent: &str,
         max_tokens: usize,
     ) -> serde_json::Value {
-        // Use find_nearest_node_with_fallback for better symbol discovery
+        let start_time = std::time::Instant::now();
+
+        // Resolve target symbol
         let (target, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
             Some(result) => result,
             None => {
@@ -2313,16 +2315,12 @@ impl McpServer {
             }
         };
 
-        // Get node info while holding graph lock, then release before async calls
-        let (name, node_type) = {
+        // Get primary context (name, type, language, source code)
+        let primary_context = {
             let graph = self.backend.graph.read().await;
             let node = match graph.get_node(target) {
                 Ok(n) => n,
-                Err(_) => {
-                    return serde_json::json!({
-                        "error": "Could not load node"
-                    })
-                }
+                Err(_) => return serde_json::json!({ "error": "Could not load node" }),
             };
 
             let name = node
@@ -2330,79 +2328,716 @@ impl McpServer {
                 .get_string("name")
                 .unwrap_or_default()
                 .to_string();
-            let node_type = format!("{:?}", node.node_type);
-            (name, node_type)
-        };
+            let node_type = format!("{:?}", node.node_type).to_lowercase();
+            let language = node
+                .properties
+                .get_string("language")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    node.properties
+                        .get_string("path")
+                        .and_then(|p| {
+                            std::path::Path::new(p)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|e| e.to_string())
+                        })
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            let path = node
+                .properties
+                .get_string("path")
+                .unwrap_or_default()
+                .to_string();
+            let line_start = node
+                .properties
+                .get_int("line_start")
+                .or_else(|| node.properties.get_int("start_line"))
+                .unwrap_or(0);
+            let line_end = node
+                .properties
+                .get_int("line_end")
+                .or_else(|| node.properties.get_int("end_line"))
+                .unwrap_or(line_start);
 
-        // Build fallback message if applicable
-        let fallback_message = if used_fallback {
-            Some(format!(
-                "No symbol at line {}. Using nearest symbol '{}' instead.",
-                line, name
-            ))
-        } else {
-            None
+            (name, node_type, language, path, line_start, line_end)
         };
+        let (name, node_type, language, _path, line_start, line_end) = primary_context;
 
         // Get source code
-        let source = self.get_symbol_source(target).await;
+        let source_code = self
+            .get_symbol_source(target)
+            .await
+            .unwrap_or_else(|| "<source not available>".to_string());
 
-        // Get related symbols based on intent
-        let (callers, callees) = match intent {
-            "explain" => {
-                let callers = self.backend.query_engine.get_callers(target, 1).await;
-                let callees = self.backend.query_engine.get_callees(target, 1).await;
-                (callers, callees)
+        // Token budget
+        let mut budget_used: usize = source_code.len() / 4;
+        let budget_remaining = max_tokens.saturating_sub(budget_used);
+
+        // Build primary context JSON
+        let primary = serde_json::json!({
+            "type": node_type,
+            "name": name,
+            "code": source_code,
+            "language": language,
+            "location": {
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_start, "character": 0 },
+                    "end": { "line": line_end, "character": 0 },
+                }
             }
-            "modify" | "debug" => {
-                let callers = self.backend.query_engine.get_callers(target, 2).await;
-                let callees = self.backend.query_engine.get_callees(target, 2).await;
-                (callers, callees)
-            }
-            "test" => {
-                let callees = self.backend.query_engine.get_callees(target, 1).await;
-                (vec![], callees)
-            }
-            _ => (vec![], vec![]),
+        });
+
+        // Get intent-specific related symbols, dependencies, usage examples
+        let (related_symbols, dependencies, usage_examples, architecture) = {
+            let graph = self.backend.graph.read().await;
+            let mut remaining_budget = budget_remaining;
+
+            let related =
+                self.get_intent_related_symbols(&graph, target, intent, &mut remaining_budget);
+
+            let deps = self.get_node_dependencies(&graph, target);
+
+            let usage = self.get_node_usage_examples(&graph, target, &name, &mut remaining_budget);
+
+            let arch = self.get_node_architecture(&graph, target);
+
+            budget_used = max_tokens.saturating_sub(remaining_budget);
+
+            (related, deps, usage, arch)
         };
 
-        // Estimate tokens (rough approximation)
-        let source_tokens = source.as_ref().map(|s| s.len() / 4).unwrap_or(0);
-        let context_tokens = (callers.len() + callees.len()) * 50;
-        let total_tokens = source_tokens + context_tokens;
+        let query_time = start_time.elapsed().as_millis() as u64;
 
         let mut response = serde_json::json!({
-            "symbol": {
-                "id": target.to_string(),
-                "name": name,
-                "type": node_type,
-            },
-            "source": source,
-            "callers": callers.iter().take(10).map(|c| serde_json::json!({
-                "name": c.symbol.name,
-                "id": c.node_id.to_string(),
-            })).collect::<Vec<_>>(),
-            "callees": callees.iter().take(10).map(|c| serde_json::json!({
-                "name": c.symbol.name,
-                "id": c.node_id.to_string(),
-            })).collect::<Vec<_>>(),
-            "intent": intent,
-            "estimated_tokens": total_tokens.min(max_tokens),
-            "truncated": total_tokens > max_tokens,
+            "primaryContext": primary,
+            "relatedSymbols": related_symbols,
+            "dependencies": dependencies,
+            "usageExamples": usage_examples,
+            "architecture": architecture,
+            "metadata": {
+                "totalTokens": budget_used,
+                "queryTime": query_time,
+            }
         });
 
         // Add fallback metadata if used
         if used_fallback {
-            if let Some(obj) = response.as_object_mut() {
-                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+            if let Some(obj) = response.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+                obj.insert("usedFallback".to_string(), serde_json::json!(true));
                 obj.insert(
-                    "fallback_message".to_string(),
-                    serde_json::json!(fallback_message),
+                    "fallbackMessage".to_string(),
+                    serde_json::json!(format!(
+                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                        line, name
+                    )),
                 );
             }
         }
 
         response
+    }
+
+    /// Get intent-specific related symbols with source code and relevance scores.
+    fn get_intent_related_symbols(
+        &self,
+        graph: &CodeGraph,
+        node_id: codegraph::NodeId,
+        intent: &str,
+        budget: &mut usize,
+    ) -> Vec<serde_json::Value> {
+        use codegraph::{Direction, EdgeType};
+        let mut symbols = Vec::new();
+
+        let outgoing = self.get_edges(graph, node_id, Direction::Outgoing);
+        let incoming = self.get_edges(graph, node_id, Direction::Incoming);
+
+        match intent {
+            "explain" => {
+                // Priority 1: Direct dependencies (things this symbol uses)
+                for (_, target, _) in outgoing.iter().take(5) {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Some(sym) = self.make_related_symbol(graph, *target, "uses", 1.0, budget)
+                    {
+                        symbols.push(sym);
+                    }
+                }
+                // Priority 2: Direct callers
+                for (source, _, _) in incoming
+                    .iter()
+                    .filter(|(_, _, t)| *t == EdgeType::Calls)
+                    .take(3)
+                {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Some(sym) =
+                        self.make_related_symbol(graph, *source, "called_by", 0.8, budget)
+                    {
+                        symbols.push(sym);
+                    }
+                }
+                // Priority 3: Parent type (for methods)
+                for (source, _, _) in incoming.iter().filter(|(_, _, t)| *t == EdgeType::Extends) {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Some(sym) =
+                        self.make_related_symbol(graph, *source, "inherits", 0.9, budget)
+                    {
+                        symbols.push(sym);
+                    }
+                }
+            }
+            "modify" => {
+                // Priority 1: Tests for this symbol
+                for (source, _, _) in incoming
+                    .iter()
+                    .filter(|(_, _, t)| *t == EdgeType::Calls)
+                    .take(5)
+                {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Ok(n) = graph.get_node(*source) {
+                        let n_name = n.properties.get_string("name").unwrap_or("");
+                        if n_name.starts_with("test_") || n_name.ends_with("_test") {
+                            if let Some(sym) =
+                                self.make_related_symbol(graph, *source, "tests", 1.0, budget)
+                            {
+                                symbols.push(sym);
+                            }
+                        }
+                    }
+                }
+                // Priority 2: All non-test callers
+                for (source, _, _) in incoming
+                    .iter()
+                    .filter(|(_, _, t)| *t == EdgeType::Calls)
+                    .take(5)
+                {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Ok(n) = graph.get_node(*source) {
+                        let n_name = n.properties.get_string("name").unwrap_or("");
+                        if !n_name.starts_with("test_") && !n_name.ends_with("_test") {
+                            if let Some(sym) =
+                                self.make_related_symbol(graph, *source, "called_by", 0.9, budget)
+                            {
+                                symbols.push(sym);
+                            }
+                        }
+                    }
+                }
+            }
+            "debug" => {
+                // Call chain up to entry point
+                let mut visited = std::collections::HashSet::new();
+                visited.insert(node_id);
+                let mut current = node_id;
+                let mut depth = 0;
+
+                while depth < 5 && *budget > 0 {
+                    let cur_incoming = self.get_edges(graph, current, Direction::Incoming);
+                    let caller = cur_incoming
+                        .iter()
+                        .filter(|(_, _, t)| *t == EdgeType::Calls)
+                        .find(|(source, _, _)| !visited.contains(source));
+
+                    if let Some((source, _, _)) = caller {
+                        visited.insert(*source);
+                        let relevance = 1.0 - (depth as f64 * 0.1);
+                        let relationship = format!("call_chain_depth_{depth}");
+                        if let Some(sym) = self.make_related_symbol(
+                            graph,
+                            *source,
+                            &relationship,
+                            relevance,
+                            budget,
+                        ) {
+                            symbols.push(sym);
+                        }
+                        current = *source;
+                        depth += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // Data dependencies
+                for (_, target, _) in outgoing.iter().take(3) {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Some(sym) =
+                        self.make_related_symbol(graph, *target, "data_flow", 0.8, budget)
+                    {
+                        symbols.push(sym);
+                    }
+                }
+            }
+            "test" => {
+                // Existing tests as examples
+                for (source, _, _) in incoming
+                    .iter()
+                    .filter(|(_, _, t)| *t == EdgeType::Calls)
+                    .take(3)
+                {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Ok(n) = graph.get_node(*source) {
+                        let n_name = n.properties.get_string("name").unwrap_or("");
+                        if n_name.starts_with("test_") || n_name.ends_with("_test") {
+                            if let Some(sym) = self.make_related_symbol(
+                                graph,
+                                *source,
+                                "example_test",
+                                0.9,
+                                budget,
+                            ) {
+                                symbols.push(sym);
+                            }
+                        }
+                    }
+                }
+                // Dependencies that might need mocking
+                for (_, target, _) in outgoing.iter().take(3) {
+                    if *budget == 0 {
+                        break;
+                    }
+                    if let Some(sym) =
+                        self.make_related_symbol(graph, *target, "dependency_to_mock", 0.7, budget)
+                    {
+                        symbols.push(sym);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        symbols
+    }
+
+    /// Create a related symbol JSON object, consuming token budget.
+    fn make_related_symbol(
+        &self,
+        graph: &CodeGraph,
+        node_id: codegraph::NodeId,
+        relationship: &str,
+        relevance: f64,
+        budget: &mut usize,
+    ) -> Option<serde_json::Value> {
+        let node = graph.get_node(node_id).ok()?;
+        let name = node
+            .properties
+            .get_string("name")
+            .unwrap_or_default()
+            .to_string();
+        let path = node
+            .properties
+            .get_string("path")
+            .unwrap_or_default()
+            .to_string();
+        let line_start = node
+            .properties
+            .get_int("line_start")
+            .or_else(|| node.properties.get_int("start_line"))
+            .unwrap_or(0);
+        let line_end = node
+            .properties
+            .get_int("line_end")
+            .or_else(|| node.properties.get_int("end_line"))
+            .unwrap_or(line_start);
+
+        // Read source code
+        let code = if !path.is_empty() && line_start > 0 {
+            std::fs::read_to_string(&path).ok().and_then(|content| {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = (line_start as usize).saturating_sub(1);
+                let end = (line_end as usize).min(lines.len());
+                if start < end {
+                    Some(lines[start..end].join("\n"))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+        let code = code.unwrap_or_default();
+        let tokens = code.len() / 4;
+
+        if tokens > 0 && *budget < tokens {
+            return None; // Not enough budget
+        }
+        *budget = budget.saturating_sub(tokens);
+
+        Some(serde_json::json!({
+            "name": name,
+            "relationship": relationship,
+            "code": code,
+            "location": {
+                "uri": if path.starts_with('/') { format!("file://{path}") } else { path },
+                "range": {
+                    "start": { "line": line_start, "character": 0 },
+                    "end": { "line": line_end, "character": 0 },
+                }
+            },
+            "relevanceScore": relevance,
+        }))
+    }
+
+    /// Get edges for a node in a given direction.
+    fn get_edges(
+        &self,
+        graph: &CodeGraph,
+        node_id: codegraph::NodeId,
+        direction: codegraph::Direction,
+    ) -> Vec<(codegraph::NodeId, codegraph::NodeId, codegraph::EdgeType)> {
+        let neighbors = match graph.get_neighbors(node_id, direction) {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut edges = Vec::new();
+        for neighbor_id in neighbors {
+            let (source, target) = match direction {
+                codegraph::Direction::Outgoing => (node_id, neighbor_id),
+                codegraph::Direction::Incoming => (neighbor_id, node_id),
+                codegraph::Direction::Both => {
+                    // Try both directions for edges
+                    if let Ok(edge_ids) = graph.get_edges_between(node_id, neighbor_id) {
+                        for edge_id in edge_ids {
+                            if let Ok(edge) = graph.get_edge(edge_id) {
+                                edges.push((edge.source_id, edge.target_id, edge.edge_type));
+                            }
+                        }
+                    }
+                    if let Ok(edge_ids) = graph.get_edges_between(neighbor_id, node_id) {
+                        for edge_id in edge_ids {
+                            if let Ok(edge) = graph.get_edge(edge_id) {
+                                edges.push((edge.source_id, edge.target_id, edge.edge_type));
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
+            if let Ok(edge_ids) = graph.get_edges_between(source, target) {
+                for edge_id in edge_ids {
+                    if let Ok(edge) = graph.get_edge(edge_id) {
+                        edges.push((edge.source_id, edge.target_id, edge.edge_type));
+                    }
+                }
+            }
+        }
+        edges
+    }
+
+    /// Get import dependencies for a node.
+    fn get_node_dependencies(
+        &self,
+        graph: &CodeGraph,
+        node_id: codegraph::NodeId,
+    ) -> Vec<serde_json::Value> {
+        let outgoing = self.get_edges(graph, node_id, codegraph::Direction::Outgoing);
+        outgoing
+            .iter()
+            .filter(|(_, _, t)| *t == codegraph::EdgeType::Imports)
+            .take(10)
+            .filter_map(|(_, target, _)| {
+                let dep_node = graph.get_node(*target).ok()?;
+                let name = dep_node.properties.get_string("name")?.to_string();
+                Some(serde_json::json!({
+                    "name": name,
+                    "type": "import",
+                    "code": null,
+                }))
+            })
+            .collect()
+    }
+
+    /// Get usage examples — callers that demonstrate how this symbol is used.
+    fn get_node_usage_examples(
+        &self,
+        graph: &CodeGraph,
+        node_id: codegraph::NodeId,
+        target_name: &str,
+        budget: &mut usize,
+    ) -> serde_json::Value {
+        let incoming = self.get_edges(graph, node_id, codegraph::Direction::Incoming);
+        let usages: Vec<_> = incoming
+            .iter()
+            .filter(|(_, _, t)| {
+                *t == codegraph::EdgeType::Calls || *t == codegraph::EdgeType::References
+            })
+            .collect();
+
+        let mut examples = Vec::new();
+        for (source, _, _) in usages.iter().take(3) {
+            if *budget == 0 {
+                break;
+            }
+            let usage_node = match graph.get_node(*source) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let usage_name = usage_node.properties.get_string("name").unwrap_or("");
+            if usage_name.starts_with("test_") || usage_name.ends_with("_test") {
+                continue;
+            }
+
+            let path = usage_node
+                .properties
+                .get_string("path")
+                .unwrap_or_default()
+                .to_string();
+            let line_start = usage_node
+                .properties
+                .get_int("line_start")
+                .or_else(|| usage_node.properties.get_int("start_line"))
+                .unwrap_or(0);
+            let line_end = usage_node
+                .properties
+                .get_int("line_end")
+                .or_else(|| usage_node.properties.get_int("end_line"))
+                .unwrap_or(line_start);
+
+            let code = if !path.is_empty() && line_start > 0 {
+                std::fs::read_to_string(&path).ok().and_then(|content| {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = (line_start as usize).saturating_sub(1);
+                    let end = (line_end as usize).min(lines.len());
+                    if start < end {
+                        Some(lines[start..end].join("\n"))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+
+            if let Some(code) = code {
+                let tokens = code.len() / 4;
+                if *budget < tokens {
+                    break;
+                }
+                *budget = budget.saturating_sub(tokens);
+
+                let description = Self::generate_usage_description(usage_name, target_name, &code);
+                examples.push(serde_json::json!({
+                    "code": code,
+                    "location": {
+                        "uri": if path.starts_with('/') { format!("file://{path}") } else { path },
+                        "range": {
+                            "start": { "line": line_start, "character": 0 },
+                            "end": { "line": line_end, "character": 0 },
+                        }
+                    },
+                    "description": description,
+                }));
+            }
+        }
+
+        if examples.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(examples)
+        }
+    }
+
+    /// Get architecture/layer information for a node.
+    fn get_node_architecture(
+        &self,
+        graph: &CodeGraph,
+        node_id: codegraph::NodeId,
+    ) -> serde_json::Value {
+        let node = match graph.get_node(node_id) {
+            Ok(n) => n,
+            Err(_) => return serde_json::Value::Null,
+        };
+
+        let path_str = node
+            .properties
+            .get_string("path")
+            .unwrap_or_default()
+            .to_string();
+        if path_str.is_empty() {
+            return serde_json::Value::Null;
+        }
+
+        let module = std::path::Path::new(&path_str)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let layer = Self::detect_layer(&path_str);
+
+        // Get neighbor modules
+        let mut neighbors = std::collections::HashSet::new();
+        let outgoing = self.get_edges(graph, node_id, codegraph::Direction::Outgoing);
+        let incoming = self.get_edges(graph, node_id, codegraph::Direction::Incoming);
+
+        for (source, target, _) in outgoing.iter().chain(incoming.iter()) {
+            let other_id = if *source == node_id { *target } else { *source };
+            if let Ok(other_node) = graph.get_node(other_id) {
+                if let Some(other_path) = other_node.properties.get_string("path") {
+                    if let Some(other_module) = std::path::Path::new(other_path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                    {
+                        if other_module != module {
+                            neighbors.insert(other_module.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        serde_json::json!({
+            "module": module,
+            "layer": layer,
+            "neighbors": neighbors.into_iter().collect::<Vec<_>>(),
+        })
+    }
+
+    /// Detect architectural layer from file path.
+    fn detect_layer(path: &str) -> Option<String> {
+        let path_lower = path.to_lowercase();
+
+        let layer_patterns: &[(&[&str], &str)] = &[
+            (
+                &[
+                    "controllers",
+                    "controller",
+                    "routes",
+                    "router",
+                    "endpoints",
+                    "api/",
+                ],
+                "controller",
+            ),
+            (
+                &["views", "view", "templates", "pages", "components", "ui/"],
+                "presentation",
+            ),
+            (&["handlers", "handler"], "handler"),
+            (
+                &[
+                    "services",
+                    "service",
+                    "usecases",
+                    "use_cases",
+                    "application/",
+                ],
+                "service",
+            ),
+            (&["commands", "command"], "command"),
+            (&["queries", "query"], "query"),
+            (
+                &["models", "model", "entities", "entity", "domain/"],
+                "domain",
+            ),
+            (&["aggregates", "aggregate"], "aggregate"),
+            (&["value_objects", "valueobjects"], "value_object"),
+            (&["repositories", "repository", "repos"], "repository"),
+            (&["database", "db/", "persistence"], "persistence"),
+            (
+                &["adapters", "adapter", "infrastructure/"],
+                "infrastructure",
+            ),
+            (&["clients", "client"], "client"),
+            (&["providers", "provider"], "provider"),
+            (&["middleware", "middlewares"], "middleware"),
+            (&["utils", "util", "helpers", "helper", "lib/"], "utility"),
+            (&["config", "configuration", "settings"], "configuration"),
+            (&["types", "interfaces", "contracts"], "contract"),
+            (&["tests", "test", "__tests__", "spec", "specs"], "test"),
+            (&["fixtures", "mocks", "stubs"], "test_support"),
+        ];
+
+        for (patterns, layer) in layer_patterns {
+            for pattern in *patterns {
+                if path_lower.contains(pattern) {
+                    return Some(layer.to_string());
+                }
+            }
+        }
+
+        // Fallback: infer from file name
+        let file_name = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if file_name.ends_with("controller") || file_name.ends_with("_controller") {
+            return Some("controller".to_string());
+        }
+        if file_name.ends_with("service") || file_name.ends_with("_service") {
+            return Some("service".to_string());
+        }
+        if file_name.ends_with("repository")
+            || file_name.ends_with("_repository")
+            || file_name.ends_with("repo")
+        {
+            return Some("repository".to_string());
+        }
+        if file_name.ends_with("model")
+            || file_name.ends_with("_model")
+            || file_name.ends_with("entity")
+        {
+            return Some("domain".to_string());
+        }
+        if file_name.ends_with("handler") || file_name.ends_with("_handler") {
+            return Some("handler".to_string());
+        }
+        if file_name.ends_with("middleware") {
+            return Some("middleware".to_string());
+        }
+        if file_name.starts_with("test_")
+            || file_name.ends_with("_test")
+            || file_name.ends_with(".test")
+            || file_name.ends_with(".spec")
+        {
+            return Some("test".to_string());
+        }
+
+        None
+    }
+
+    /// Generate a helpful description for a usage example.
+    fn generate_usage_description(caller_name: &str, target_name: &str, code: &str) -> String {
+        let is_async = code.contains("await") || code.contains("async");
+        let is_error_handling =
+            code.contains("try") || code.contains("catch") || code.contains("?");
+        let is_conditional =
+            code.contains("if") || code.contains("match") || code.contains("switch");
+
+        let mut parts = Vec::new();
+        if !caller_name.is_empty() {
+            parts.push(format!("`{caller_name}` calls `{target_name}`"));
+        } else {
+            parts.push(format!("Usage of `{target_name}`"));
+        }
+        if is_async {
+            parts.push("(async)".to_string());
+        }
+        if is_error_handling {
+            parts.push("with error handling".to_string());
+        }
+        if is_conditional {
+            parts.push("conditionally".to_string());
+        }
+
+        parts.join(" ")
     }
 
     /// Find related tests for a symbol

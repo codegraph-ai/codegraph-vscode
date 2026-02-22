@@ -44,13 +44,11 @@ TypeScript private methods are indexed but `visibility` property is not consiste
 ### 16. Implement real Rust cyclomatic complexity scoring (RC-7)
 MCP `analyze_complexity` returns 0 for Rust functions because the Rust parser doesn't compute cyclomatic complexity. TypeScript parser does. Need to add branch-counting to the Rust tree-sitter walker.
 
-## Medium Priority — codegraph-monorepo
+## ~~Medium Priority — codegraph-monorepo~~ (Completed)
 
-### 17. Add type-safety tests to codegraph-monorepo mapper crates
-After the `.to_string()` → `as i64` fix (8969901), add tests to each mapper ensuring `line_start`/`line_end` are stored as `PropertyValue::Int`, not `PropertyValue::String`. Prevents regression.
-
-### 18. Audit remaining .to_string() numeric properties in codegraph-monorepo
-Check `col_start`, `col_end`, `param_count`, and other numeric properties across all mappers for the same `.to_string()` bug pattern.
+~~### 17. Add type-safety tests to codegraph-monorepo mapper crates~~
+~~### 18. Audit remaining .to_string() numeric properties in codegraph-monorepo~~
+Both completed (3753293) — fixed `.to_string()` on booleans and integers across all 12 mapper crates, added `test_property_types` regression tests, updated integration tests.
 
 ## Future / On Demand
 
@@ -64,6 +62,7 @@ Currently at v0.6.0 locally. Requires marketplace publisher setup, CI/CD pipelin
 
 ## Completed
 
+- ~~Add type-safety tests + audit .to_string() numeric properties (#17, #18)~~ — Fixed booleans and integers across all 12 mapper crates (3753293), added `test_property_types` regression tests, updated C#/Java/PHP integration tests.
 - ~~Fix line-to-node resolution (RC-1)~~ — PropertyValue type mismatch: all mappers stored line numbers as strings, `get_int()` only matched Int variant. Fixed in codegraph-monorepo (8969901) with defensive getter + 11 mapper fixes.
 - ~~Fix find_by_signature filters (RC-3)~~ — 7/10 scenarios fixed: glob-to-regex conversion, signature-based param counting fallback, return type extraction from signature, visibility string property check.
 - ~~Improve unused code detection and test discovery~~ (7f758e1) — cross-file import resolution on init, Contains edge checks, test framework function filtering, is_test property, same-file test fallback.
