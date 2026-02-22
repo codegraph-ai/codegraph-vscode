@@ -299,6 +299,11 @@ impl MemoryStore {
 
     /// Get all current (non-invalidated) memories
     pub fn get_all_current(&self) -> Vec<MemoryNode> {
+        self.get_all_memories(true)
+    }
+
+    /// Get all memories, optionally including invalidated ones
+    pub fn get_all_memories(&self, current_only: bool) -> Vec<MemoryNode> {
         let mut memories = Vec::new();
 
         // Iterate over all keys in RocksDB
@@ -308,7 +313,7 @@ impl MemoryStore {
             if let Ok(key_str) = std::str::from_utf8(&key) {
                 if key_str.starts_with("mem:") {
                     if let Ok(memory) = serde_json::from_slice::<MemoryNode>(&value) {
-                        if memory.temporal.is_current() {
+                        if !current_only || memory.temporal.is_current() {
                             memories.push(memory);
                         }
                     }

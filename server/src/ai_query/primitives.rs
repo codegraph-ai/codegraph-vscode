@@ -125,6 +125,12 @@ impl SearchOptions {
         self.compact = compact;
         self
     }
+
+    /// Set include_private flag.
+    pub fn with_include_private(mut self, include_private: bool) -> Self {
+        self.include_private = include_private;
+        self
+    }
 }
 
 /// Location information for a symbol.
@@ -301,8 +307,10 @@ pub enum TraversalDirection {
 /// Filter options for graph traversal.
 #[derive(Debug, Clone, Default)]
 pub struct TraversalFilter {
-    /// Filter by symbol types
+    /// Filter by symbol types (node types to include in results)
     pub symbol_types: Vec<SymbolType>,
+    /// Filter by edge types (only traverse edges of these types)
+    pub edge_types: Vec<String>,
     /// Maximum number of nodes to return
     pub max_nodes: usize,
 }
@@ -312,6 +320,7 @@ impl TraversalFilter {
     pub fn new() -> Self {
         Self {
             symbol_types: Vec::new(),
+            edge_types: Vec::new(),
             max_nodes: 1000,
         }
     }
@@ -325,6 +334,12 @@ impl TraversalFilter {
     /// Filter by symbol types.
     pub fn with_symbol_types(mut self, types: Vec<SymbolType>) -> Self {
         self.symbol_types = types;
+        self
+    }
+
+    /// Filter by edge types (e.g., "calls", "imports").
+    pub fn with_edge_types(mut self, types: Vec<String>) -> Self {
+        self.edge_types = types;
         self
     }
 }

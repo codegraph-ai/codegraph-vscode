@@ -383,9 +383,33 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
+                // Parse symbolType filter
+                let symbol_types: Vec<crate::ai_query::SymbolType> = args
+                    .get("symbolType")
+                    .or_else(|| args.get("symbol_type"))
+                    .and_then(|v| {
+                        // Accept either a single string or "any"
+                        v.as_str().and_then(|s| {
+                            if s == "any" {
+                                None
+                            } else {
+                                Self::parse_symbol_type(s).map(|st| vec![st])
+                            }
+                        })
+                    })
+                    .unwrap_or_default();
+
+                let include_private = args
+                    .get("includePrivate")
+                    .or_else(|| args.get("include_private"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
                 let options = crate::ai_query::SearchOptions::new()
                     .with_limit(limit)
-                    .with_compact(compact);
+                    .with_compact(compact)
+                    .with_symbol_types(symbol_types)
+                    .with_include_private(include_private);
                 let result = self
                     .backend
                     .query_engine
@@ -470,6 +494,11 @@ impl McpServer {
                     .or_else(|| args.get("match_mode"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("contains");
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(50);
 
                 // Determine which library to search for
                 let library = if let Some(name) = module_name {
@@ -497,7 +526,15 @@ impl McpServer {
                     .find_by_imports(&library, &options)
                     .await;
 
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                // Deduplicate by node_id and apply limit
+                let mut seen = std::collections::HashSet::new();
+                let deduped: Vec<_> = result
+                    .into_iter()
+                    .filter(|m| seen.insert(m.node_id))
+                    .take(limit)
+                    .collect();
+
+                Ok(serde_json::to_value(deduped).map_err(|e| e.to_string())?)
             }
 
             "codegraph_find_by_signature" => {
@@ -792,6 +829,31 @@ impl McpServer {
                     (None, false)
                 };
 
+                // Parse edgeTypes filter
+                let edge_types: Vec<String> = args
+                    .get("edgeTypes")
+                    .or_else(|| args.get("edge_types"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Parse nodeTypes filter
+                let node_types: Vec<crate::ai_query::SymbolType> = args
+                    .get("nodeTypes")
+                    .or_else(|| args.get("node_types"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .filter_map(Self::parse_symbol_type)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 if let Some(start) = start_node {
                     let direction = match direction_str {
                         "incoming" => crate::ai_query::TraversalDirection::Incoming,
@@ -800,7 +862,8 @@ impl McpServer {
                     };
 
                     let filter = crate::ai_query::TraversalFilter {
-                        symbol_types: vec![],
+                        symbol_types: node_types,
+                        edge_types,
                         max_nodes: limit,
                     };
 
@@ -1035,11 +1098,37 @@ impl McpServer {
                     .or_else(|| args.get("include_external"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let result = self
                     .get_dependency_graph(uri, depth, direction, include_external)
                     .await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+
+                if summary {
+                    let node_count = result
+                        .get("nodes")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    let edge_count = result
+                        .get("edges")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    Ok(serde_json::json!({
+                        "summary": {
+                            "node_count": node_count,
+                            "edge_count": edge_count,
+                            "depth": depth,
+                            "direction": direction,
+                        }
+                    }))
+                } else {
+                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                }
             }
 
             "codegraph_get_call_graph" => {
@@ -1061,9 +1150,40 @@ impl McpServer {
                     .get("direction")
                     .and_then(|v| v.as_str())
                     .unwrap_or("both");
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let result = self.get_call_graph(uri, line, depth, direction).await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+
+                if summary {
+                    let caller_count = result
+                        .get("callers")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    let callee_count = result
+                        .get("callees")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    let symbol = result
+                        .get("symbol")
+                        .cloned()
+                        .unwrap_or(serde_json::json!(null));
+                    Ok(serde_json::json!({
+                        "symbol": symbol,
+                        "summary": {
+                            "caller_count": caller_count,
+                            "callee_count": callee_count,
+                            "depth": depth,
+                            "direction": direction,
+                        }
+                    }))
+                } else {
+                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                }
             }
 
             "codegraph_analyze_impact" => {
@@ -1081,9 +1201,38 @@ impl McpServer {
                     .or_else(|| args.get("change_type"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("modify");
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let result = self.analyze_impact(uri, line, change_type).await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+
+                if summary {
+                    let affected_count = result
+                        .get("affected_files")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    let risk_score = result
+                        .get("risk_score")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let symbol = result
+                        .get("symbol")
+                        .cloned()
+                        .unwrap_or(serde_json::json!(null));
+                    Ok(serde_json::json!({
+                        "symbol": symbol,
+                        "summary": {
+                            "affected_file_count": affected_count,
+                            "risk_score": risk_score,
+                            "change_type": change_type,
+                        }
+                    }))
+                } else {
+                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                }
             }
 
             "codegraph_analyze_coupling" => {
@@ -1096,9 +1245,26 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(2);
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let result = self.analyze_coupling(uri, depth).await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+
+                if summary {
+                    // Return just metrics, omit the full dependency_graph
+                    let metrics = result
+                        .get("metrics")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+                    Ok(serde_json::json!({
+                        "uri": uri,
+                        "metrics": metrics,
+                    }))
+                } else {
+                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                }
             }
 
             // ==================== Analysis Tools ====================
@@ -1159,9 +1325,25 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32)
                     .unwrap_or(10);
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let result = self.analyze_complexity(uri, line, threshold).await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+
+                if summary {
+                    // Return just the summary stats, omit per-function details
+                    let summary_data = result
+                        .get("summary")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+                    Ok(serde_json::json!({
+                        "summary": summary_data,
+                    }))
+                } else {
+                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                }
             }
 
             "codegraph_find_unused_code" => {
@@ -1194,9 +1376,19 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(10);
+                let current_only = args
+                    .get("currentOnly")
+                    .or_else(|| args.get("current_only"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let kinds = Self::parse_kinds_filter(&args);
+                let tags = Self::parse_tags_filter(&args);
 
                 let config = crate::memory::SearchConfig {
                     limit,
+                    current_only,
+                    kinds,
+                    tags,
                     ..Default::default()
                 };
 
@@ -1207,8 +1399,11 @@ impl McpServer {
                     .await
                     .map_err(|e| format!("Memory search failed: {:?}", e))?;
 
+                // Deduplicate by title (git-mined commits can create duplicate memories)
+                let mut seen_titles = std::collections::HashSet::new();
                 let results_json: Vec<serde_json::Value> = results
                     .iter()
+                    .filter(|r| seen_titles.insert(r.memory.title.clone()))
                     .map(|r| {
                         serde_json::json!({
                             "id": r.memory.id,
@@ -1224,7 +1419,7 @@ impl McpServer {
 
                 Ok(serde_json::json!({
                     "results": results_json,
-                    "total": results.len()
+                    "total": results_json.len()
                 }))
             }
 
@@ -1326,8 +1521,12 @@ impl McpServer {
                 let path_str = path.to_string_lossy().to_string();
 
                 // Search for memories related to this file
+                let kinds = Self::parse_kinds_filter(&args);
+                let tags = Self::parse_tags_filter(&args);
                 let config = crate::memory::SearchConfig {
                     limit,
+                    kinds,
+                    tags,
                     ..Default::default()
                 };
 
@@ -1338,8 +1537,11 @@ impl McpServer {
                     .await
                     .map_err(|e| format!("Memory search failed: {:?}", e))?;
 
+                // Deduplicate by title (git-mined commits can create multiple memories)
+                let mut seen_titles = std::collections::HashSet::new();
                 let results_json: Vec<serde_json::Value> = results
                     .iter()
+                    .filter(|r| seen_titles.insert(r.memory.title.clone()))
                     .map(|r| {
                         serde_json::json!({
                             "id": r.memory.id,
@@ -1355,7 +1557,7 @@ impl McpServer {
                 Ok(serde_json::json!({
                     "uri": uri,
                     "memories": results_json,
-                    "total": results.len()
+                    "total": results_json.len()
                 }))
             }
 
@@ -1364,6 +1566,18 @@ impl McpServer {
                     .get("id")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'id' parameter")?;
+
+                // Check if memory exists before invalidating
+                let exists = self
+                    .backend
+                    .memory_manager
+                    .get(id)
+                    .await
+                    .map_err(|e| format!("Failed to check memory: {:?}", e))?;
+
+                if exists.is_none() {
+                    return Ok(serde_json::json!({"error": "Memory not found", "id": id}));
+                }
 
                 self.backend
                     .memory_manager
@@ -1388,24 +1602,43 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(50);
+                let offset = args
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(0);
+                let kinds = Self::parse_kinds_filter(&args);
+                let tags = Self::parse_tags_filter(&args);
 
-                let memories = if current_only {
-                    self.backend
-                        .memory_manager
-                        .get_all_current()
-                        .await
-                        .map_err(|e| format!("Failed to list memories: {:?}", e))?
-                } else {
-                    // For now, just return current memories
-                    self.backend
-                        .memory_manager
-                        .get_all_current()
-                        .await
-                        .map_err(|e| format!("Failed to list memories: {:?}", e))?
-                };
+                let all_memories = self
+                    .backend
+                    .memory_manager
+                    .get_all_memories(current_only)
+                    .await
+                    .map_err(|e| format!("Failed to list memories: {:?}", e))?;
 
-                let memories_json: Vec<serde_json::Value> = memories
+                // Apply kinds/tags filters and deduplicate by title
+                let mut seen_titles = std::collections::HashSet::new();
+                let filtered: Vec<&crate::memory::MemoryNode> = all_memories
                     .iter()
+                    .filter(|m| {
+                        if !kinds.is_empty()
+                            && !kinds.iter().any(|k| Self::kind_matches_filter(k, &m.kind))
+                        {
+                            return false;
+                        }
+                        if !tags.is_empty() && !tags.iter().any(|t| m.tags.contains(t)) {
+                            return false;
+                        }
+                        // Deduplicate by title (git-mined commits create duplicates)
+                        seen_titles.insert(m.title.clone())
+                    })
+                    .collect();
+
+                let total = filtered.len();
+                let memories_json: Vec<serde_json::Value> = filtered
+                    .into_iter()
+                    .skip(offset)
                     .take(limit)
                     .map(|m| {
                         serde_json::json!({
@@ -1414,13 +1647,16 @@ impl McpServer {
                             "kind": format!("{:?}", m.kind),
                             "tags": m.tags,
                             "created_at": m.temporal.created_at.to_rfc3339(),
+                            "invalidated": m.temporal.invalid_at.is_some(),
                         })
                     })
                     .collect();
 
                 Ok(serde_json::json!({
                     "memories": memories_json,
-                    "total": memories.len()
+                    "total": total,
+                    "offset": offset,
+                    "limit": limit,
                 }))
             }
 
@@ -2413,12 +2649,13 @@ impl McpServer {
         &self,
         uri: Option<&str>,
         scope: &str,
-        _include_tests: bool,
+        include_tests: bool,
         confidence: f64,
     ) -> serde_json::Value {
         let graph = self.backend.graph.read().await;
 
-        let nodes_to_check: Vec<codegraph::NodeId> = if let Some(uri) = uri {
+        // Collect candidate nodes based on scope
+        let mut nodes_to_check: Vec<codegraph::NodeId> = if let Some(uri) = uri {
             let url = match tower_lsp::lsp_types::Url::parse(uri) {
                 Ok(u) => u,
                 Err(_) => return serde_json::json!({"error": "Invalid URI"}),
@@ -2433,62 +2670,107 @@ impl McpServer {
                 .property("path", path_str)
                 .execute()
                 .unwrap_or_default()
-        } else if scope == "workspace" {
-            // Get all nodes (limited for performance)
-            graph
-                .query()
-                .node_type(codegraph::NodeType::Function)
-                .execute()
-                .unwrap_or_default()
-                .into_iter()
-                .take(1000)
-                .collect()
+        } else if scope == "workspace" || scope == "module" {
+            // Gather functions, classes, variables, types, interfaces
+            let mut all = Vec::new();
+            for node_type in &[
+                codegraph::NodeType::Function,
+                codegraph::NodeType::Class,
+                codegraph::NodeType::Variable,
+                codegraph::NodeType::Type,
+                codegraph::NodeType::Interface,
+            ] {
+                if let Ok(ids) = graph.query().node_type(*node_type).execute() {
+                    all.extend(ids);
+                }
+            }
+            all.into_iter().take(2000).collect()
         } else {
             vec![]
         };
+
+        // When include_tests is false, filter out test nodes from the checked set
+        if !include_tests {
+            nodes_to_check.retain(|&node_id| {
+                graph
+                    .get_node(node_id)
+                    .map(|node| !Self::is_mcp_test_node(node))
+                    .unwrap_or(true)
+            });
+        }
 
         let mut unused = Vec::new();
         let total_checked = nodes_to_check.len();
 
         for node_id in nodes_to_check {
             if let Ok(node) = graph.get_node(node_id) {
-                // Skip non-function types
-                if node.node_type != codegraph::NodeType::Function {
+                // Skip structural node types (files, modules)
+                if node.node_type == codegraph::NodeType::CodeFile
+                    || node.node_type == codegraph::NodeType::Module
+                {
+                    continue;
+                }
+
+                // Skip type definitions — interfaces and type aliases are structural,
+                // they're referenced by type system, not "called"
+                if node.node_type == codegraph::NodeType::Interface
+                    || node.node_type == codegraph::NodeType::Type
+                {
                     continue;
                 }
 
                 let name = node.properties.get_string("name").unwrap_or_default();
 
-                // Skip anonymous arrow functions, constructors, and empty names
+                // Skip anonymous/synthetic names
                 if name == "arrow_function"
                     || name.is_empty()
                     || name == "anonymous"
                     || name == "constructor"
-                    || name == "new"
                 {
                     continue;
                 }
 
-                // Skip entry points and test functions
-                if name.starts_with("test_")
-                    || name.ends_with("_test")
-                    || name.starts_with("main")
-                    || name.contains("handler")
-                    || name.contains("Test")
-                    || name == "it"
-                    || name == "describe"
-                    || name == "beforeEach"
-                    || name == "afterEach"
-                {
+                // Skip well-known entry points and lifecycle hooks
+                if Self::is_framework_entry_point(name) {
                     continue;
                 }
 
-                // Check if anyone calls this or it's contained by a parent
+                // Skip well-known trait impl methods (called by Rust/language framework dispatch)
+                if Self::is_trait_impl_method(name) {
+                    continue;
+                }
+
+                // Check for callers (via Calls edges)
                 let callers = self.backend.query_engine.get_callers(node_id, 1).await;
-                let has_incoming_edge = graph
+
+                // When include_tests is false, filter out callers that are test functions
+                let effective_callers = if !include_tests {
+                    callers
+                        .iter()
+                        .filter(|c| {
+                            graph
+                                .get_node(c.node_id)
+                                .map(|n| !Self::is_mcp_test_node(n))
+                                .unwrap_or(true)
+                        })
+                        .count()
+                } else {
+                    callers.len()
+                };
+
+                // Check for usage edges (excluding structural Contains/Defines edges)
+                let has_usage_edge = graph
                     .get_neighbors(node_id, codegraph::Direction::Incoming)
                     .map(|neighbors| {
                         neighbors.iter().any(|&neighbor_id| {
+                            // When include_tests is false, skip test callers
+                            if !include_tests {
+                                if let Ok(n) = graph.get_node(neighbor_id) {
+                                    if Self::is_mcp_test_node(n) {
+                                        return false;
+                                    }
+                                }
+                            }
                             graph
                                 .get_edges_between(neighbor_id, node_id)
                                 .unwrap_or_default()
@@ -2497,8 +2779,15 @@ impl McpServer {
                                     graph
                                         .get_edge(edge_id)
                                         .map(|e| {
-                                            e.edge_type == codegraph::EdgeType::Contains
-                                                || e.edge_type == codegraph::EdgeType::Imports
+                                            matches!(
+                                                e.edge_type,
+                                                codegraph::EdgeType::Imports
+                                                    | codegraph::EdgeType::ImportsFrom
+                                                    | codegraph::EdgeType::References
+                                                    | codegraph::EdgeType::Uses
+                                                    | codegraph::EdgeType::Invokes
+                                                    | codegraph::EdgeType::Instantiates
+                                            )
                                         })
                                         .unwrap_or(false)
                                 })
@@ -2506,11 +2795,17 @@ impl McpServer {
                     })
                     .unwrap_or(false);
 
-                if callers.is_empty() && !has_incoming_edge {
-                    let is_public = node.properties.get_bool("is_public").unwrap_or(false);
+                if effective_callers == 0 && !has_usage_edge {
+                    let is_public = node
+                        .properties
+                        .get_bool("is_public")
+                        .or_else(|| node.properties.get_bool("exported"))
+                        .unwrap_or(false);
+                    let visibility = node.properties.get_string("visibility").unwrap_or_default();
+                    let is_exported = is_public || visibility == "public" || visibility == "pub";
 
-                    // Higher confidence for private functions
-                    let item_confidence = if is_public { 0.5 } else { 0.9 };
+                    // Confidence scoring with heuristic pattern detection
+                    let item_confidence = Self::compute_unused_confidence(name, is_exported, node);
 
                     if item_confidence >= confidence {
                         unused.push(serde_json::json!({
@@ -2518,7 +2813,7 @@ impl McpServer {
                             "node_id": node_id.to_string(),
                             "type": format!("{:?}", node.node_type),
                             "confidence": item_confidence,
-                            "is_public": is_public,
+                            "is_public": is_exported,
                         }));
                     }
                 }
@@ -2623,6 +2918,19 @@ impl McpServer {
             .map_err(|e| format!("Failed to build memory: {:?}", e))
     }
 
+    /// Parse a string into a SymbolType
+    fn parse_symbol_type(s: &str) -> Option<crate::ai_query::SymbolType> {
+        match s.to_lowercase().as_str() {
+            "function" | "method" => Some(crate::ai_query::SymbolType::Function),
+            "class" | "struct" => Some(crate::ai_query::SymbolType::Class),
+            "variable" | "constant" => Some(crate::ai_query::SymbolType::Variable),
+            "module" | "namespace" => Some(crate::ai_query::SymbolType::Module),
+            "interface" | "trait" => Some(crate::ai_query::SymbolType::Interface),
+            "type" | "enum" => Some(crate::ai_query::SymbolType::Type),
+            _ => None,
+        }
+    }
+
     /// Check if a node is a test function
     fn is_mcp_test_node(node: &codegraph::Node) -> bool {
         // Check is_test property (set by Rust parser for #[test] functions)
@@ -2647,6 +2955,216 @@ impl McpServer {
             || path.contains("_test.");
 
         name_is_test || path_is_test
+    }
+
+    /// Check if a name is a well-known framework entry point or lifecycle hook
+    fn is_framework_entry_point(name: &str) -> bool {
+        matches!(
+            name,
+            // Rust/general
+            "main"
+            // JS test frameworks
+            | "it"
+            | "describe"
+            | "beforeEach"
+            | "afterEach"
+            | "beforeAll"
+            | "afterAll"
+            // VS Code extension API
+            | "activate"
+            | "deactivate"
+            // VS Code TreeDataProvider / WebviewProvider
+            | "getTreeItem"
+            | "getChildren"
+            | "getParent"
+            | "resolveTreeItem"
+            | "resolveWebviewView"
+            // VS Code Disposable
+            | "dispose"
+            | "refresh"
+            // LSP protocol methods (called by LSP framework dispatch)
+            | "initialized"
+            | "shutdown"
+            | "did_open"
+            | "did_change"
+            | "did_save"
+            | "did_close"
+            | "goto_definition"
+            | "references"
+            | "hover"
+            | "document_symbol"
+            | "prepare_call_hierarchy"
+            | "incoming_calls"
+            | "outgoing_calls"
+            | "execute_command"
+            | "completion"
+            | "code_action"
+            | "code_lens"
+            | "formatting"
+            | "rename"
+            | "did_change_configuration"
+        )
+    }
+
+    /// Check if a name is a well-known trait impl method (Rust/JS framework dispatch)
+    fn is_trait_impl_method(name: &str) -> bool {
+        matches!(
+            name,
+            // Rust std trait impls
+            "default"
+                | "fmt"
+                | "from"
+                | "into"
+                | "clone"
+                | "clone_from"
+                | "eq"
+                | "ne"
+                | "partial_cmp"
+                | "cmp"
+                | "hash"
+                | "drop"
+                | "deref"
+                | "deref_mut"
+                | "as_ref"
+                | "as_mut"
+                | "try_from"
+                | "try_into"
+                | "from_str"
+                | "to_string"
+                | "next"
+                | "size_hint"
+                // Serde
+                | "serialize"
+                | "deserialize"
+                | "visit_str"
+                | "visit_map"
+                | "visit_seq"
+                | "expecting"
+                // Iterator/IntoIterator
+                | "into_iter"
+                | "from_iter"
+                // Display/Debug/Error
+                | "source"
+                | "description"
+                // JS built-ins called by runtime
+                | "toString"
+                | "valueOf"
+                | "toJSON"
+                | "Symbol.iterator"
+                | "[Symbol.iterator]"
+        )
+    }
+
+    /// Compute confidence score for an unused code candidate.
+    /// Lower confidence = more likely a false positive.
+    fn compute_unused_confidence(name: &str, is_exported: bool, _node: &codegraph::Node) -> f64 {
+        // Dynamic dispatch patterns — very likely called at runtime
+        if name.contains("handler")
+            || name.contains("Handler")
+            || name.contains("callback")
+            || name.contains("Callback")
+            || name.contains("listener")
+            || name.contains("Listener")
+            || name.contains("middleware")
+            || name.contains("Middleware")
+        {
+            return 0.2;
+        }
+
+        // MCP tool builder functions (called via collected vec, not direct call edges)
+        if name.ends_with("_tool") {
+            return 0.1;
+        }
+
+        // Serde default functions (referenced by #[serde(default = "...")] attribute)
+        if name.starts_with("default_") {
+            return 0.1;
+        }
+
+        // Event handler patterns (on_click, on_change, handleSubmit, etc.)
+        if name.starts_with("on_")
+            || name.starts_with("on") && name.chars().nth(2).is_some_and(|c| c.is_uppercase())
+        {
+            return 0.2;
+        }
+        if name.starts_with("handle") && name.chars().nth(6).is_some_and(|c| c.is_uppercase()) {
+            return 0.2;
+        }
+
+        // Exported symbols — might be used by consumers outside the indexed workspace
+        if is_exported {
+            return 0.5;
+        }
+
+        // Private/unexported symbols with no callers — very likely unused
+        0.9
+    }
+
+    /// Parse `kinds` filter from MCP args into MemoryKindFilter vec
+    fn parse_kinds_filter(args: &serde_json::Value) -> Vec<crate::memory::MemoryKindFilter> {
+        args.get("kinds")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(Self::parse_kind_str)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Parse `tags` filter from MCP args
+    fn parse_tags_filter(args: &serde_json::Value) -> Vec<String> {
+        args.get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Parse a kind string into a MemoryKindFilter
+    fn parse_kind_str(s: &str) -> Option<crate::memory::MemoryKindFilter> {
+        match s {
+            "debug_context" | "DebugContext" => Some(crate::memory::MemoryKindFilter::DebugContext),
+            "architectural_decision" | "ArchitecturalDecision" => {
+                Some(crate::memory::MemoryKindFilter::ArchitecturalDecision)
+            }
+            "known_issue" | "KnownIssue" => Some(crate::memory::MemoryKindFilter::KnownIssue),
+            "convention" | "Convention" => Some(crate::memory::MemoryKindFilter::Convention),
+            "project_context" | "ProjectContext" => {
+                Some(crate::memory::MemoryKindFilter::ProjectContext)
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if a MemoryKindFilter matches a MemoryKind
+    fn kind_matches_filter(
+        filter: &crate::memory::MemoryKindFilter,
+        kind: &crate::memory::MemoryKind,
+    ) -> bool {
+        matches!(
+            (filter, kind),
+            (
+                crate::memory::MemoryKindFilter::ArchitecturalDecision,
+                crate::memory::MemoryKind::ArchitecturalDecision { .. }
+            ) | (
+                crate::memory::MemoryKindFilter::DebugContext,
+                crate::memory::MemoryKind::DebugContext { .. }
+            ) | (
+                crate::memory::MemoryKindFilter::KnownIssue,
+                crate::memory::MemoryKind::KnownIssue { .. }
+            ) | (
+                crate::memory::MemoryKindFilter::Convention,
+                crate::memory::MemoryKind::Convention { .. }
+            ) | (
+                crate::memory::MemoryKindFilter::ProjectContext,
+                crate::memory::MemoryKind::ProjectContext { .. }
+            )
+        )
     }
 }
 

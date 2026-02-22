@@ -298,10 +298,6 @@ impl QueryEngine {
             if let Ok(neighbors) = graph.get_neighbors(current, codegraph_direction) {
                 for neighbor in neighbors {
                     if !visited.contains(&neighbor) {
-                        visited.insert(neighbor);
-                        let mut new_path = path.clone();
-                        new_path.push(neighbor);
-
                         // Resolve the edge type between current and neighbor
                         let edge_type_str = graph
                             .get_edges_between(current, neighbor)
@@ -311,6 +307,19 @@ impl QueryEngine {
                             .map(|e| e.edge_type.to_string())
                             .unwrap_or_default();
 
+                        // Apply edge type filter: skip edges not matching the filter
+                        if !filter.edge_types.is_empty()
+                            && !filter
+                                .edge_types
+                                .iter()
+                                .any(|et| et.eq_ignore_ascii_case(&edge_type_str))
+                        {
+                            continue;
+                        }
+
+                        visited.insert(neighbor);
+                        let mut new_path = path.clone();
+                        new_path.push(neighbor);
                         queue.push_back((neighbor, depth + 1, new_path, edge_type_str));
                     }
                 }

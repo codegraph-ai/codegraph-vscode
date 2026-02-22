@@ -185,6 +185,15 @@ impl MemoryManager {
         Ok(store.get_all_current())
     }
 
+    /// Get all memories, optionally including invalidated ones
+    pub async fn get_all_memories(
+        &self,
+        current_only: bool,
+    ) -> Result<Vec<MemoryNode>, MemoryError> {
+        let store = self.open_store().await?;
+        Ok(store.get_all_memories(current_only))
+    }
+
     /// Get store statistics
     pub async fn stats(&self) -> Result<serde_json::Value, MemoryError> {
         let store = self.open_store().await?;

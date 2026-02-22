@@ -438,20 +438,25 @@ impl CodeGraphBackend {
                     continue;
                 }
 
-                // Check if node has any incoming calls, is imported, or is contained by a class
+                // Check if node has any usage edges (calls, imports, references, etc.)
+                // Structural edges like Contains and Defines are NOT usage signals.
                 let incoming = self.get_connected_edges(&graph, node_id, Direction::Incoming);
                 let has_callers = incoming
                     .iter()
                     .any(|(_, _, edge_type)| *edge_type == EdgeType::Calls);
-                let is_imported = incoming
-                    .iter()
-                    .any(|(_, _, edge_type)| *edge_type == EdgeType::Imports);
-                let is_contained = incoming
-                    .iter()
-                    .any(|(_, _, edge_type)| *edge_type == EdgeType::Contains);
+                let has_usage_edge = incoming.iter().any(|(_, _, edge_type)| {
+                    matches!(
+                        edge_type,
+                        EdgeType::Imports
+                            | EdgeType::ImportsFrom
+                            | EdgeType::References
+                            | EdgeType::Uses
+                            | EdgeType::Invokes
+                            | EdgeType::Instantiates
+                    )
+                });
 
-                // A symbol is "used" if it's called, imported, or contained by a parent
-                let is_used = has_callers || is_imported || is_contained;
+                let is_used = has_callers || has_usage_edge;
 
                 if !is_used {
                     // Determine if this might be exported or an entry point
