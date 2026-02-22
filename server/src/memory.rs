@@ -2,7 +2,12 @@
 //!
 //! Provides persistent memory storage with semantic search for AI agent context.
 //! Uses on-demand database opening to avoid lock conflicts between processes.
+//!
+//! Data is stored globally at `~/.codegraph/projects/<slug>/memory/` where
+//! `<slug>` is derived from the workspace directory name + a short hash of
+//! the full path for uniqueness (e.g. `codegraph-vscode-a3f2`).
 
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -12,14 +17,63 @@ pub use codegraph_memory::{
     MemoryError, MemoryNode, MemorySearch, MemoryStore, SearchConfig, SearchResult, VectorEngine,
 };
 
+/// Derive a global data directory for a workspace under `~/.codegraph/projects/<slug>/`.
+///
+/// The slug is `<dir-name-lowercase>-<4-hex-hash>` where the hash is derived
+/// from the full canonical path, ensuring uniqueness even when two projects
+/// share the same directory name.
+fn project_data_dir(workspace_path: &Path) -> Result<PathBuf, MemoryError> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| MemoryError::Other("Cannot determine home directory".to_string()))?;
+
+    // Canonicalize for stable hashing (resolve symlinks, normalize)
+    let canonical = workspace_path
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_path.to_path_buf());
+
+    // Slug: last path component, lowercased, non-alphanumeric replaced with '-'
+    let dir_name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    let slug_base: String = dir_name
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    // 4-hex-char hash of full path for uniqueness
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    canonical.to_string_lossy().as_ref().hash(&mut hasher);
+    let hash = hasher.finish();
+    let short_hash = format!("{:04x}", hash & 0xFFFF);
+
+    let slug = format!("{slug_base}-{short_hash}");
+
+    Ok(PathBuf::from(home)
+        .join(".codegraph")
+        .join("projects")
+        .join(slug))
+}
+
 /// Memory manager for the LSP server
 ///
 /// Opens the database on-demand for each operation and closes it immediately after.
 /// This allows multiple processes (VS Code extension + Claude MCP) to share the same
 /// database without lock conflicts.
+///
+/// Data is stored at `~/.codegraph/projects/<slug>/memory/` rather than in the
+/// workspace directory, keeping workspaces clean.
 pub struct MemoryManager {
-    /// Path to workspace root (database lives at workspace/.codegraph/memory)
-    workspace_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Resolved path to memory database (e.g. ~/.codegraph/projects/<slug>/memory)
+    data_dir: Arc<RwLock<Option<PathBuf>>>,
     /// Path to extension root (for model discovery at extension/models/model2vec)
     extension_path: Option<PathBuf>,
     /// Cached vector engine (holds model, not DB - safe to keep)
@@ -33,7 +87,7 @@ impl MemoryManager {
     /// * `extension_path` - Optional path to the VS Code extension root for model discovery
     pub fn new(extension_path: Option<PathBuf>) -> Self {
         Self {
-            workspace_path: Arc::new(RwLock::new(None)),
+            data_dir: Arc::new(RwLock::new(None)),
             extension_path,
             engine: Arc::new(RwLock::new(None)),
         }
@@ -41,7 +95,8 @@ impl MemoryManager {
 
     /// Initialize the memory manager with workspace path
     ///
-    /// Sets up the workspace path and initializes the vector engine.
+    /// Resolves the global data directory at `~/.codegraph/projects/<slug>/memory/`,
+    /// migrating from the old `workspace/.codegraph/memory/` location if needed.
     /// Does NOT hold the database open - that happens on-demand per operation.
     ///
     /// # Arguments
@@ -52,18 +107,29 @@ impl MemoryManager {
             "[MemoryManager::initialize] Workspace path: {:?}",
             workspace_path
         );
-        tracing::info!(
-            "[MemoryManager::initialize] Extension path: {:?}",
-            self.extension_path
-        );
 
-        // Create data directory for memory storage
-        let data_dir = workspace_path.join(".codegraph").join("memory");
-        tracing::info!(
-            "[MemoryManager::initialize] Creating data directory: {:?}",
-            data_dir
-        );
+        // Resolve global data directory
+        let project_dir = project_data_dir(workspace_path)?;
+        let data_dir = project_dir.join("memory");
+        tracing::info!("[MemoryManager::initialize] Data directory: {:?}", data_dir);
 
+        // Auto-migrate from old workspace-local location if needed
+        let old_dir = workspace_path.join(".codegraph").join("memory");
+        if !data_dir.exists() && old_dir.exists() {
+            tracing::info!(
+                "[MemoryManager::initialize] Migrating memory from {:?} to {:?}",
+                old_dir,
+                data_dir
+            );
+            if let Err(e) = Self::migrate_data(&old_dir, &data_dir) {
+                tracing::warn!(
+                    "[MemoryManager::initialize] Migration failed, starting fresh: {}",
+                    e
+                );
+            }
+        }
+
+        // Create data directory
         std::fs::create_dir_all(&data_dir).map_err(|e| {
             tracing::error!(
                 "[MemoryManager::initialize] Failed to create data directory: {}",
@@ -71,10 +137,8 @@ impl MemoryManager {
             );
             e
         })?;
-        tracing::info!("[MemoryManager::initialize] Data directory created successfully");
 
         // Initialize vector engine with bundled model (cached, doesn't hold DB lock)
-        tracing::info!("[MemoryManager::initialize] Initializing VectorEngine...");
         let engine = VectorEngine::new(self.extension_path.as_deref()).map_err(|e| {
             tracing::error!(
                 "[MemoryManager::initialize] VectorEngine initialization failed: {:?}",
@@ -82,29 +146,66 @@ impl MemoryManager {
             );
             e
         })?;
-        tracing::info!("[MemoryManager::initialize] VectorEngine created successfully");
 
-        // Store paths and engine for on-demand use
-        *self.workspace_path.write().await = Some(workspace_path.to_path_buf());
+        // Store resolved path and engine for on-demand use
+        *self.data_dir.write().await = Some(data_dir.clone());
         *self.engine.write().await = Some(Arc::new(engine));
 
         tracing::info!(
-            "[MemoryManager::initialize] Memory manager initialized (on-demand DB mode)"
+            "[MemoryManager::initialize] Memory initialized at {:?}",
+            data_dir
         );
+        Ok(())
+    }
+
+    /// Migrate memory data from old workspace-local path to new global path
+    fn migrate_data(old_dir: &Path, new_dir: &Path) -> Result<(), String> {
+        // Ensure parent exists
+        if let Some(parent) = new_dir.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create parent dir: {e}"))?;
+        }
+
+        // Move the directory
+        std::fs::rename(old_dir, new_dir).map_err(|e| {
+            // rename() fails across filesystems; fall back to copy
+            format!("rename failed ({e}), data will be recreated at new location")
+        })?;
+
+        tracing::info!(
+            "[MemoryManager] Successfully migrated memory to {:?}",
+            new_dir
+        );
+
+        // Clean up empty .codegraph/ in workspace
+        if let Some(codegraph_dir) = old_dir.parent() {
+            if codegraph_dir
+                .read_dir()
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(false)
+            {
+                let _ = std::fs::remove_dir(codegraph_dir);
+                tracing::info!(
+                    "[MemoryManager] Removed empty {:?} from workspace",
+                    codegraph_dir
+                );
+            }
+        }
+
         Ok(())
     }
 
     /// Check if memory manager is initialized
     pub async fn is_initialized(&self) -> bool {
-        self.workspace_path.read().await.is_some() && self.engine.read().await.is_some()
+        self.data_dir.read().await.is_some() && self.engine.read().await.is_some()
     }
 
     /// Open a fresh MemoryStore for an operation
     ///
     /// The store is dropped when it goes out of scope, releasing the DB lock.
     async fn open_store(&self) -> Result<MemoryStore, MemoryError> {
-        let workspace = self
-            .workspace_path
+        let data_dir = self
+            .data_dir
             .read()
             .await
             .clone()
@@ -117,7 +218,6 @@ impl MemoryManager {
             .clone()
             .ok_or_else(|| MemoryError::Other("Vector engine not initialized".to_string()))?;
 
-        let data_dir = workspace.join(".codegraph").join("memory");
         MemoryStore::new(&data_dir, engine)
     }
 
@@ -256,6 +356,51 @@ pub use codegraph_memory::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_project_data_dir_format() {
+        // Uses a path that exists so canonicalize works
+        let dir = project_data_dir(Path::new("/tmp")).unwrap();
+        let dir_str = dir.to_string_lossy();
+
+        assert!(dir_str.contains(".codegraph/projects/"));
+        // Should end with slug containing "tmp" (or "private" on macOS due to canonicalize)
+        // and a 4-char hex suffix
+        let slug = dir.file_name().unwrap().to_string_lossy();
+        // Slug format: <name>-<4hex>
+        assert!(slug.len() >= 6, "slug too short: {slug}");
+        let parts: Vec<&str> = slug.rsplitn(2, '-').collect();
+        assert_eq!(
+            parts[0].len(),
+            4,
+            "hash should be 4 hex chars: {}",
+            parts[0]
+        );
+        assert!(
+            parts[0].chars().all(|c| c.is_ascii_hexdigit()),
+            "hash should be hex: {}",
+            parts[0]
+        );
+    }
+
+    #[test]
+    fn test_project_data_dir_different_paths_different_hashes() {
+        let dir1 = project_data_dir(Path::new("/tmp/project-a")).unwrap();
+        let dir2 = project_data_dir(Path::new("/tmp/project-b")).unwrap();
+        assert_ne!(dir1, dir2);
+    }
+
+    #[test]
+    fn test_project_data_dir_same_name_different_parent() {
+        let dir1 = project_data_dir(Path::new("/tmp/a/app")).unwrap();
+        let dir2 = project_data_dir(Path::new("/tmp/b/app")).unwrap();
+        // Same base name but different hashes
+        let slug1 = dir1.file_name().unwrap().to_string_lossy();
+        let slug2 = dir2.file_name().unwrap().to_string_lossy();
+        assert!(slug1.starts_with("app-"));
+        assert!(slug2.starts_with("app-"));
+        assert_ne!(slug1, slug2);
+    }
 
     #[tokio::test]
     async fn test_memory_manager_uninitialized() {

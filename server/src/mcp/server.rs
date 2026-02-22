@@ -3168,9 +3168,7 @@ impl McpServer {
                     break;
                 }
                 let callees = self.backend.query_engine.get_callees(test.node_id, 3).await;
-                if callees.iter().any(|c| c.node_id == target_id)
-                    && seen_ids.insert(test.node_id)
-                {
+                if callees.iter().any(|c| c.node_id == target_id) && seen_ids.insert(test.node_id) {
                     related_tests.push(serde_json::json!({
                         "name": test.symbol.name,
                         "id": test.node_id.to_string(),
