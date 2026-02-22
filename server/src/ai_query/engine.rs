@@ -448,11 +448,11 @@ impl QueryEngine {
         let graph = self.graph.read().await;
         let mut results = Vec::new();
 
-        // Compile regex if name pattern is provided
-        let name_regex = pattern
-            .name_pattern
-            .as_ref()
-            .and_then(|p| regex::Regex::new(p).ok());
+        // Compile regex from name pattern, converting glob wildcards to regex
+        let name_regex = pattern.name_pattern.as_ref().and_then(|p| {
+            let regex_str = Self::glob_to_anchored_regex(p);
+            regex::Regex::new(&regex_str).ok()
+        });
 
         // Iterate over all function nodes using iter_nodes()
         for (node_id, node) in graph.iter_nodes() {
@@ -470,17 +470,30 @@ impl QueryEngine {
                 }
             }
 
+            let signature = node.properties.get_string("signature").unwrap_or("");
+
             // Check return type
             if let Some(ref expected_return) = pattern.return_type {
                 let actual_return = node.properties.get_string("return_type").unwrap_or("");
-                if !self.type_matches(actual_return, expected_return) {
+                // Fall back to extracting return type from signature
+                let actual_return = if actual_return.is_empty() {
+                    Self::extract_return_type_from_signature(signature)
+                } else {
+                    actual_return.to_string()
+                };
+                if !self.type_matches(&actual_return, expected_return) {
                     continue;
                 }
             }
 
             // Check parameter count
             if let Some((min, max)) = pattern.param_count {
-                let param_count = node.properties.get_int("param_count").unwrap_or(0) as usize;
+                // Try stored param_count first, fall back to parsing from signature
+                let param_count = if let Some(count) = node.properties.get_int("param_count") {
+                    count as usize
+                } else {
+                    Self::count_params_from_signature(signature)
+                };
                 if param_count < min || param_count > max {
                     continue;
                 }
@@ -488,20 +501,31 @@ impl QueryEngine {
 
             // Check modifiers
             if !pattern.modifiers.is_empty() {
+                let visibility = node.properties.get_string("visibility").unwrap_or("");
                 let mut all_modifiers_match = true;
                 for modifier in &pattern.modifiers {
                     let has_modifier = match modifier.as_str() {
                         "async" => node.properties.get_bool("is_async").unwrap_or(false),
-                        "public" | "pub" => node
-                            .properties
-                            .get_bool("is_public")
-                            .or_else(|| node.properties.get_bool("exported"))
-                            .unwrap_or(false),
-                        "private" => !node
-                            .properties
-                            .get_bool("is_public")
-                            .or_else(|| node.properties.get_bool("exported"))
-                            .unwrap_or(true),
+                        "public" | "pub" => {
+                            node.properties
+                                .get_bool("is_public")
+                                .or_else(|| node.properties.get_bool("exported"))
+                                .unwrap_or(false)
+                                || visibility == "public"
+                                || visibility == "pub"
+                        }
+                        "private" => {
+                            visibility == "private"
+                                || (!node
+                                    .properties
+                                    .get_bool("is_public")
+                                    .or_else(|| node.properties.get_bool("exported"))
+                                    .unwrap_or(false)
+                                    && visibility != "public"
+                                    && visibility != "pub"
+                                    && !visibility.is_empty())
+                        }
+                        "protected" => visibility == "protected",
                         "static" => node.properties.get_bool("is_static").unwrap_or(false),
                         "const" => node.properties.get_bool("is_const").unwrap_or(false),
                         _ => false,
@@ -574,7 +598,176 @@ impl QueryEngine {
             }
         }
 
+        // Handle generic type prefix matching: "Result" matches "Result<T, E>"
+        if actual.starts_with(expected) && actual[expected.len()..].starts_with('<') {
+            return true;
+        }
+
+        // Case-insensitive prefix matching for the base type
+        let actual_base = actual.split('<').next().unwrap_or(actual).trim();
+        let expected_base = expected.split('<').next().unwrap_or(expected).trim();
+        if !actual_base.is_empty()
+            && !expected_base.is_empty()
+            && actual_base.eq_ignore_ascii_case(expected_base)
+        {
+            return true;
+        }
+
         false
+    }
+
+    /// Convert a name pattern to an anchored regex.
+    /// Detects whether the input is a glob pattern or regex:
+    /// - Glob: standalone `*` (not preceded by `.`), `?` wildcards
+    /// - Regex: `.*`, `\w`, `[`, `(`, `|`, `+`, `{`
+    ///
+    /// Both get anchored to match the full name.
+    fn glob_to_anchored_regex(pattern: &str) -> String {
+        // Detect if this is regex syntax (contains regex-specific constructs)
+        let is_regex = pattern.contains(".*")
+            || pattern.contains("\\w")
+            || pattern.contains("\\d")
+            || pattern.contains('(')
+            || pattern.contains('|')
+            || pattern.contains('[')
+            || pattern.contains('+')
+            || pattern.contains('{');
+
+        if is_regex {
+            // Already regex — just anchor it if not already anchored
+            let anchored = if pattern.starts_with('^') && pattern.ends_with('$') {
+                pattern.to_string()
+            } else if pattern.starts_with('^') {
+                format!("{pattern}$")
+            } else if pattern.ends_with('$') {
+                format!("^{pattern}")
+            } else {
+                format!("^(?:{pattern})$")
+            };
+            return anchored;
+        }
+
+        // Glob mode: convert glob wildcards to regex
+        let mut regex = String::with_capacity(pattern.len() + 4);
+        regex.push('^');
+        for ch in pattern.chars() {
+            match ch {
+                '*' => regex.push_str(".*"),
+                '?' => regex.push('.'),
+                '.' | '^' | '$' | '\\' | '/' => {
+                    regex.push('\\');
+                    regex.push(ch);
+                }
+                _ => regex.push(ch),
+            }
+        }
+        regex.push('$');
+        regex
+    }
+
+    /// Count parameters from a function signature string.
+    /// Handles `fn foo()` (0 params), `fn foo(a: i32)` (1 param),
+    /// `fn foo(a: i32, b: String)` (2 params), etc.
+    /// Also handles `self`/`&self`/`&mut self` — not counted as params.
+    fn count_params_from_signature(signature: &str) -> usize {
+        // Find the parameter list between first ( and matching )
+        let paren_start = match signature.find('(') {
+            Some(pos) => pos,
+            None => return 0,
+        };
+
+        // Find matching closing paren, accounting for nested parens/generics
+        let chars: Vec<char> = signature.chars().collect();
+        let mut depth = 0;
+        let mut paren_end = None;
+        for (i, &ch) in chars.iter().enumerate().skip(paren_start) {
+            match ch {
+                '(' | '<' => depth += 1,
+                ')' | '>' => {
+                    depth -= 1;
+                    if depth == 0 && ch == ')' {
+                        paren_end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let paren_end = match paren_end {
+            Some(pos) => pos,
+            None => return 0,
+        };
+
+        let params_str: String = chars[paren_start + 1..paren_end].iter().collect();
+        let params_str = params_str.trim();
+
+        if params_str.is_empty() {
+            return 0;
+        }
+
+        // Split by commas at top-level (not inside <> or ())
+        let mut count: usize = 0;
+        let mut depth = 0;
+        let mut has_content = false;
+        for ch in params_str.chars() {
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    if has_content {
+                        count += 1;
+                    }
+                    has_content = false;
+                    continue;
+                }
+                _ if !ch.is_whitespace() => has_content = true,
+                _ => {}
+            }
+        }
+        if has_content {
+            count += 1;
+        }
+
+        // Subtract self/&self/&mut self (Rust methods)
+        let first_param = params_str.split(',').next().unwrap_or("").trim();
+        if first_param == "self"
+            || first_param == "&self"
+            || first_param == "&mut self"
+            || first_param.starts_with("self:")
+        {
+            count = count.saturating_sub(1);
+        }
+
+        count
+    }
+
+    /// Extract return type from a function signature string.
+    fn extract_return_type_from_signature(signature: &str) -> String {
+        // Rust: `fn foo(args) -> ReturnType`
+        if let Some(pos) = signature.rfind("->") {
+            let ret = signature[pos + 2..].trim();
+            // Strip trailing braces/semicolons
+            let ret = ret.trim_end_matches(|c: char| c == '{' || c == ';' || c.is_whitespace());
+            if !ret.is_empty() {
+                return ret.to_string();
+            }
+        }
+
+        // TypeScript/Java: `function foo(args): ReturnType` or type annotation after `)`
+        // Find closing paren, then look for `: Type`
+        if let Some(paren_pos) = signature.rfind(')') {
+            let after_paren = &signature[paren_pos + 1..];
+            if let Some(colon_pos) = after_paren.find(':') {
+                let ret = after_paren[colon_pos + 1..].trim();
+                let ret = ret.trim_end_matches(|c: char| c == '{' || c == ';' || c.is_whitespace());
+                if !ret.is_empty() {
+                    return ret.to_string();
+                }
+            }
+        }
+
+        String::new()
     }
 
     /// Build a human-readable match reason for signature search.
