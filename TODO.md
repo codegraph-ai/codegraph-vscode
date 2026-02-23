@@ -1,13 +1,10 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-02-21
+> Last updated: 2026-02-23
 
 ## High Priority — MCP Tool Fixes
 
 Issues discovered via MCP tool verification (162 scenarios, 78 pass / 30 fail / 54 warn).
-
-### 7. Fix get_ai_context to return actual context (RC-5)
-All 6 scenarios fail. Returns skeleton metadata instead of source code, callers/callees context, layer detection, and usage descriptions. The handler runs but produces empty/minimal results.
 
 ### 8. Fix find_unused_code false negatives (RC-4)
 4/8 scenarios fail. Reports zero unused symbols in files that clearly have dead code. Partly addressed (7f758e1 improved test filtering and Contains edge checks) but core detection still misses cases.
@@ -52,16 +49,19 @@ Both completed (3753293) — fixed `.to_string()` on booleans and integers acros
 
 ## Future / On Demand
 
-### 5. Add remaining language parsers
-~~PHP, Ruby, Swift, and Tcl parsers are available in codegraph-monorepo if demand arises.~~ All added in v0.6.0. No remaining parsers to add.
-
 ### 6. Publish to VS Code Marketplace
-Currently at v0.6.0 locally. Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
+Currently at v0.7.0 locally. Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
 
 ---
 
 ## Completed
 
+- ~~Fix MCP transport CPU spin on client disconnect~~ — EOF from stdin returned `Ok(None)` causing tight infinite loop at 100% CPU per orphaned process. Fixed both sync and async transports to return `Err(UnexpectedEof)` (transport.rs).
+- ~~Move memory storage to ~/.codegraph/projects/~~ (f19fc5e) — Project-derived slug `<name>-<4hex>`, auto-migration from workspace-local path, on-demand DB opening.
+- ~~Fix get_ai_context to return actual context (#7)~~ (26a41e0) — Rewrote MCP handler, now returns source code, callers/callees, dependencies, usage examples, and architecture layer.
+- ~~v0.7.0: 4 new language parsers + MCP reliability~~ (928267a) — PHP, Ruby, Swift, Tcl parsers, graph re-indexing dedup, find_related_tests, find_unused_code scope, get_call_graph dedup, mine_git_history dedup, RocksDB LOG cleanup.
+- ~~MCP tool correctness across 9 areas~~ (32abcd1) — index_directory node cleanup, find_related_tests rewrite, find_unused_code path filtering, get_call_graph dedup, mine_git_history dedup, tool descriptions.
+- ~~Add 4 languages (#5)~~ — PHP, Ruby, Swift, Tcl added in v0.7.0 (928267a), bringing total to 14.
 - ~~Add type-safety tests + audit .to_string() numeric properties (#17, #18)~~ — Fixed booleans and integers across all 12 mapper crates (3753293), added `test_property_types` regression tests, updated C#/Java/PHP integration tests.
 - ~~Fix line-to-node resolution (RC-1)~~ — PropertyValue type mismatch: all mappers stored line numbers as strings, `get_int()` only matched Int variant. Fixed in codegraph-monorepo (8969901) with defensive getter + 11 mapper fixes.
 - ~~Fix find_by_signature filters (RC-3)~~ — 7/10 scenarios fixed: glob-to-regex conversion, signature-based param counting fallback, return type extraction from signature, visibility string property check.

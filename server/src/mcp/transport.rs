@@ -21,12 +21,16 @@ impl StdioTransport {
     }
 
     /// Read a JSON-RPC request from stdin
+    ///
+    /// Returns `Err(UnexpectedEof)` when stdin is closed (client disconnected).
+    /// Returns `Ok(None)` for empty/whitespace-only lines (keep reading).
     pub fn read_request(&self) -> io::Result<Option<JsonRpcRequest>> {
         let mut line = String::new();
         let bytes_read = self.stdin.lock().read_line(&mut line)?;
 
         if bytes_read == 0 {
-            return Ok(None); // EOF
+            // EOF — stdin closed, client disconnected
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "stdin closed"));
         }
 
         let line = line.trim();
@@ -73,12 +77,16 @@ impl AsyncStdioTransport {
     }
 
     /// Read a JSON-RPC request from stdin asynchronously
+    ///
+    /// Returns `Err(UnexpectedEof)` when stdin is closed (client disconnected).
+    /// Returns `Ok(None)` for empty/whitespace-only lines (keep reading).
     pub async fn read_request(&mut self) -> io::Result<Option<JsonRpcRequest>> {
         let mut line = String::new();
         let bytes_read = self.stdin.read_line(&mut line).await?;
 
         if bytes_read == 0 {
-            return Ok(None); // EOF
+            // EOF — stdin closed, client disconnected
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "stdin closed"));
         }
 
         let line = line.trim();

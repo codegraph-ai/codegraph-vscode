@@ -189,7 +189,7 @@ impl McpServer {
                     transport.write_response(&response).await?;
                 }
                 Ok(None) => {
-                    // EOF or empty line - continue
+                    // Empty line, keep reading
                     continue;
                 }
                 Err(e) => {
