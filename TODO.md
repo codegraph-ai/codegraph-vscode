@@ -1,21 +1,19 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-02-24
+> Last updated: 2026-02-25
 
 ## High Priority — MCP Tool Fixes
 
 Issues discovered via MCP tool verification (162 scenarios, 78 pass / 30 fail / 54 warn).
 
 ### 8. Fix find_unused_code false positives (RC-4)
-Core detection fixed (Imports edges no longer count as usage, Types/Interfaces no longer blanket-skipped). Now returns 158/1008 unused at ≥0.8 confidence. Remaining false positives from 3 root causes:
+~~Core issue resolved.~~ False positives reduced from 158 → 50 at ≥0.8 confidence across 4 fixes (8a–8d + cross-file imports). Remaining 50 items are mostly Rust test helpers, VS Code callback methods, and ~19 interfaces only used within their defining file via `as` casts or inline patterns the parser doesn't yet detect.
 
-**~~8a. Rust macro body calls invisible to tree-sitter~~** — FIXED (uncommitted). Root cause: `tokio::select!`, `vec![]` etc. produce opaque `token_tree` nodes. Added `extract_calls_from_macro()` heuristic scanner to codegraph-rust visitor. Verified: `FileWatcher::new` → `handle_event` edge now resolved, no longer flagged as unused.
-
-**8b. Method references not detected as calls** — `.filter_map(Self::parse_kind_str)` passes a function as a value, not a call_expression. Tree-sitter doesn't parse this as a call. Affects all languages. Needs new extraction pattern in codegraph-monorepo visitors.
-
-**8c. No References edges for type annotations** — `EdgeType::References` exists in codegraph but no parser creates it. TS type annotations (`: DependencyGraphParams`), Rust trait bounds, generic parameters — none generate edges. Needs visitor extensions in codegraph-monorepo. Accounts for ~50 false positives (all TS interfaces).
-
-**8d. TypeScript `this.method()` same-class calls not linked** — `formatCallGraph`, `formatDependencyGraph`, and ~20 other private methods called via `this.` within the same class appear unused. The TS parser extracts these calls correctly, but edges are lost in the live MCP graph — likely same pipeline issue as 8a (edges created by mapper but not surviving `index_directory` → `build_indexes`). Also: `new ClassName()` instantiation across files not detected (e.g., `CodeGraphToolManager`).
+Remaining false positive categories (not blocking, diminishing returns):
+- **Rust test helpers** (~14): `create_test_backend`, `make_commit`, etc. — correctly flagged when `includeTests: false`
+- **VS Code callbacks** (~8): `provideFollowups`, `getIcon`, `setup` — framework entry points called by VS Code runtime, not via code. Could add to `is_framework_entry_point` allowlist.
+- **Classes instantiated cross-file** (~9): `MemoryTreeProvider`, `SymbolTreeProvider`, etc. — `new ClassName()` not detected as Instantiates edge cross-file
+- **Interfaces used only inline** (~19): `*Params` interfaces used via `as` casts or in same-file `RequestType<>` generics without cross-file import
 
 ### 9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)
 Memory tools ignore filter parameters. `kinds` filter returns unfiltered results, `tags` filter has no effect, `currentOnly: false` still excludes invalidated memories, `offset` pagination not implemented.
@@ -51,12 +49,22 @@ TypeScript private methods are indexed but `visibility` property is not consiste
 ### 6. Publish to VS Code Marketplace
 Currently at v0.7.0 locally. Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
 
+### 19. Extend type reference extraction to other languages
+TypeScript type reference extraction (8c) now works for parameter types, return types, interface fields. Could extend to Rust (trait bounds, generic params, struct field types), Go (interface embedding, struct field types), etc.
+
+### 20. Detect type references in expressions (generic args, `as` casts)
+Interfaces like `*Params` used as generic type arguments (`new RequestType<DependencyGraphParams, ...>`) or `as` casts (`params as CallGraphParams`) are not detected by the current type reference extraction, which only scans function parameter/return annotations and interface field types. Needs extraction from `new_expression` type arguments, `as_expression` type targets, and variable type annotations (`const x: MyType`). Would eliminate ~19 remaining interface false positives in find_unused_code.
+
+### 21. Cross-file `new ClassName()` instantiation detection
+`new ClassName()` in another file doesn't create an Instantiates edge to the class definition. The mapper only creates Instantiates for same-file `new` expressions. Needs cross-file resolution similar to how `resolve_cross_file_imports` works for Imports edges.
+
 ---
 
 ## Completed
 
+- ~~Fix find_unused_code false positives — all 4 sub-issues (#8a–8d)~~ — Reduced from 158 → 50 at ≥0.8 confidence. Four fixes: (a) Rust macro body call extraction via `extract_calls_from_macro()` heuristic (09a94df); (b) Rust method reference detection for `Self::method` / `self.method` used as values (f313da6); (c) TypeScript type annotation References edges via new `TypeReference` IR struct, `extract_type_names()` recursive extractor, and mapper edge creation (f313da6); (d) Arrow function call attribution — nested arrows recurse into enclosing function's context (f313da6). Plus: cross-file Imports edges now count as usage in find_unused_code (e39157e).
 - ~~Fix find_unused_code core detection (#8 core)~~ — Imports/ImportsFrom edges no longer counted as usage, Type/Interface nodes no longer blanket-skipped. Reduced from 0 → 362 unused at 0.5 confidence.
-- ~~Fix Rust macro body call extraction (#8a)~~ — tree-sitter treats macro invocation bodies as opaque `token_tree` nodes. Added heuristic `extract_calls_from_macro()` in codegraph-rust visitor. Handles `Self::method()`, `self.method()`, bare `func()`. Verified: `handle_event` no longer flagged as unused. (codegraph-monorepo, uncommitted)
+- ~~Fix Rust macro body call extraction (#8a)~~ — tree-sitter treats macro invocation bodies as opaque `token_tree` nodes. Added heuristic `extract_calls_from_macro()` in codegraph-rust visitor. Handles `Self::method()`, `self.method()`, bare `func()`. Verified: `handle_event` no longer flagged as unused. (09a94df, be9a66f)
 - ~~Implement real cyclomatic complexity scoring (#16)~~ — Added to all parsers in codegraph-monorepo (61d07fd, bcd7173, 1097a32). Rust, Go, PHP, Ruby, Java, C, C++, C#, Kotlin all now compute branches, loops, logical operators, nesting depth. MCP handler already reads complexity properties from graph.
 - ~~Fix MCP transport CPU spin on client disconnect~~ — EOF from stdin returned `Ok(None)` causing tight infinite loop at 100% CPU per orphaned process. Fixed both sync and async transports to return `Err(UnexpectedEof)` (transport.rs).
 - ~~Move memory storage to ~/.codegraph/projects/~~ (f19fc5e) — Project-derived slug `<name>-<4hex>`, auto-migration from workspace-local path, on-demand DB opening.
