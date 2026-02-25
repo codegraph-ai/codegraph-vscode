@@ -3546,6 +3546,7 @@ impl McpServer {
                                                     | codegraph::EdgeType::Instantiates
                                                     | codegraph::EdgeType::Extends
                                                     | codegraph::EdgeType::Implements
+                                                    | codegraph::EdgeType::Imports
                                             )
                                         })
                                         .unwrap_or(false)

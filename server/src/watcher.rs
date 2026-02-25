@@ -968,4 +968,403 @@ fn standalone() {}
             "new -> handle_event Calls edge should exist"
         );
     }
+
+    #[test]
+    fn test_typescript_this_method_calls_edges() {
+        use codegraph::{Direction, EdgeType};
+
+        let source = r#"
+export class ToolManager {
+    private formatResult(data: any): string {
+        return JSON.stringify(data);
+    }
+
+    private formatCallGraph(response: any, summary: boolean): string {
+        return this.formatResult(response);
+    }
+
+    async handleTool(name: string): Promise<string> {
+        const result = await this.getResult(name);
+        return this.formatCallGraph(result, false);
+    }
+
+    private async getResult(name: string): Promise<any> {
+        return { name };
+    }
+}
+"#;
+
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let parsers = ParserRegistry::new();
+        let result = parsers.parse_source(source, std::path::Path::new("test.ts"), &mut graph);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        // Print all functions and their Calls edges for diagnosis
+        let all_funcs = graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .execute()
+            .unwrap();
+
+        eprintln!("=== TypeScript this.method() Calls edges ===");
+        for &fid in &all_funcs {
+            let node = graph.get_node(fid).unwrap();
+            let name = node.properties.get_string("name").unwrap_or("?");
+
+            let callees: Vec<String> = graph
+                .get_neighbors(fid, Direction::Outgoing)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|&nid| {
+                    let has_call = graph
+                        .get_edges_between(fid, nid)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|&eid| {
+                            graph
+                                .get_edge(eid)
+                                .map(|e| e.edge_type == EdgeType::Calls)
+                                .unwrap_or(false)
+                        });
+                    if has_call {
+                        graph
+                            .get_node(nid)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let unresolved = node.properties.get_string("unresolved_calls").unwrap_or("");
+            eprintln!(
+                "  {} -> resolved: {:?}, unresolved: [{}]",
+                name, callees, unresolved
+            );
+        }
+
+        // Check: handleTool should call formatCallGraph and getResult
+        let handle_id = all_funcs
+            .iter()
+            .find(|&&id| {
+                graph
+                    .get_node(id)
+                    .map(|n| n.properties.get_string("name") == Some("handleTool"))
+                    .unwrap_or(false)
+            })
+            .expect("Should find 'handleTool' function");
+
+        let handle_callees: Vec<String> = graph
+            .get_neighbors(*handle_id, Direction::Outgoing)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&nid| {
+                let has_call = graph
+                    .get_edges_between(*handle_id, nid)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::Calls)
+                            .unwrap_or(false)
+                    });
+                if has_call {
+                    graph
+                        .get_node(nid)
+                        .ok()
+                        .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("handleTool callees: {:?}", handle_callees);
+        assert!(
+            handle_callees.contains(&"formatCallGraph".to_string()),
+            "handleTool -> formatCallGraph Calls edge should exist (this.formatCallGraph())"
+        );
+        assert!(
+            handle_callees.contains(&"getResult".to_string()),
+            "handleTool -> getResult Calls edge should exist (this.getResult())"
+        );
+
+        // Check: formatCallGraph should call formatResult
+        let format_id = all_funcs
+            .iter()
+            .find(|&&id| {
+                graph
+                    .get_node(id)
+                    .map(|n| n.properties.get_string("name") == Some("formatCallGraph"))
+                    .unwrap_or(false)
+            })
+            .expect("Should find 'formatCallGraph' function");
+
+        let format_callees: Vec<String> = graph
+            .get_neighbors(*format_id, Direction::Outgoing)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&nid| {
+                let has_call = graph
+                    .get_edges_between(*format_id, nid)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::Calls)
+                            .unwrap_or(false)
+                    });
+                if has_call {
+                    graph
+                        .get_node(nid)
+                        .ok()
+                        .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("formatCallGraph callees: {:?}", format_callees);
+        assert!(
+            format_callees.contains(&"formatResult".to_string()),
+            "formatCallGraph -> formatResult Calls edge should exist (this.formatResult())"
+        );
+    }
+
+    #[test]
+    fn test_typescript_type_references_edges() {
+        use codegraph::{Direction, EdgeType};
+
+        let source = r#"
+interface DependencyGraphParams {
+    uri: string;
+    depth: number;
+}
+
+interface DependencyNode {
+    id: string;
+    label: string;
+}
+
+function buildGraph(params: DependencyGraphParams): DependencyNode[] {
+    return [];
+}
+"#;
+
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let parsers = ParserRegistry::new();
+        let result = parsers.parse_source(source, std::path::Path::new("test.ts"), &mut graph);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let all_funcs = graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .execute()
+            .unwrap();
+
+        let build_id = all_funcs
+            .iter()
+            .find(|&&id| {
+                graph
+                    .get_node(id)
+                    .map(|n| n.properties.get_string("name") == Some("buildGraph"))
+                    .unwrap_or(false)
+            })
+            .expect("Should find 'buildGraph'");
+
+        // Check References edges from buildGraph
+        let refs: Vec<String> = graph
+            .get_neighbors(*build_id, Direction::Outgoing)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&nid| {
+                let has_ref = graph
+                    .get_edges_between(*build_id, nid)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::References)
+                            .unwrap_or(false)
+                    });
+                if has_ref {
+                    graph
+                        .get_node(nid)
+                        .ok()
+                        .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("buildGraph References: {:?}", refs);
+        assert!(
+            refs.contains(&"DependencyGraphParams".to_string()),
+            "buildGraph should reference DependencyGraphParams via param type"
+        );
+        assert!(
+            refs.contains(&"DependencyNode".to_string()),
+            "buildGraph should reference DependencyNode via return type"
+        );
+
+        // DependencyGraphParams should have incoming References edge
+        let all_ifaces = graph
+            .query()
+            .node_type(codegraph::NodeType::Interface)
+            .execute()
+            .unwrap();
+
+        let dgp_id = all_ifaces
+            .iter()
+            .find(|&&id| {
+                graph
+                    .get_node(id)
+                    .map(|n| n.properties.get_string("name") == Some("DependencyGraphParams"))
+                    .unwrap_or(false)
+            })
+            .expect("Should find DependencyGraphParams");
+
+        let incoming: Vec<String> = graph
+            .get_neighbors(*dgp_id, Direction::Incoming)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&nid| {
+                let has_ref = graph
+                    .get_edges_between(nid, *dgp_id)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::References)
+                            .unwrap_or(false)
+                    });
+                if has_ref {
+                    graph
+                        .get_node(nid)
+                        .ok()
+                        .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("DependencyGraphParams referenced by: {:?}", incoming);
+        assert!(
+            incoming.contains(&"buildGraph".to_string()),
+            "DependencyGraphParams should have incoming References from buildGraph"
+        );
+    }
+
+    #[test]
+    fn test_parse_real_ts_file_calls_edges() {
+        use codegraph::{Direction, EdgeType};
+
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let parsers = ParserRegistry::new();
+
+        // Parse the actual toolManager.ts
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("src/ai/toolManager.ts");
+        if !path.exists() {
+            eprintln!("Skipping: {:?} not found", path);
+            return;
+        }
+
+        let result = parsers.parse_file(&path, &mut graph);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let all_funcs = graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .execute()
+            .unwrap();
+
+        eprintln!("=== toolManager.ts functions with Calls edges ===");
+        let mut format_call_graph_has_callers = false;
+        for &fid in &all_funcs {
+            let node = graph.get_node(fid).unwrap();
+            let name = node.properties.get_string("name").unwrap_or("?");
+
+            // Check outgoing Calls
+            let callees: Vec<String> = graph
+                .get_neighbors(fid, Direction::Outgoing)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|&nid| {
+                    let has_call = graph
+                        .get_edges_between(fid, nid)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|&eid| {
+                            graph
+                                .get_edge(eid)
+                                .map(|e| e.edge_type == EdgeType::Calls)
+                                .unwrap_or(false)
+                        });
+                    if has_call {
+                        graph
+                            .get_node(nid)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Check incoming Calls (callers)
+            let callers: Vec<String> = graph
+                .get_neighbors(fid, Direction::Incoming)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|&nid| {
+                    let has_call = graph
+                        .get_edges_between(nid, fid)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|&eid| {
+                            graph
+                                .get_edge(eid)
+                                .map(|e| e.edge_type == EdgeType::Calls)
+                                .unwrap_or(false)
+                        });
+                    if has_call {
+                        graph
+                            .get_node(nid)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if name == "formatCallGraph" {
+                format_call_graph_has_callers = !callers.is_empty();
+            }
+
+            let unresolved = node.properties.get_string("unresolved_calls").unwrap_or("");
+            if !callees.is_empty() || !callers.is_empty() || !unresolved.is_empty() {
+                eprintln!(
+                    "  {} -> callees: {:?}, callers: {:?}, unresolved: [{}]",
+                    name, callees, callers, unresolved
+                );
+            }
+        }
+
+        eprintln!(
+            "\nformatCallGraph has callers: {}",
+            format_call_graph_has_callers
+        );
+    }
 }
