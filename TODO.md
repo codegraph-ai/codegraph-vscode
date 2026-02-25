@@ -1,13 +1,21 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-24
 
 ## High Priority — MCP Tool Fixes
 
 Issues discovered via MCP tool verification (162 scenarios, 78 pass / 30 fail / 54 warn).
 
-### 8. Fix find_unused_code false negatives (RC-4)
-4/8 scenarios fail. Reports zero unused symbols in files that clearly have dead code. Partly addressed (7f758e1 improved test filtering and Contains edge checks) but core detection still misses cases.
+### 8. Fix find_unused_code false positives (RC-4)
+Core detection fixed (Imports edges no longer count as usage, Types/Interfaces no longer blanket-skipped). Now returns 158/1008 unused at ≥0.8 confidence. Remaining false positives from 3 root causes:
+
+**~~8a. Rust macro body calls invisible to tree-sitter~~** — FIXED (uncommitted). Root cause: `tokio::select!`, `vec![]` etc. produce opaque `token_tree` nodes. Added `extract_calls_from_macro()` heuristic scanner to codegraph-rust visitor. Verified: `FileWatcher::new` → `handle_event` edge now resolved, no longer flagged as unused.
+
+**8b. Method references not detected as calls** — `.filter_map(Self::parse_kind_str)` passes a function as a value, not a call_expression. Tree-sitter doesn't parse this as a call. Affects all languages. Needs new extraction pattern in codegraph-monorepo visitors.
+
+**8c. No References edges for type annotations** — `EdgeType::References` exists in codegraph but no parser creates it. TS type annotations (`: DependencyGraphParams`), Rust trait bounds, generic parameters — none generate edges. Needs visitor extensions in codegraph-monorepo. Accounts for ~50 false positives (all TS interfaces).
+
+**8d. TypeScript `this.method()` same-class calls not linked** — `formatCallGraph`, `formatDependencyGraph`, and ~20 other private methods called via `this.` within the same class appear unused. The TS parser extracts these calls correctly, but edges are lost in the live MCP graph — likely same pipeline issue as 8a (edges created by mapper but not surviving `index_directory` → `build_indexes`). Also: `new ClassName()` instantiation across files not detected (e.g., `CodeGraphToolManager`).
 
 ### 9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)
 Memory tools ignore filter parameters. `kinds` filter returns unfiltered results, `tags` filter has no effect, `currentOnly: false` still excludes invalidated memories, `offset` pagination not implemented.
@@ -38,15 +46,6 @@ TypeScript private methods are indexed but `visibility` property is not consiste
 ### 15. Fix memory_invalidate error on nonexistent IDs
 `memory_invalidate` silently succeeds when given a non-existent memory ID. Should return an error.
 
-### 16. Implement real Rust cyclomatic complexity scoring (RC-7)
-MCP `analyze_complexity` returns 0 for Rust functions because the Rust parser doesn't compute cyclomatic complexity. TypeScript parser does. Need to add branch-counting to the Rust tree-sitter walker.
-
-## ~~Medium Priority — codegraph-monorepo~~ (Completed)
-
-~~### 17. Add type-safety tests to codegraph-monorepo mapper crates~~
-~~### 18. Audit remaining .to_string() numeric properties in codegraph-monorepo~~
-Both completed (3753293) — fixed `.to_string()` on booleans and integers across all 12 mapper crates, added `test_property_types` regression tests, updated integration tests.
-
 ## Future / On Demand
 
 ### 6. Publish to VS Code Marketplace
@@ -56,6 +55,9 @@ Currently at v0.7.0 locally. Requires marketplace publisher setup, CI/CD pipelin
 
 ## Completed
 
+- ~~Fix find_unused_code core detection (#8 core)~~ — Imports/ImportsFrom edges no longer counted as usage, Type/Interface nodes no longer blanket-skipped. Reduced from 0 → 362 unused at 0.5 confidence.
+- ~~Fix Rust macro body call extraction (#8a)~~ — tree-sitter treats macro invocation bodies as opaque `token_tree` nodes. Added heuristic `extract_calls_from_macro()` in codegraph-rust visitor. Handles `Self::method()`, `self.method()`, bare `func()`. Verified: `handle_event` no longer flagged as unused. (codegraph-monorepo, uncommitted)
+- ~~Implement real cyclomatic complexity scoring (#16)~~ — Added to all parsers in codegraph-monorepo (61d07fd, bcd7173, 1097a32). Rust, Go, PHP, Ruby, Java, C, C++, C#, Kotlin all now compute branches, loops, logical operators, nesting depth. MCP handler already reads complexity properties from graph.
 - ~~Fix MCP transport CPU spin on client disconnect~~ — EOF from stdin returned `Ok(None)` causing tight infinite loop at 100% CPU per orphaned process. Fixed both sync and async transports to return `Err(UnexpectedEof)` (transport.rs).
 - ~~Move memory storage to ~/.codegraph/projects/~~ (f19fc5e) — Project-derived slug `<name>-<4hex>`, auto-migration from workspace-local path, on-demand DB opening.
 - ~~Fix get_ai_context to return actual context (#7)~~ (26a41e0) — Rewrote MCP handler, now returns source code, callers/callees, dependencies, usage examples, and architecture layer.

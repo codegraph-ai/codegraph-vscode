@@ -782,4 +782,190 @@ mod tests {
             "MyClass should have an incoming import edge from main.ts"
         );
     }
+
+    #[test]
+    fn test_same_file_calls_edges_preserved() {
+        use codegraph::{Direction, EdgeType};
+        // Verify that the mapper creates same-file Calls edges
+        // and they survive through parse_file
+        let source = r#"
+struct Foo;
+
+impl Foo {
+    fn caller(&self) {
+        Self::target();
+        self.instance_target();
+        standalone();
+    }
+    fn target() {}
+    fn instance_target(&self) {}
+}
+
+fn standalone() {}
+"#;
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let parsers = ParserRegistry::new();
+        let result = parsers.parse_source(source, std::path::Path::new("test.rs"), &mut graph);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        // Find the "caller" function node
+        let all_funcs = graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .execute()
+            .unwrap();
+        let caller_id = all_funcs
+            .iter()
+            .find(|&&id| {
+                graph
+                    .get_node(id)
+                    .map(|n| n.properties.get_string("name") == Some("caller"))
+                    .unwrap_or(false)
+            })
+            .expect("Should find 'caller' function");
+
+        // Collect callees via Calls edges
+        let callees: Vec<String> = graph
+            .get_neighbors(*caller_id, Direction::Outgoing)
+            .unwrap_or_default()
+            .iter()
+            .filter(|&&nid| {
+                graph
+                    .get_edges_between(*caller_id, nid)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::Calls)
+                            .unwrap_or(false)
+                    })
+            })
+            .filter_map(|&nid| {
+                graph
+                    .get_node(nid)
+                    .ok()
+                    .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+            })
+            .collect();
+
+        eprintln!("Callees of 'caller': {:?}", callees);
+        assert!(
+            callees.contains(&"target".to_string()),
+            "Missing Calls edge: caller -> target (Self::target())"
+        );
+        assert!(
+            callees.contains(&"instance_target".to_string()),
+            "Missing Calls edge: caller -> instance_target (self.instance_target())"
+        );
+        assert!(
+            callees.contains(&"standalone".to_string()),
+            "Missing Calls edge: caller -> standalone"
+        );
+    }
+
+    #[test]
+    fn test_parse_real_file_calls_edges() {
+        use codegraph::{Direction, EdgeType};
+        // Parse the actual watcher.rs and check if new -> handle_event edge exists
+        let mut graph = CodeGraph::in_memory().unwrap();
+        let parsers = ParserRegistry::new();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/watcher.rs");
+        if !path.exists() {
+            eprintln!("Skipping: {:?} not found", path);
+            return;
+        }
+        let result = parsers.parse_file(&path, &mut graph);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let all_funcs = graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .execute()
+            .unwrap();
+
+        // Print all functions and their Calls edges
+        for &fid in &all_funcs {
+            let node = graph.get_node(fid).unwrap();
+            let name = node.properties.get_string("name").unwrap_or("?");
+
+            let callees: Vec<String> = graph
+                .get_neighbors(fid, Direction::Outgoing)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|&nid| {
+                    let has_call = graph
+                        .get_edges_between(fid, nid)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|&eid| {
+                            graph
+                                .get_edge(eid)
+                                .map(|e| e.edge_type == EdgeType::Calls)
+                                .unwrap_or(false)
+                        });
+                    if has_call {
+                        graph
+                            .get_node(nid)
+                            .ok()
+                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let unresolved = node.properties.get_string("unresolved_calls").unwrap_or("");
+
+            if !callees.is_empty() || !unresolved.is_empty() {
+                eprintln!(
+                    "  {} -> resolved: {:?}, unresolved: [{}]",
+                    name, callees, unresolved
+                );
+            }
+        }
+
+        // Check that new -> handle_event exists
+        let new_id = all_funcs
+            .iter()
+            .find(|&&id| {
+                graph
+                    .get_node(id)
+                    .map(|n| n.properties.get_string("name") == Some("new"))
+                    .unwrap_or(false)
+            })
+            .expect("Should find 'new' function");
+
+        let new_callees: Vec<String> = graph
+            .get_neighbors(*new_id, Direction::Outgoing)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&nid| {
+                let has_call = graph
+                    .get_edges_between(*new_id, nid)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::Calls)
+                            .unwrap_or(false)
+                    });
+                if has_call {
+                    graph
+                        .get_node(nid)
+                        .ok()
+                        .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("new callees: {:?}", new_callees);
+        assert!(
+            new_callees.contains(&"handle_event".to_string()),
+            "new -> handle_event Calls edge should exist"
+        );
+    }
 }

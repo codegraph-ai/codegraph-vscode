@@ -3475,13 +3475,8 @@ impl McpServer {
                     continue;
                 }
 
-                // Skip type definitions — interfaces and type aliases are structural,
-                // they're referenced by type system, not "called"
-                if node.node_type == codegraph::NodeType::Interface
-                    || node.node_type == codegraph::NodeType::Type
-                {
-                    continue;
-                }
+                // Note: Type/Interface nodes are included — unused types/interfaces
+                // are real dead code. Usage is detected via Extends/Implements/References edges.
 
                 let name = node.properties.get_string("name").unwrap_or_default();
 
@@ -3545,12 +3540,12 @@ impl McpServer {
                                         .map(|e| {
                                             matches!(
                                                 e.edge_type,
-                                                codegraph::EdgeType::Imports
-                                                    | codegraph::EdgeType::ImportsFrom
-                                                    | codegraph::EdgeType::References
+                                                codegraph::EdgeType::References
                                                     | codegraph::EdgeType::Uses
                                                     | codegraph::EdgeType::Invokes
                                                     | codegraph::EdgeType::Instantiates
+                                                    | codegraph::EdgeType::Extends
+                                                    | codegraph::EdgeType::Implements
                                             )
                                         })
                                         .unwrap_or(false)
