@@ -10,13 +10,11 @@ import { registerCommands } from './commands';
 import { registerTreeDataProviders } from './views/treeProviders';
 import { CodeGraphAIProvider } from './ai/contextProvider';
 import { CodeGraphToolManager } from './ai/toolManager';
-import { CodeGraphChatParticipant } from './ai/chatParticipant';
 import { getServerPath } from './server';
 
 let client: LanguageClient;
 let aiProvider: CodeGraphAIProvider;
 let toolManager: CodeGraphToolManager;
-let chatParticipant: CodeGraphChatParticipant;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration('codegraph');
@@ -103,16 +101,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // Continue activation even if tool registration fails
     }
 
-    // Register @codegraph chat participant for AI chatbot context
-    try {
-        chatParticipant = new CodeGraphChatParticipant(client, aiProvider);
-        chatParticipant.register();
-        console.log('[CodeGraph] @codegraph chat participant available');
-    } catch (error) {
-        console.error('[CodeGraph] Failed to register chat participant:', error);
-        // Continue activation even if chat participant fails
-    }
-
     // Register commands, tree providers, etc.
     registerCommands(context, client, aiProvider);
     registerTreeDataProviders(context, client);
@@ -170,7 +158,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
 
     // Add to disposables
-    context.subscriptions.push(client, toolManager, chatParticipant);
+    context.subscriptions.push(client, toolManager);
 
     // Set context for conditional UI
     vscode.commands.executeCommand('setContext', 'codegraph.enabled', true);

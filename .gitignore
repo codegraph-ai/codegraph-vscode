@@ -1,6 +1,7 @@
 .claude/
 .codemender/
 .codegraph/
+.fastembed_cache/
 .smelt/
 .stellarion/
 .vscode/
