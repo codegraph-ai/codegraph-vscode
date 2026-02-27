@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-02-25
+> Last updated: 2026-02-27
 
 ## High Priority — MCP Tool Fixes
 
@@ -47,7 +47,10 @@ TypeScript private methods are indexed but `visibility` property is not consiste
 ## Future / On Demand
 
 ### 6. Publish to VS Code Marketplace
-Currently at v0.7.0 locally. Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
+Currently at v0.7.0 locally. Cross-platform binaries now built (darwin-arm64, darwin-x64, linux-x64, win32-x64). Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
+
+### 22. MCP tool name mismatch: mine_git_file vs mine_git_history_for_file
+MCP server registers `codegraph_mine_git_file` but package.json and toolManager register `codegraph_mine_git_history_for_file`. Should be aligned. Also `codegraph_reindex_workspace` is in the MCP server but missing from package.json/toolManager.
 
 ### 19. Extend type reference extraction to other languages
 TypeScript type reference extraction (8c) now works for parameter types, return types, interface fields. Could extend to Rust (trait bounds, generic params, struct field types), Go (interface embedding, struct field types), etc.
@@ -62,6 +65,8 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Remove @codegraph chat participant~~ (38acce0) — Redundant with 26 language model tools via `#` picker. Removed chatParticipants from package.json, implementation class, tests, and extension.ts references.
+- ~~Cross-platform binary builds~~ — Native builds for all 4 platforms: darwin-arm64 (local), darwin-x64 (local cross-compile), linux-x64 (WSL2 192.168.254.107), win32-x64 (Windows 192.168.254.103). VSIX now 50MB with all binaries.
 - ~~Fix find_unused_code false positives — all 4 sub-issues (#8a–8d)~~ — Reduced from 158 → 50 at ≥0.8 confidence. Four fixes: (a) Rust macro body call extraction via `extract_calls_from_macro()` heuristic (09a94df); (b) Rust method reference detection for `Self::method` / `self.method` used as values (f313da6); (c) TypeScript type annotation References edges via new `TypeReference` IR struct, `extract_type_names()` recursive extractor, and mapper edge creation (f313da6); (d) Arrow function call attribution — nested arrows recurse into enclosing function's context (f313da6). Plus: cross-file Imports edges now count as usage in find_unused_code (e39157e).
 - ~~Fix find_unused_code core detection (#8 core)~~ — Imports/ImportsFrom edges no longer counted as usage, Type/Interface nodes no longer blanket-skipped. Reduced from 0 → 362 unused at 0.5 confidence.
 - ~~Fix Rust macro body call extraction (#8a)~~ — tree-sitter treats macro invocation bodies as opaque `token_tree` nodes. Added heuristic `extract_calls_from_macro()` in codegraph-rust visitor. Handles `Self::method()`, `self.method()`, bare `func()`. Verified: `handle_event` no longer flagged as unused. (09a94df, be9a66f)

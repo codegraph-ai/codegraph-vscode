@@ -1506,6 +1506,24 @@
                         "uri"
                     ]
                 }
+            },
+            {
+                "name": "codegraph_reindex_workspace",
+                "displayName": "Reindex Workspace",
+                "description": "Reindex the workspace to refresh the code graph",
+                "modelDescription": "Clears and rebuilds the entire code graph by re-parsing all workspace files. USE WHEN: graph data seems stale, files have been added/removed outside the editor, or after parser updates. RETURNS: Status with count of files indexed. WARNING: This is a heavy operation that temporarily clears all graph data.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "reindex_workspace",
+                "userDescription": "Rebuild the code graph by re-parsing all workspace files",
+                "tags": [
+                    "admin",
+                    "indexing",
+                    "maintenance"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
             }
         ],
         "menus": {

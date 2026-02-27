@@ -1264,6 +1264,37 @@ export class CodeGraphToolManager {
             })
         );
 
+        // Tool 27: Reindex Workspace
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_reindex_workspace', {
+                invoke: async (_options, token) => {
+                    try {
+                        const response = await this.sendRequestWithRetry<{ status: string; message: string; files_indexed: number }>(
+                            'codegraph.reindexWorkspace',
+                            {},
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(`Workspace reindexed: ${response.files_indexed} files parsed.`)
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'reindex workspace', token);
+                    }
+                },
+                prepareInvocation: async (_options, _token) => {
+                    return {
+                        invocationMessage: 'Reindexing workspace...',
+                        confirmationMessages: {
+                            title: 'Reindex Workspace',
+                            message: new vscode.MarkdownString('This will clear and rebuild the entire code graph. Continue?')
+                        }
+                    };
+                }
+            })
+        );
+
         console.log(`[CodeGraph] Registered ${this.disposables.length} Language Model tools`);
     }
 

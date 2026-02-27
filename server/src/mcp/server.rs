@@ -1738,7 +1738,7 @@ impl McpServer {
                 }
             }
 
-            "codegraph_mine_git_file" => {
+            "codegraph_mine_git_history_for_file" => {
                 let uri = args
                     .get("uri")
                     .and_then(|v| v.as_str())

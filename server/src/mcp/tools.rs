@@ -1024,7 +1024,7 @@ fn mine_git_file_tool() -> Tool {
     );
 
     Tool {
-        name: "codegraph_mine_git_file".to_string(),
+        name: "codegraph_mine_git_history_for_file".to_string(),
         description: Some("Mines git history for a specific file to create memories. USE WHEN: wanting to understand the history and evolution of a particular file.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
