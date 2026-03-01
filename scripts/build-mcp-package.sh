@@ -20,7 +20,7 @@ echo "Step 1: Preparing binaries..."
 
 # Ensure mcp-package directories exist
 mkdir -p "$MCP_PACKAGE/bin"
-mkdir -p "$MCP_PACKAGE/models"
+# Note: fastembed auto-downloads embedding models on first run, no bundling needed
 
 # Expected binary names
 BINARIES=(
@@ -47,17 +47,6 @@ for BINARY in "${BINARIES[@]}"; do
         echo "  ✗ $BINARY (not found)"
     fi
 done
-
-# Copy models
-echo ""
-echo "Step 3: Copying models..."
-if [ -d "$PROJECT_ROOT/models/model2vec" ]; then
-    rm -rf "$MCP_PACKAGE/models/model2vec"
-    cp -r "$PROJECT_ROOT/models/model2vec" "$MCP_PACKAGE/models/"
-    echo "  ✓ model2vec"
-else
-    echo "  ✗ models/model2vec not found"
-fi
 
 # Make scripts executable
 chmod +x "$MCP_PACKAGE/bin/codegraph-mcp.js"
@@ -86,7 +75,7 @@ echo ""
 echo "Package size:"
 du -sh "$MCP_PACKAGE"
 du -sh "$MCP_PACKAGE/bin"
-du -sh "$MCP_PACKAGE/models" 2>/dev/null || true
+# fastembed models are auto-downloaded at runtime, not bundled
 
 echo ""
 echo "========================================"

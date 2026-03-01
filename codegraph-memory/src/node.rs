@@ -195,7 +195,7 @@ pub struct MemoryNode {
     /// Links to code graph nodes
     #[serde(default)]
     pub code_links: Vec<CodeLink>,
-    /// Embedding vector (256d for Model2Vec)
+    /// Embedding vector (384d for fastembed BGE-Small-EN-v1.5)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<Vec<f32>>,
     /// Searchable tags

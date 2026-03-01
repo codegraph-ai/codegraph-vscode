@@ -6,7 +6,7 @@
 //! ## Features
 //!
 //! - **Bi-temporal knowledge tracking** - Track when knowledge became true vs when it was recorded
-//! - **Hybrid search** - BM25 + semantic (Model2Vec) + graph proximity
+//! - **Hybrid search** - BM25 + semantic (fastembed BGE-Small-EN-v1.5) + graph proximity
 //! - **Auto-invalidation** - Memories linked to code are flagged when code changes
 //! - **RocksDB persistence** - Efficient storage with HNSW index for O(log n) search
 //!

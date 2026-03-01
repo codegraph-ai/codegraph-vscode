@@ -2,45 +2,40 @@
 //!
 //! High-level API for generating and caching embeddings.
 
-use super::discovery::find_model2vec_path;
-use super::model2vec::Model2VecEmbedding;
+use super::fastembed_embed::FastembedEmbedding;
 use crate::error::Result;
 use dashmap::DashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Vector embedding engine with caching
 ///
-/// Wraps Model2Vec with a DashMap cache for efficient repeated lookups.
+/// Wraps fastembed BGE-Small-EN-v1.5 with a DashMap cache for efficient repeated lookups.
 pub struct VectorEngine {
-    model: Arc<Model2VecEmbedding>,
+    model: Arc<FastembedEmbedding>,
     cache: DashMap<String, Vec<f32>>,
     dimension: usize,
 }
 
 impl VectorEngine {
-    /// Create VectorEngine with Model2Vec
+    /// Create VectorEngine with fastembed BGE-Small-EN-v1.5
     ///
     /// # Arguments
-    /// * `extension_path` - Optional path to the VS Code extension root
-    pub fn new(extension_path: Option<&Path>) -> Result<Self> {
-        let model_path = find_model2vec_path(extension_path)?;
-        let model = Model2VecEmbedding::from_pretrained(&model_path)?;
-        let dimension = model.dimension();
-
-        log::info!("VectorEngine ready ({}d, ~8000 samples/sec)", dimension);
-
-        Ok(Self {
-            model: Arc::new(model),
-            cache: DashMap::new(),
-            dimension,
-        })
+    /// * `_extension_path` - Unused (kept for API compatibility). Fastembed
+    ///   auto-downloads the model to `~/.codegraph/fastembed_cache/`.
+    pub fn new(_extension_path: Option<&Path>) -> Result<Self> {
+        Self::with_cache_dir(default_cache_dir())
     }
 
-    /// Create VectorEngine from a specific model path
-    pub fn from_path(model_path: &Path) -> Result<Self> {
-        let model = Model2VecEmbedding::from_pretrained(model_path)?;
+    /// Create VectorEngine with a custom cache directory
+    pub fn with_cache_dir(cache_dir: PathBuf) -> Result<Self> {
+        let model = FastembedEmbedding::new(cache_dir)?;
         let dimension = model.dimension();
+
+        log::info!(
+            "VectorEngine ready (fastembed BGE-Small-EN-v1.5, {}d)",
+            dimension
+        );
 
         Ok(Self {
             model: Arc::new(model),
@@ -124,6 +119,16 @@ impl VectorEngine {
     pub fn clear_cache(&self) {
         self.cache.clear();
     }
+}
+
+/// Default cache directory for fastembed models
+fn default_cache_dir() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".codegraph")
+        .join("fastembed_cache")
 }
 
 #[cfg(test)]

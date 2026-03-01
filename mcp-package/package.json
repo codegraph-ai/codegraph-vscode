@@ -21,7 +21,6 @@
   },
   "files": [
     "bin/",
-    "models/",
     "README.md"
   ],
   "engines": {

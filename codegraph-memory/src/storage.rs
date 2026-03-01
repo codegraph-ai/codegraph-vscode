@@ -70,7 +70,7 @@ impl MemoryStore {
         // Set version key to current version to prevent migration on new data
         // Migration code expects v1 = JSON, but we now use JSON in v3+ too
         const DB_VERSION_KEY: &[u8] = b"_db_version";
-        const CURRENT_VERSION: u32 = 3; // v3 = JSON format (same as v1 but with version key)
+        const CURRENT_VERSION: u32 = 4; // v4 = fastembed 384d vectors
         if db.get(DB_VERSION_KEY)?.is_none() {
             db.put(DB_VERSION_KEY, CURRENT_VERSION.to_le_bytes())?;
             db.flush()?;
@@ -147,6 +147,53 @@ impl MemoryStore {
             count,
             skipped
         );
+
+        // Re-embed memories that have no vectors (e.g. after v3→v4 migration)
+        let missing_vectors: Vec<(String, String)> = self
+            .memory_cache
+            .iter()
+            .filter(|entry| !self.vector_cache.contains_key(entry.key()))
+            .map(|entry| (entry.key().clone(), entry.value().searchable_text()))
+            .collect();
+
+        if !missing_vectors.is_empty() {
+            log::info!(
+                "Re-embedding {} memories with missing vectors...",
+                missing_vectors.len()
+            );
+            for (id, text) in &missing_vectors {
+                match self.engine.embed(text) {
+                    Ok(vector) => {
+                        // Persist to RocksDB
+                        let vec_key = format!("vec:{}", id);
+                        if let Ok(bytes) = bincode::serialize(&vector) {
+                            let _ = self.db.put(vec_key.as_bytes(), bytes);
+                        }
+                        self.vector_cache.insert(id.clone(), vector.clone());
+                        points.push(MemoryPoint {
+                            id: id.clone(),
+                            vector,
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to re-embed memory {}: {}",
+                            &id[..8.min(id.len())],
+                            e
+                        );
+                    }
+                }
+            }
+            if !missing_vectors.is_empty() {
+                let _ = self.db.flush();
+                log::info!(
+                    "Re-embedding complete: {}/{} vectors generated",
+                    points.len(),
+                    missing_vectors.len()
+                );
+            }
+        }
+
         if !points.is_empty() {
             self.rebuild_hnsw_index(points)?;
         }

@@ -652,11 +652,6 @@ impl LanguageServer for CodeGraphBackend {
                 "[LSP::initialize] Extension path received: {}",
                 path.display()
             );
-            tracing::info!(
-                "[LSP::initialize] Model path should be: {}/models/model2vec/",
-                path.display()
-            );
-
             // Update memory manager with extension path by replacing it
             // Safety: We're replacing the Arc contents during initialization before any use
             let new_manager = Arc::new(MemoryManager::new(Some(path.clone())));
@@ -669,7 +664,7 @@ impl LanguageServer for CodeGraphBackend {
             tracing::error!(
                 "[LSP::initialize] CRITICAL: No extension path provided in initialization options!"
             );
-            tracing::warn!("[LSP::initialize] Memory features will require MODEL2VEC_PATH or ~/.codegraph/models/model2vec");
+            tracing::warn!("[LSP::initialize] No extension path provided — fastembed will auto-download model to ~/.codegraph/fastembed_cache/");
         }
 
         // Store workspace folders
@@ -785,11 +780,6 @@ impl LanguageServer for CodeGraphBackend {
         self.client
             .log_message(MessageType::INFO, "AI query engine indexes built")
             .await;
-
-        // Ensure embedding model is available (auto-downloads on first run)
-        if let Err(e) = crate::model_download::ensure_model_downloaded() {
-            tracing::warn!("Model download failed: {}", e);
-        }
 
         // Initialize memory store for persistent AI context
         if let Some(first_folder) = folders.first() {

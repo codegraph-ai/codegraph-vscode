@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Database version stored in metadata
 const DB_VERSION_KEY: &[u8] = b"_db_version";
-const CURRENT_VERSION: u32 = 3; // v3 = JSON format with version key set at creation
+const CURRENT_VERSION: u32 = 4; // v4 = fastembed 384d vectors (was 256d Model2Vec)
 
 /// Check if database needs migration and perform if needed
 pub fn migrate_if_needed(db_path: impl AsRef<Path>) -> Result<()> {
@@ -70,21 +70,25 @@ pub fn migrate_if_needed(db_path: impl AsRef<Path>) -> Result<()> {
 
 /// Perform migration from old version to current
 fn perform_migration(db: &DB, from_version: u32) -> Result<()> {
-    match from_version {
-        1 => {
-            // v1 was JSON without version key - just set version, no conversion needed
-            log::info!("Migrating v1 to v3: JSON format preserved");
-        }
-        2 => {
-            // v2 was bincode - need to convert back to JSON
-            migrate_v2_to_v3(db)?;
-        }
-        _ => {
-            return Err(MemoryError::InvalidPath(format!(
-                "Unknown database version: {}",
-                from_version
-            )))
-        }
+    // Sequential migration: apply each step in order
+    if from_version < 2 {
+        // v1 was JSON without version key - just set version, no conversion needed
+        log::info!("Migrating v1 to v2: JSON format preserved");
+    }
+    if from_version == 2 {
+        // v2 was bincode - need to convert back to JSON
+        migrate_v2_to_v3(db)?;
+    }
+    if from_version < 4 {
+        // v3→v4: Delete 256d Model2Vec vectors, clear embedding fields
+        // Memories are preserved; vectors are regenerated with fastembed 384d on next load_cache()
+        migrate_v3_to_v4(db)?;
+    }
+    if from_version > CURRENT_VERSION {
+        return Err(MemoryError::InvalidPath(format!(
+            "Database version {} is newer than supported version {}",
+            from_version, CURRENT_VERSION
+        )));
     }
     Ok(())
 }
@@ -160,6 +164,67 @@ fn migrate_v2_to_v3(db: &DB) -> Result<()> {
 
     db.flush()
         .map_err(|e| MemoryError::InvalidPath(format!("Failed to flush database: {}", e)))?;
+
+    Ok(())
+}
+
+/// Migrate from v3 (256d Model2Vec) to v4 (384d fastembed)
+///
+/// Deletes all `vec:` keys (incompatible dimensions) and clears `embedding`
+/// fields in `mem:` entries. Memories are preserved; vectors are regenerated
+/// with fastembed BGE-Small-EN-v1.5 (384d) on next `load_cache()`.
+fn migrate_v3_to_v4(db: &DB) -> Result<()> {
+    log::info!("Migrating v3→v4: clearing 256d vectors for fastembed 384d re-embedding...");
+
+    let mut vec_keys_deleted = 0;
+    let mut embeddings_cleared = 0;
+
+    // Collect keys to delete (can't delete while iterating)
+    let mut vec_keys: Vec<Vec<u8>> = Vec::new();
+    let mut mem_updates: Vec<(Vec<u8>, MemoryNode)> = Vec::new();
+
+    let iter = db.iterator(IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item.map_err(|e| {
+            MemoryError::InvalidPath(format!("Failed to read database entry: {}", e))
+        })?;
+        let key_str = String::from_utf8_lossy(&key);
+
+        if key_str.starts_with("vec:") {
+            vec_keys.push(key.to_vec());
+        } else if key_str.starts_with("mem:") {
+            // Clear embedding field if present
+            if let Ok(mut memory) = serde_json::from_slice::<MemoryNode>(&value) {
+                if memory.embedding.is_some() {
+                    memory.embedding = None;
+                    mem_updates.push((key.to_vec(), memory));
+                }
+            }
+        }
+    }
+
+    // Delete all vec: keys
+    for key in &vec_keys {
+        db.delete(key)?;
+        vec_keys_deleted += 1;
+    }
+
+    // Update mem: entries with cleared embeddings
+    for (key, memory) in &mem_updates {
+        if let Ok(bytes) = serde_json::to_vec(memory) {
+            db.put(key, bytes)?;
+            embeddings_cleared += 1;
+        }
+    }
+
+    db.flush()
+        .map_err(|e| MemoryError::InvalidPath(format!("Failed to flush database: {}", e)))?;
+
+    log::info!(
+        "v3→v4 migration complete: deleted {} vectors, cleared {} embeddings",
+        vec_keys_deleted,
+        embeddings_cleared
+    );
 
     Ok(())
 }
@@ -329,10 +394,16 @@ mod tests {
             let version = u32::from_le_bytes(bytes_slice.try_into().unwrap());
             assert_eq!(version, CURRENT_VERSION);
 
-            // Verify data still exists (migration attempts to preserve it)
-            // Note: bincode serialization currently has issues with tagged enums
-            // so we just verify the key exists rather than deserializing
+            // Verify data still exists (migration preserves memories, clears vectors)
             assert!(db.get(b"mem:test-id").unwrap().is_some());
+
+            // Verify embedding was cleared during v3→v4 migration
+            let value = db.get(b"mem:test-id").unwrap().unwrap();
+            let memory: MemoryNode = serde_json::from_slice(&value).unwrap();
+            assert!(
+                memory.embedding.is_none(),
+                "v3→v4 migration should clear embeddings"
+            );
         }
     }
 }

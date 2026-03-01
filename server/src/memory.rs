@@ -74,7 +74,7 @@ fn project_data_dir(workspace_path: &Path) -> Result<PathBuf, MemoryError> {
 pub struct MemoryManager {
     /// Resolved path to memory database (e.g. ~/.codegraph/projects/<slug>/memory)
     data_dir: Arc<RwLock<Option<PathBuf>>>,
-    /// Path to extension root (for model discovery at extension/models/model2vec)
+    /// Path to extension root (unused by fastembed, kept for API compatibility)
     extension_path: Option<PathBuf>,
     /// Cached vector engine (holds model, not DB - safe to keep)
     engine: Arc<RwLock<Option<Arc<VectorEngine>>>>,

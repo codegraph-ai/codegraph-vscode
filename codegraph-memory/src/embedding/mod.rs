@@ -1,11 +1,8 @@
 //! Embedding module for semantic search
 //!
-//! Uses Model2Vec for ultra-fast static embeddings (~8000 samples/sec).
+//! Uses fastembed with BGE-Small-EN-v1.5 (384d) for semantic embeddings.
 
-mod discovery;
 mod engine;
-mod model2vec;
+mod fastembed_embed;
 
-pub use discovery::find_model2vec_path;
 pub use engine::VectorEngine;
-pub use model2vec::{Model2VecConfig, Model2VecEmbedding};

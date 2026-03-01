@@ -19,7 +19,6 @@ pub mod handlers;
 pub mod index;
 pub mod mcp;
 pub mod memory;
-pub mod model_download;
 pub mod parser_registry;
 pub mod watcher;
 
