@@ -46,6 +46,9 @@ TypeScript private methods are indexed but `visibility` property is not consiste
 ### 15. Fix memory_invalidate error on nonexistent IDs
 `memory_invalidate` silently succeeds when given a non-existent memory ID. Should return an error.
 
+### 16. Fix memory_stats byKind serialization
+`memory_stats` uses `format!("{:?}", memory.kind)` which dumps the full Rust `Debug` representation of the `MemoryKind` enum variant (including all struct fields) as the `byKind` key. Should use a clean discriminant name like `"debug_context"` instead. Fix in `storage.rs:461`.
+
 ## Strategic — Competitive Capabilities
 
 Gaps identified via competitive analysis against Augment Code and Cursor. Numbered by priority tier.
@@ -71,18 +74,11 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 **Effort**: Medium — most infrastructure exists. Main work is `.git/HEAD` watching + diff-based batch update.
 
-### T1-2. Migrate to fastembed + configurable embedding model
+### T1-2. Configurable embedding model + semantic symbol search
 
-**Current**: Model2Vec `potion-base-8M` (256d static embeddings, `model_download.rs`). Symbol search (`ai_query/text_index.rs`) is **BM25-only** with no semantic component. Memory search (`codegraph-memory/src/search.rs`) combines BM25(0.3) + Model2Vec(0.5) + graph proximity(0.2) but no reranking step. HNSW index via `instant-distance` crate. Meanwhile, tempera and smelt both use `fastembed v4` with `BGESmallENV15` (384d) — three projects, two embedding stacks.
+~~**Phase 1 — Migrate to fastembed + BGE-Small**~~ (12108c1): Done. Replaced `model2vec` (256d) with `fastembed v4` BGE-Small-EN-v1.5 (384d ONNX). All three projects now share the same embedding stack. Database migration v3→v4 auto-clears old vectors and re-embeds on load. Verified: semantic search works with zero keyword overlap.
 
-**Target**: Replace `model2vec` crate with `fastembed` (ONNX Runtime). Aligns all three projects on one embedding stack. Make model choice configurable so users can trade speed vs quality.
-
-**Phase 1 — Migrate to fastembed + BGE-Small (default)**:
-- Replace `model2vec` dependency with `fastembed = "4"` in `codegraph-memory/Cargo.toml`
-- Default model: `BGESmallENV15` (384d, ~33MB ONNX) — matches tempera/smelt, fast startup
-- Remove `model_download.rs` auto-download logic (fastembed handles caching at `~/.codegraph/fastembed_cache/`)
-- Update `EMBEDDING_DIM` from 256 → 384, rebuild HNSW index on first run
-- Add semantic component to symbol search (currently BM25-only, `text_index.rs`)
+**Remaining — Phase 1 gap**: Symbol search (`ai_query/text_index.rs`) is still **BM25-only** with no semantic component. Should add fastembed embedding to the symbol search pipeline for queries like "authentication logic" → `verifyJWT()`.
 
 **Phase 2 — Configurable model + experiment with code-tuned models**:
 - Add `embedding_model` setting to codegraph config (enum or string matching fastembed model codes)
@@ -94,13 +90,11 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 - Auto-detect dimension from model, no hardcoded `EMBEDDING_DIM`
 - Invalidate + rebuild vector index when model changes
 
-**Phase 3 — Add reranking** (optional, after model migration):
+**Phase 3 — Add reranking** (optional):
 - Retrieve top-50 via BM25+vector, rerank top-10 via cross-encoder
 - fastembed doesn't include rerankers in Rust crate yet — may need `ort` directly or wait for fastembed support
 
-**Impact**: A query for "authentication logic" must reliably find `verifyJWT()` even without keyword overlap. Even BGE-Small (384d ONNX) is a substantial upgrade over Model2Vec (256d static lookup) for retrieval quality.
-
-**Effort**: Phase 1 is low-medium — straightforward dependency swap, tempera/smelt provide reference implementation. Phase 2 is low — config plumbing. Phase 3 is medium — needs cross-encoder model selection.
+**Effort**: Phase 2 is low — config plumbing. Phase 3 is medium — needs cross-encoder model selection.
 
 ### T1-3. Runtime dependency detection
 
@@ -186,6 +180,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Migrate embedding engine from Model2Vec to fastembed BGE-Small-EN-v1.5 (T1-2 Phase 1)~~ (12108c1) — Replaced model2vec (256d static) with fastembed v4 (384d ONNX). Removed model_download.rs, discovery.rs, ureq dependency. Added v3→v4 database migration. All three projects (codegraph, tempera, smelt) now share the same embedding stack. Verified: semantic search works with zero keyword overlap.
 - ~~Fix MCP tool name mismatch (#22)~~ (45d284d) — Aligned `mine_git_file` → `mine_git_history_for_file` across server/package.json/toolManager. Added missing `reindex_workspace` to package.json and toolManager. All 27 tools now match across 3 layers.
 - ~~Remove @codegraph chat participant~~ (38acce0) — Redundant with 26 language model tools via `#` picker. Removed chatParticipants from package.json, implementation class, tests, and extension.ts references.
 - ~~Cross-platform binary builds~~ — Native builds for all 4 platforms: darwin-arm64 (local), darwin-x64 (local cross-compile), linux-x64 (WSL2 192.168.254.107), win32-x64 (Windows 192.168.254.103). VSIX now 50MB with all binaries.
@@ -209,7 +204,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 - ~~Broaden git mining to catch non-conventional commits~~ (ae3b0b0)
 - ~~Use find_file_by_path() for file-node lookups~~ (0f008ba)
 - ~~Replace hand-rolled BFS with built-in algorithms~~ (681e68d)
-- ~~Auto-download Model2Vec embedding model~~ (231fad4)
+- ~~Auto-download Model2Vec embedding model~~ (231fad4) — superseded by fastembed migration (12108c1)
 - ~~Add Java, C++, Kotlin, C# parsers~~ (e8b1918)
 - ~~Upgrade codegraph ecosystem to 0.2.0~~ (77f597a)
 - ~~Replace manual node iteration with iter_nodes()~~ (77f597a)

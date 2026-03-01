@@ -14,6 +14,9 @@ dist/
 *.vsix
 mcp-package/bin/codegraph-lsp-*
 mcp-package/models/
+mcp-package/*.tgz
+!mcp-package/bin/codegraph-mcp.js
+!mcp-package/bin/postinstall.js
 
 # Dependencies
 node_modules/
@@ -23,8 +26,8 @@ target/
 *.rs.bk
 
 # Binary artifacts (built separately per platform)
-bin/
-server/bin/
+/bin/
+/server/bin/
 prebuilt/
 
 # VS Code
