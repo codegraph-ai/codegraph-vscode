@@ -51,6 +51,8 @@ fastembed = { version = "4", default-features = false, features = ["ort-download
 
 [target.'cfg(target_os = "windows")'.dependencies]
 fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub-rustls-tls"] }
+ureq = { version = "2.9", features = ["tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.0"

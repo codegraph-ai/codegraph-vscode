@@ -105,6 +105,19 @@ pub enum MemoryKind {
     },
 }
 
+impl MemoryKind {
+    /// Clean discriminant name for serialization (e.g. "debug_context", "known_issue")
+    pub fn discriminant_name(&self) -> &'static str {
+        match self {
+            Self::ArchitecturalDecision { .. } => "architectural_decision",
+            Self::DebugContext { .. } => "debug_context",
+            Self::KnownIssue { .. } => "known_issue",
+            Self::Convention { .. } => "convention",
+            Self::ProjectContext { .. } => "project_context",
+        }
+    }
+}
+
 /// Type of code node that a memory is linked to
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

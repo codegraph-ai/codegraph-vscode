@@ -9,6 +9,10 @@ use std::path::PathBuf;
 /// Embedding dimension for BGE-Small-EN-v1.5
 pub(crate) const EMBEDDING_DIM: usize = 384;
 
+/// ONNX Runtime version required by ort-sys 2.0.0-rc.9
+#[cfg(target_os = "windows")]
+const ORT_VERSION: &str = "1.20.0";
+
 /// Fastembed-based text embedding model
 pub(crate) struct FastembedEmbedding {
     model: TextEmbedding,
@@ -18,10 +22,15 @@ impl FastembedEmbedding {
     /// Create a new FastembedEmbedding with BGE-Small-EN-v1.5
     ///
     /// The model is automatically downloaded to `cache_dir` on first use.
+    /// On Windows, also ensures onnxruntime.dll is available (downloaded if needed).
     pub(crate) fn new(cache_dir: PathBuf) -> Result<Self> {
         // Set cache path env var to prevent fastembed from polluting CWD
         // (same pattern as tempera indexer.rs)
         std::env::set_var("FASTEMBED_CACHE_PATH", &cache_dir);
+
+        // On Windows with ort-load-dynamic, ensure onnxruntime.dll is available
+        #[cfg(target_os = "windows")]
+        ensure_ort_dll(&cache_dir)?;
 
         let options = InitOptions::new(EmbeddingModel::BGESmallENV15)
             .with_cache_dir(cache_dir)
@@ -62,4 +71,78 @@ impl FastembedEmbedding {
     pub(crate) fn dimension(&self) -> usize {
         EMBEDDING_DIM
     }
+}
+
+/// Ensure onnxruntime.dll is present for ort-load-dynamic on Windows.
+///
+/// The ort crate with `load-dynamic` feature requires onnxruntime.dll at runtime.
+/// This function checks for the DLL and downloads it from GitHub releases if missing.
+/// Sets `ORT_DYLIB_PATH` so ort can find it.
+#[cfg(target_os = "windows")]
+fn ensure_ort_dll(cache_dir: &std::path::Path) -> Result<()> {
+    let dll_dir = cache_dir.join("ort");
+    let dll_path = dll_dir.join("onnxruntime.dll");
+
+    // Already have it — just set the env var
+    if dll_path.exists() {
+        log::info!("ONNX Runtime DLL found at {}", dll_path.display());
+        std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+        return Ok(());
+    }
+
+    log::info!(
+        "ONNX Runtime DLL not found — downloading v{} (one-time setup)...",
+        ORT_VERSION
+    );
+
+    std::fs::create_dir_all(&dll_dir)
+        .map_err(|e| MemoryError::model(format!("Failed to create ORT cache dir: {e}")))?;
+
+    // Download the official release zip
+    let url = format!(
+        "https://github.com/microsoft/onnxruntime/releases/download/v{ORT_VERSION}/onnxruntime-win-x64-{ORT_VERSION}.zip"
+    );
+
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| MemoryError::model(format!("Failed to download ONNX Runtime: {e}")))?;
+
+    // Stream to a temp file
+    let zip_path = dll_dir.join("onnxruntime.zip");
+    let mut zip_file = std::fs::File::create(&zip_path)
+        .map_err(|e| MemoryError::model(format!("Failed to create temp zip: {e}")))?;
+    std::io::copy(&mut response.into_reader(), &mut zip_file)
+        .map_err(|e| MemoryError::model(format!("Failed to write zip: {e}")))?;
+    drop(zip_file);
+
+    // Extract onnxruntime.dll from the zip
+    let zip_file = std::fs::File::open(&zip_path)
+        .map_err(|e| MemoryError::model(format!("Failed to open zip: {e}")))?;
+    let mut archive = zip::ZipArchive::new(zip_file)
+        .map_err(|e| MemoryError::model(format!("Failed to read zip: {e}")))?;
+
+    let dll_name_in_zip = format!("onnxruntime-win-x64-{ORT_VERSION}/lib/onnxruntime.dll");
+
+    let mut dll_entry = archive.by_name(&dll_name_in_zip).map_err(|e| {
+        MemoryError::model(format!(
+            "onnxruntime.dll not found in zip at '{dll_name_in_zip}': {e}"
+        ))
+    })?;
+
+    let mut out_file = std::fs::File::create(&dll_path)
+        .map_err(|e| MemoryError::model(format!("Failed to create DLL file: {e}")))?;
+    std::io::copy(&mut dll_entry, &mut out_file)
+        .map_err(|e| MemoryError::model(format!("Failed to extract DLL: {e}")))?;
+
+    // Clean up zip
+    let _ = std::fs::remove_file(&zip_path);
+
+    log::info!(
+        "ONNX Runtime v{} DLL installed at {}",
+        ORT_VERSION,
+        dll_path.display()
+    );
+    std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+
+    Ok(())
 }

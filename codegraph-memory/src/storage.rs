@@ -458,7 +458,7 @@ impl MemoryStore {
                             current_count += 1;
 
                             // Count by kind
-                            let kind_str = format!("{:?}", memory.kind).to_lowercase();
+                            let kind_str = memory.kind.discriminant_name().to_string();
                             *by_kind.entry(kind_str).or_insert(0) += 1;
 
                             // Count by tag

@@ -1417,7 +1417,7 @@ impl McpServer {
                             "id": r.memory.id,
                             "title": r.memory.title,
                             "content": r.memory.content,
-                            "kind": format!("{:?}", r.memory.kind),
+                            "kind": r.memory.kind.discriminant_name(),
                             "score": r.score,
                             "created_at": r.memory.temporal.created_at.to_rfc3339(),
                             "tags": r.memory.tags,
@@ -1498,7 +1498,7 @@ impl McpServer {
                         "id": memory.id,
                         "title": memory.title,
                         "content": memory.content,
-                        "kind": format!("{:?}", memory.kind),
+                        "kind": memory.kind.discriminant_name(),
                         "tags": memory.tags,
                         "created_at": memory.temporal.created_at.to_rfc3339(),
                         "invalidated": memory.temporal.invalid_at.is_some(),
@@ -1529,10 +1529,16 @@ impl McpServer {
                 let path_str = path.to_string_lossy().to_string();
 
                 // Search for memories related to this file
+                let current_only = args
+                    .get("currentOnly")
+                    .or_else(|| args.get("current_only"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 let kinds = Self::parse_kinds_filter(&args);
                 let tags = Self::parse_tags_filter(&args);
                 let config = crate::memory::SearchConfig {
                     limit,
+                    current_only,
                     kinds,
                     tags,
                     ..Default::default()
@@ -1565,7 +1571,7 @@ impl McpServer {
                             "id": r.memory.id,
                             "title": r.memory.title,
                             "content": r.memory.content,
-                            "kind": format!("{:?}", r.memory.kind),
+                            "kind": r.memory.kind.discriminant_name(),
                             "score": r.score,
                             "tags": r.memory.tags,
                         })
@@ -1670,7 +1676,7 @@ impl McpServer {
                         serde_json::json!({
                             "id": m.id,
                             "title": m.title,
-                            "kind": format!("{:?}", m.kind),
+                            "kind": m.kind.discriminant_name(),
                             "tags": m.tags,
                             "created_at": m.temporal.created_at.to_rfc3339(),
                             "invalidated": m.temporal.invalid_at.is_some(),
