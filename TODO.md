@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-02-28
+> Last updated: 2026-03-01
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -104,7 +104,7 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 **Starting point**: `extract_endpoints` MCP tool already identifies Express/FastAPI/Django route handlers. Missing piece is the call-site detection — finding `fetch()`, `axios.get()`, `requests.post()` calls and matching their URL argument to known routes.
 
-**Effort**: Medium — regex/heuristic scanning of string arguments in known HTTP client functions. Could ship Express route matching in v0.8.
+**Effort**: Medium — regex/heuristic scanning of string arguments in known HTTP client functions.
 
 ### T1-4. Cross-repository graph linking
 
@@ -164,8 +164,14 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 ## Future / On Demand
 
-### 6. Publish to VS Code Marketplace
-Currently at v0.7.1 locally. Cross-platform binaries built (darwin-arm64, darwin-x64, linux-x64, win32-x64). Requires marketplace publisher setup, CI/CD pipeline for packaging, and automated VSIX builds.
+### 6. Publish to VS Code Marketplace + npm
+v0.8.0 VSIX built (`codegraph-0.8.0.vsix`, 70MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: marketplace publisher setup, CI/CD pipeline, `npm publish --access public`.
+
+### 22. Windows: bundle or auto-download onnxruntime.dll
+Windows build uses `ort-load-dynamic` (loads ONNX Runtime as DLL at runtime) to avoid CRT `/MT` vs `/MD` mismatch between ort-sys and rocksdb-sys. On first use, fastembed downloads the ONNX Runtime shared library to `~/.codegraph/fastembed_cache/`. Verify this works on clean Windows installs. If not, may need to bundle `onnxruntime.dll` in the npm/VSIX package.
+
+### 23. Linux binary requires glibc 2.39+ (Ubuntu 24.04+)
+Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Won't work on Ubuntu 22.04 (glibc 2.35). zigbuild can't cross-compile ONNX Runtime C++ code (`std::filesystem` symbols). Accepted tradeoff — Ubuntu 22.04 is EOL April 2027.
 
 ### 19. Extend type reference extraction to other languages
 TypeScript type reference extraction (8c) now works for parameter types, return types, interface fields. Could extend to Rust (trait bounds, generic params, struct field types), Go (interface embedding, struct field types), etc.
@@ -180,10 +186,12 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~v0.8.0: MCP npm package, VSIX, version alignment~~ (8acba43) — Created `@memoryx/codegraph-mcp` npm package with Node.js launcher (`codegraph-mcp.js`) and postinstall verification. Aligned all versions to 0.8.0 (workspace Cargo.toml, both crates via `version.workspace = true`, npm package, VS Code extension). Rewrote README as feature presentation. Built `codegraph-0.8.0.vsix` with all 4 platform binaries (70MB).
+- ~~Rebuild all platform binaries for 0.8.0~~ — Rebuilt all 4 binaries: darwin-arm64/x64 (local), linux-x64 (native cargo build on WSL2 with rustls TLS), win32-x64 (ort-load-dynamic to avoid CRT mismatch). Key fixes: fastembed uses `hf-hub-rustls-tls` (avoids OpenSSL on Linux), platform-conditional Cargo.toml deps (`ort-download-binaries` on macOS/Linux, `ort-load-dynamic` on Windows).
 - ~~Migrate embedding engine from Model2Vec to fastembed BGE-Small-EN-v1.5 (T1-2 Phase 1)~~ (12108c1) — Replaced model2vec (256d static) with fastembed v4 (384d ONNX). Removed model_download.rs, discovery.rs, ureq dependency. Added v3→v4 database migration. All three projects (codegraph, tempera, smelt) now share the same embedding stack. Verified: semantic search works with zero keyword overlap.
 - ~~Fix MCP tool name mismatch (#22)~~ (45d284d) — Aligned `mine_git_file` → `mine_git_history_for_file` across server/package.json/toolManager. Added missing `reindex_workspace` to package.json and toolManager. All 27 tools now match across 3 layers.
 - ~~Remove @codegraph chat participant~~ (38acce0) — Redundant with 26 language model tools via `#` picker. Removed chatParticipants from package.json, implementation class, tests, and extension.ts references.
-- ~~Cross-platform binary builds~~ — Native builds for all 4 platforms: darwin-arm64 (local), darwin-x64 (local cross-compile), linux-x64 (WSL2 192.168.254.107), win32-x64 (Windows 192.168.254.103). VSIX now 50MB with all binaries.
+- ~~Cross-platform binary builds~~ — Native builds for all 4 platforms: darwin-arm64 (local), darwin-x64 (local cross-compile), linux-x64 (WSL2 192.168.254.107), win32-x64 (Windows 192.168.254.103). VSIX now 70MB with all binaries.
 - ~~Fix find_unused_code false positives — all 4 sub-issues (#8a–8d)~~ — Reduced from 158 → 50 at ≥0.8 confidence. Four fixes: (a) Rust macro body call extraction via `extract_calls_from_macro()` heuristic (09a94df); (b) Rust method reference detection for `Self::method` / `self.method` used as values (f313da6); (c) TypeScript type annotation References edges via new `TypeReference` IR struct, `extract_type_names()` recursive extractor, and mapper edge creation (f313da6); (d) Arrow function call attribution — nested arrows recurse into enclosing function's context (f313da6). Plus: cross-file Imports edges now count as usage in find_unused_code (e39157e).
 - ~~Fix find_unused_code core detection (#8 core)~~ — Imports/ImportsFrom edges no longer counted as usage, Type/Interface nodes no longer blanket-skipped. Reduced from 0 → 362 unused at 0.5 confidence.
 - ~~Fix Rust macro body call extraction (#8a)~~ — tree-sitter treats macro invocation bodies as opaque `token_tree` nodes. Added heuristic `extract_calls_from_macro()` in codegraph-rust visitor. Handles `Self::method()`, `self.method()`, bare `func()`. Verified: `handle_event` no longer flagged as unused. (09a94df, be9a66f)

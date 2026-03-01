@@ -33,9 +33,6 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 # Temporal handling
 chrono = { version = "0.4", features = ["serde"] }
 
-# Embeddings - fastembed with BGE-Small-EN-v1.5
-fastembed = "4"
-
 # Async runtime
 tokio.workspace = true
 
@@ -45,6 +42,15 @@ anyhow = "1.0"
 
 # Logging
 log = "0.4"
+
+# Embeddings - fastembed with BGE-Small-EN-v1.5
+# macOS/Linux: static link ONNX Runtime (ort-download-binaries)
+# Windows: load onnxruntime DLL at runtime (ort-load-dynamic, avoids CRT /MT vs /MD mismatch)
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub-rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3.0"

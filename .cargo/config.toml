@@ -1,5 +1,3 @@
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.x86_64-pc-windows-gnu]
-rustflags = ["-C", "target-feature=+crt-static"]
+# No special config needed.
+# macOS/Linux: ort-download-binaries (static ONNX Runtime)
+# Windows: ort-load-dynamic (avoids CRT /MT vs /MD mismatch between ort-sys and rocksdb)
