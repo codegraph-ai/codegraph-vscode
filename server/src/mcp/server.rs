@@ -3765,7 +3765,7 @@ impl McpServer {
         matches!(
             name,
             // Rust/general
-            "main"
+            "main" | "setup"
             // JS test frameworks
             | "it"
             | "describe"
@@ -3782,9 +3782,24 @@ impl McpServer {
             | "getParent"
             | "resolveTreeItem"
             | "resolveWebviewView"
-            // VS Code Disposable
+            // VS Code FollowupProvider / ChatParticipant
+            | "provideFollowups"
+            | "provideCodeContext"
+            | "buildEnhancedPrompt"
+            // VS Code CodeActionProvider / CodeLensProvider
+            | "provideCodeActions"
+            | "provideCodeLenses"
+            | "resolveCodeLens"
+            // VS Code CompletionItemProvider
+            | "provideCompletionItems"
+            | "resolveCompletionItem"
+            // VS Code LanguageModelTool
+            | "invoke"
+            | "prepareInvocation"
+            // VS Code Disposable / lifecycle
             | "dispose"
             | "refresh"
+            | "getIcon"
             // LSP protocol methods (called by LSP framework dispatch)
             | "initialized"
             | "shutdown"

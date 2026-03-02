@@ -472,6 +472,51 @@ impl GraphUpdater {
         for (from_id, to_id, props) in call_edges_to_add {
             let _ = graph.add_edge(from_id, to_id, EdgeType::Calls, props);
         }
+
+        // Phase 3: Resolve cross-file type references
+        // Find function/class nodes with unresolved_type_refs and create References edges
+        let mut ref_edges_to_add: Vec<(codegraph::NodeId, codegraph::NodeId, PropertyMap)> =
+            Vec::new();
+
+        if let Ok(functions) = graph.query().node_type(NodeType::Function).execute() {
+            for func_id in functions {
+                if let Ok(node) = graph.get_node(func_id) {
+                    if let Some(unresolved) = node.properties.get_string("unresolved_type_refs") {
+                        for type_name in unresolved.split(',') {
+                            let type_name = type_name.trim();
+                            if !type_name.is_empty() {
+                                if let Some(&type_id) = symbol_map.get(type_name) {
+                                    let already_linked = graph
+                                        .get_edges_between(func_id, type_id)
+                                        .map(|edges| {
+                                            edges.iter().any(|e| {
+                                                graph
+                                                    .get_edge(*e)
+                                                    .map(|edge| {
+                                                        edge.edge_type == EdgeType::References
+                                                    })
+                                                    .unwrap_or(false)
+                                            })
+                                        })
+                                        .unwrap_or(false);
+
+                                    if !already_linked {
+                                        let props = PropertyMap::new()
+                                            .with("resolved_by", "cross_file_resolution");
+                                        ref_edges_to_add.push((func_id, type_id, props));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the resolved type reference edges
+        for (from_id, to_id, props) in ref_edges_to_add {
+            let _ = graph.add_edge(from_id, to_id, EdgeType::References, props);
+        }
     }
 }
 

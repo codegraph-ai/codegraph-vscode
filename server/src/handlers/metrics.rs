@@ -578,9 +578,34 @@ impl CodeGraphBackend {
             || lower.ends_with("callback")
     }
 
-    /// Check if a function is a VS Code extension entry point
+    /// Check if a function is a VS Code extension entry point or API callback
     fn is_vscode_entry_point(name: &str) -> bool {
-        name == "activate" || name == "deactivate"
+        matches!(
+            name,
+            "activate"
+                | "deactivate"
+                // TreeDataProvider
+                | "getTreeItem"
+                | "getChildren"
+                | "getParent"
+                | "resolveTreeItem"
+                // FollowupProvider / ChatParticipant
+                | "provideFollowups"
+                // CodeActionProvider / CodeLensProvider
+                | "provideCodeActions"
+                | "provideCodeLenses"
+                | "resolveCodeLens"
+                // CompletionItemProvider
+                | "provideCompletionItems"
+                | "resolveCompletionItem"
+                // LanguageModelTool
+                | "invoke"
+                | "prepareInvocation"
+                // Common VS Code lifecycle
+                | "getIcon"
+                | "setup"
+                | "dispose"
+        )
     }
 
     /// Check if a function is likely a trait implementation or protocol method
