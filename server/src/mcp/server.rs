@@ -407,11 +407,15 @@ impl McpServer {
                     .with_compact(compact)
                     .with_symbol_types(symbol_types)
                     .with_include_private(include_private);
-                let result = self
+                let mut result = self
                     .backend
                     .query_engine
                     .symbol_search(query, &options)
                     .await;
+
+                // Deduplicate by node_id
+                let mut seen = std::collections::HashSet::new();
+                result.results.retain(|m| seen.insert(m.node_id));
 
                 Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
             }
@@ -469,7 +473,14 @@ impl McpServer {
                     .find_entry_points_opts(&entry_types, compact, limit)
                     .await;
 
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                // Deduplicate by node_id
+                let mut seen = std::collections::HashSet::new();
+                let deduped: Vec<_> = result
+                    .into_iter()
+                    .filter(|e| seen.insert(e.node_id))
+                    .collect();
+
+                Ok(serde_json::to_value(deduped).map_err(|e| e.to_string())?)
             }
 
             "codegraph_find_by_imports" => {
@@ -596,7 +607,14 @@ impl McpServer {
                     .find_by_signature(&pattern, limit)
                     .await;
 
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                // Deduplicate by node_id
+                let mut seen = std::collections::HashSet::new();
+                let deduped: Vec<_> = result
+                    .into_iter()
+                    .filter(|m| seen.insert(m.node_id))
+                    .collect();
+
+                Ok(serde_json::to_value(deduped).map_err(|e| e.to_string())?)
             }
 
             // ==================== Graph Traversal Tools ====================
@@ -1624,7 +1642,7 @@ impl McpServer {
                     .map_err(|e| format!("Failed to check memory: {:?}", e))?;
 
                 if exists.is_none() {
-                    return Ok(serde_json::json!({"error": "Memory not found", "id": id}));
+                    return Err(format!("Memory not found: {}", id));
                 }
 
                 self.backend
