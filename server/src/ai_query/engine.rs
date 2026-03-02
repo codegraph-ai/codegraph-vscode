@@ -113,7 +113,13 @@ impl QueryEngine {
         let text_index = self.text_index.read().await;
         let graph = self.graph.read().await;
 
-        let text_results = text_index.search(query, options.limit * 2); // Get more than limit for filtering
+        // Fetch more candidates when type-filtering to avoid missing targets ranked lower in BM25
+        let fetch_multiplier = if options.symbol_types.is_empty() {
+            2
+        } else {
+            10
+        };
+        let text_results = text_index.search(query, options.limit * fetch_multiplier);
         let total_matches = text_results.len();
 
         let mut results = Vec::new();
@@ -250,17 +256,22 @@ impl QueryEngine {
         queue.push_back((start_node, 0, vec![start_node], String::new()));
         visited.insert(start_node);
 
+        let codegraph_direction = match direction {
+            TraversalDirection::Outgoing => Direction::Outgoing,
+            TraversalDirection::Incoming => Direction::Incoming,
+            TraversalDirection::Both => Direction::Both,
+        };
+
         while let Some((current, depth, path, incoming_edge_type)) = queue.pop_front() {
-            if depth > max_depth || results.len() >= filter.max_nodes {
+            if depth > max_depth {
                 break;
             }
 
-            // Skip the start node in results
-            if depth > 0 {
+            // Phase 1: Add matching nodes to results (skip the start node)
+            if depth > 0 && results.len() < filter.max_nodes {
                 if let Ok(node) = graph.get_node(current) {
-                    // Apply type filter
-                    if !filter.symbol_types.is_empty() {
-                        let type_matches = filter.symbol_types.iter().any(|st| {
+                    let type_matches = filter.symbol_types.is_empty()
+                        || filter.symbol_types.iter().any(|st| {
                             matches!(
                                 (st, &node.node_type),
                                 (SymbolType::Function, NodeType::Function)
@@ -271,69 +282,94 @@ impl QueryEngine {
                                     | (SymbolType::Type, NodeType::Type)
                             )
                         });
-                        if !type_matches {
-                            continue;
-                        }
-                    }
 
-                    if let Some(symbol) = self.node_to_symbol_info(&graph, current) {
-                        results.push(TraversalNode {
-                            node_id: current,
-                            depth,
-                            path: path.clone(),
-                            edge_type: incoming_edge_type.clone(),
-                            symbol,
-                        });
+                    if type_matches {
+                        if let Some(symbol) = self.node_to_symbol_info(&graph, current) {
+                            results.push(TraversalNode {
+                                node_id: current,
+                                depth,
+                                path: path.clone(),
+                                edge_type: incoming_edge_type.clone(),
+                                symbol,
+                            });
+                        }
                     }
                 }
             }
 
-            // Get neighbors based on direction
-            let codegraph_direction = match direction {
-                TraversalDirection::Outgoing => Direction::Outgoing,
-                TraversalDirection::Incoming => Direction::Incoming,
-                TraversalDirection::Both => Direction::Both,
-            };
-
+            // Phase 2: Always expand neighbors (edge type filter still applies)
             if let Ok(neighbors) = graph.get_neighbors(current, codegraph_direction) {
                 for neighbor in neighbors {
-                    if !visited.contains(&neighbor) {
-                        // Resolve the edge type between current and neighbor
-                        // Try current→neighbor first, then neighbor→current for incoming edges
-                        let edge_type_str = graph
-                            .get_edges_between(current, neighbor)
-                            .ok()
-                            .and_then(|edges| edges.into_iter().next())
-                            .or_else(|| {
-                                graph
-                                    .get_edges_between(neighbor, current)
-                                    .ok()
-                                    .and_then(|edges| edges.into_iter().next())
-                            })
-                            .and_then(|eid| graph.get_edge(eid).ok())
-                            .map(|e| e.edge_type.to_string())
-                            .unwrap_or_default();
+                    if visited.contains(&neighbor) {
+                        continue;
+                    }
 
-                        // Apply edge type filter: skip edges not matching the filter
-                        if !filter.edge_types.is_empty()
-                            && !filter
+                    // Resolve all edge types between the two nodes
+                    let edge_types_between = Self::resolve_edge_types(&graph, current, neighbor);
+
+                    // Apply edge type filter
+                    if !filter.edge_types.is_empty() {
+                        let any_match = edge_types_between.iter().any(|et| {
+                            filter
                                 .edge_types
                                 .iter()
-                                .any(|et| et.eq_ignore_ascii_case(&edge_type_str))
-                        {
+                                .any(|ft| ft.eq_ignore_ascii_case(et))
+                        });
+                        if !any_match {
                             continue;
                         }
-
-                        visited.insert(neighbor);
-                        let mut new_path = path.clone();
-                        new_path.push(neighbor);
-                        queue.push_back((neighbor, depth + 1, new_path, edge_type_str));
                     }
+
+                    // Use first matching edge type for the record
+                    let edge_type_str = if filter.edge_types.is_empty() {
+                        edge_types_between.into_iter().next().unwrap_or_default()
+                    } else {
+                        edge_types_between
+                            .into_iter()
+                            .find(|et| {
+                                filter
+                                    .edge_types
+                                    .iter()
+                                    .any(|ft| ft.eq_ignore_ascii_case(et))
+                            })
+                            .unwrap_or_default()
+                    };
+
+                    visited.insert(neighbor);
+                    let mut new_path = path.clone();
+                    new_path.push(neighbor);
+                    queue.push_back((neighbor, depth + 1, new_path, edge_type_str));
                 }
             }
         }
 
         results
+    }
+
+    /// Resolve all edge types between two nodes, checking both directions.
+    fn resolve_edge_types(
+        graph: &CodeGraph,
+        a: codegraph::NodeId,
+        b: codegraph::NodeId,
+    ) -> Vec<String> {
+        let mut types = Vec::new();
+        if let Ok(edges) = graph.get_edges_between(a, b) {
+            for eid in edges {
+                if let Ok(edge) = graph.get_edge(eid) {
+                    types.push(edge.edge_type.to_string());
+                }
+            }
+        }
+        if types.is_empty() {
+            if let Ok(edges) = graph.get_edges_between(b, a) {
+                for eid in edges {
+                    if let Ok(edge) = graph.get_edge(eid) {
+                        types.push(edge.edge_type.to_string());
+                    }
+                }
+            }
+        }
+        types
     }
 
     /// Get detailed information about a symbol.
@@ -1262,6 +1298,151 @@ mod tests {
         let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
         assert!(names.contains(&"functionB"));
         assert!(names.contains(&"functionC"));
+    }
+
+    #[tokio::test]
+    async fn test_traverse_graph_node_type_filter() {
+        let (engine, graph) = create_test_engine().await;
+
+        // Graph: functionA -> ClassB -> functionC
+        // With nodeTypes: [Function], ClassB should be traversed through but not in results
+        let (a, _b, c);
+        {
+            let mut g = graph.write().await;
+
+            let mut props_a = PropertyMap::new();
+            props_a.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("functionA".to_string()),
+            );
+            props_a.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/test.rs".to_string()),
+            );
+            props_a.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            a = g.add_node(NodeType::Function, props_a).expect("add node");
+
+            let mut props_b = PropertyMap::new();
+            props_b.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("ClassB".to_string()),
+            );
+            props_b.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/test.rs".to_string()),
+            );
+            props_b.insert("line_start".to_string(), codegraph::PropertyValue::Int(10));
+            _b = g.add_node(NodeType::Class, props_b).expect("add node");
+
+            let mut props_c = PropertyMap::new();
+            props_c.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("functionC".to_string()),
+            );
+            props_c.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/test.rs".to_string()),
+            );
+            props_c.insert("line_start".to_string(), codegraph::PropertyValue::Int(20));
+            c = g.add_node(NodeType::Function, props_c).expect("add node");
+
+            g.add_edge(a, _b, EdgeType::Calls, PropertyMap::new())
+                .expect("add edge");
+            g.add_edge(_b, c, EdgeType::Calls, PropertyMap::new())
+                .expect("add edge");
+        }
+
+        engine.build_indexes().await;
+
+        // Filter for only Function nodes — should still reach functionC through ClassB
+        let filter = TraversalFilter::new()
+            .with_max_nodes(100)
+            .with_symbol_types(vec![SymbolType::Function]);
+        let results = engine
+            .traverse_graph(a, TraversalDirection::Outgoing, 3, &filter)
+            .await;
+
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(
+            names.contains(&"functionC"),
+            "functionC should be reachable through filtered ClassB"
+        );
+        assert!(
+            !names.contains(&"ClassB"),
+            "ClassB should be filtered from results"
+        );
+        assert_eq!(results.len(), 1, "only functionC should be in results");
+    }
+
+    #[tokio::test]
+    async fn test_traverse_graph_edge_type_filter() {
+        let (engine, graph) = create_test_engine().await;
+
+        // Graph: A -calls-> B -imports-> C
+        // With edgeTypes: ["Calls"], should only reach B (not C via Imports)
+        let (a, _b, _c);
+        {
+            let mut g = graph.write().await;
+
+            let mut props_a = PropertyMap::new();
+            props_a.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("funcA".to_string()),
+            );
+            props_a.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/test.rs".to_string()),
+            );
+            props_a.insert("line_start".to_string(), codegraph::PropertyValue::Int(1));
+            a = g.add_node(NodeType::Function, props_a).expect("add node");
+
+            let mut props_b = PropertyMap::new();
+            props_b.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("funcB".to_string()),
+            );
+            props_b.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/test.rs".to_string()),
+            );
+            props_b.insert("line_start".to_string(), codegraph::PropertyValue::Int(10));
+            _b = g.add_node(NodeType::Function, props_b).expect("add node");
+
+            let mut props_c = PropertyMap::new();
+            props_c.insert(
+                "name".to_string(),
+                codegraph::PropertyValue::String("funcC".to_string()),
+            );
+            props_c.insert(
+                "path".to_string(),
+                codegraph::PropertyValue::String("/src/test.rs".to_string()),
+            );
+            props_c.insert("line_start".to_string(), codegraph::PropertyValue::Int(20));
+            _c = g.add_node(NodeType::Function, props_c).expect("add node");
+
+            g.add_edge(a, _b, EdgeType::Calls, PropertyMap::new())
+                .expect("add edge");
+            g.add_edge(_b, _c, EdgeType::Imports, PropertyMap::new())
+                .expect("add edge");
+        }
+
+        engine.build_indexes().await;
+
+        // Only follow Calls edges
+        let filter = TraversalFilter::new()
+            .with_max_nodes(100)
+            .with_edge_types(vec!["Calls".to_string()]);
+        let results = engine
+            .traverse_graph(a, TraversalDirection::Outgoing, 3, &filter)
+            .await;
+
+        let names: Vec<&str> = results.iter().map(|r| r.symbol.name.as_str()).collect();
+        assert!(names.contains(&"funcB"), "funcB reachable via Calls edge");
+        assert!(
+            !names.contains(&"funcC"),
+            "funcC should not be reachable via Imports edge when filtering for Calls"
+        );
+        assert_eq!(results.len(), 1);
     }
 
     #[tokio::test]

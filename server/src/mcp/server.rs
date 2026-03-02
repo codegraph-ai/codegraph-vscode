@@ -851,6 +851,11 @@ impl McpServer {
                     })
                     .unwrap_or_default();
 
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
                 if let Some(start) = start_node {
                     let direction = match direction_str {
                         "incoming" => crate::ai_query::TraversalDirection::Incoming,
@@ -870,33 +875,52 @@ impl McpServer {
                         .traverse_graph(start, direction, max_depth, &filter)
                         .await;
 
-                    // Add fallback metadata if used
-                    let mut response = serde_json::to_value(result).map_err(|e| e.to_string())?;
-                    if used_fallback {
-                        if let Some(obj) = response.as_object_mut() {
-                            // Get symbol name for fallback message
-                            let symbol_name = {
-                                let graph = self.backend.graph.read().await;
-                                graph
-                                    .get_node(start)
-                                    .ok()
-                                    .and_then(|n| {
-                                        n.properties.get_string("name").map(|s| s.to_string())
-                                    })
-                                    .unwrap_or_default()
-                            };
-                            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                            obj.insert(
-                                "fallback_message".to_string(),
-                                serde_json::json!(format!(
-                                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                    line.unwrap_or(0),
-                                    symbol_name
-                                )),
-                            );
+                    if summary {
+                        let node_count = result.len();
+                        let edge_types_seen: Vec<String> = result
+                            .iter()
+                            .filter(|n| !n.edge_type.is_empty())
+                            .map(|n| n.edge_type.clone())
+                            .collect::<std::collections::HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        Ok(serde_json::json!({
+                            "summary": {
+                                "node_count": node_count,
+                                "max_depth": max_depth,
+                                "direction": direction_str,
+                                "edge_types_seen": edge_types_seen,
+                            }
+                        }))
+                    } else {
+                        // Add fallback metadata if used
+                        let mut response =
+                            serde_json::to_value(result).map_err(|e| e.to_string())?;
+                        if used_fallback {
+                            if let Some(obj) = response.as_object_mut() {
+                                let symbol_name = {
+                                    let graph = self.backend.graph.read().await;
+                                    graph
+                                        .get_node(start)
+                                        .ok()
+                                        .and_then(|n| {
+                                            n.properties.get_string("name").map(|s| s.to_string())
+                                        })
+                                        .unwrap_or_default()
+                                };
+                                obj.insert("used_fallback".to_string(), serde_json::json!(true));
+                                obj.insert(
+                                    "fallback_message".to_string(),
+                                    serde_json::json!(format!(
+                                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                                        line.unwrap_or(0),
+                                        symbol_name
+                                    )),
+                                );
+                            }
                         }
+                        Ok(response)
                     }
-                    Ok(response)
                 } else {
                     Ok(serde_json::json!({
                         "nodes": [],

@@ -595,6 +595,10 @@ fn traverse_graph_tool() -> Tool {
         "limit".to_string(),
         number_prop("Maximum number of nodes to return", Some(100.0)),
     );
+    properties.insert(
+        "summary".to_string(),
+        boolean_prop("Return a condensed summary for large graphs", false),
+    );
 
     Tool {
         name: "codegraph_traverse_graph".to_string(),
