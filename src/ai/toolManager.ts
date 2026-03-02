@@ -58,11 +58,15 @@ export class CodeGraphToolManager {
             }
 
             try {
-                return await this.client.sendRequest(
+                const result = await this.client.sendRequest(
                     'workspace/executeCommand',
                     { command, arguments: [args] },
                     token
-                ) as T;
+                );
+                if (result == null) {
+                    throw new Error(`${command} returned null — server may be busy or restarting`);
+                }
+                return result as T;
             } catch (error) {
                 const isLastAttempt = attempt === retries;
                 if (isLastAttempt || !this.isRetryableError(error)) {
