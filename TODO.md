@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-01 (v0.8.2)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -17,8 +17,8 @@ Remaining false positive categories (not blocking, diminishing returns):
 - **Classes instantiated cross-file** (~9): `MemoryTreeProvider`, `SymbolTreeProvider`, etc. — `new ClassName()` not detected as Instantiates edge cross-file
 - **Interfaces used only inline** (~19): `*Params` interfaces used via `as` casts or in same-file `RequestType<>` generics without cross-file import
 
-### 9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)
-Memory tools ignore filter parameters. `kinds` filter returns unfiltered results, `tags` filter has no effect, `currentOnly: false` still excludes invalidated memories, `offset` pagination not implemented.
+### ~~9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)~~
+~~Fixed (7273769). Most filters already worked. Remaining gap was `memory_context` missing `currentOnly` parameter — now parsed and passed to SearchConfig. See also #16.~~
 
 ### 10. Fix traverse_graph edgeTypes and nodeTypes filters
 4/8 scenarios warn. `edgeTypes: ["calls"]` and `nodeTypes: ["function"]` filters are accepted but don't constrain results — all edge/node types are returned regardless.
@@ -46,8 +46,8 @@ TypeScript private methods are indexed but `visibility` property is not consiste
 ### 15. Fix memory_invalidate error on nonexistent IDs
 `memory_invalidate` silently succeeds when given a non-existent memory ID. Should return an error.
 
-### 16. Fix memory_stats byKind serialization
-`memory_stats` uses `format!("{:?}", memory.kind)` which dumps the full Rust `Debug` representation of the `MemoryKind` enum variant (including all struct fields) as the `byKind` key. Should use a clean discriminant name like `"debug_context"` instead. Fix in `storage.rs:461`.
+### ~~16. Fix memory_stats byKind serialization~~
+~~Fixed (7273769). Added `MemoryKind::discriminant_name()` returning clean `"debug_context"` etc. Applied in all 4 response sites in server.rs + stats() in storage.rs.~~
 
 ## Strategic — Competitive Capabilities
 
@@ -165,10 +165,10 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 ## Future / On Demand
 
 ### 6. Publish to VS Code Marketplace + npm
-v0.8.0 VSIX built (`codegraph-0.8.0.vsix`, 70MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: marketplace publisher setup, CI/CD pipeline, `npm publish --access public`.
+v0.8.2 VSIX built (`codegraph-0.8.2.vsix`, 70MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
 
-### 22. Windows: bundle or auto-download onnxruntime.dll
-Windows build uses `ort-load-dynamic` (loads ONNX Runtime as DLL at runtime) to avoid CRT `/MT` vs `/MD` mismatch between ort-sys and rocksdb-sys. On first use, fastembed downloads the ONNX Runtime shared library to `~/.codegraph/fastembed_cache/`. Verify this works on clean Windows installs. If not, may need to bundle `onnxruntime.dll` in the npm/VSIX package.
+### ~~22. Windows: bundle or auto-download onnxruntime.dll~~
+~~Fixed (7273769). Added `ensure_ort_dll()` in fastembed_embed.rs that auto-downloads ONNX Runtime v1.20.0 from GitHub releases on first run. Sets `ORT_DYLIB_PATH` before fastembed init. Gated with `#[cfg(target_os = "windows")]`. Verified on Windows — binary starts and runs cleanly.~~
 
 ### 23. Linux binary requires glibc 2.39+ (Ubuntu 24.04+)
 Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Won't work on Ubuntu 22.04 (glibc 2.35). zigbuild can't cross-compile ONNX Runtime C++ code (`std::filesystem` symbols). Accepted tradeoff — Ubuntu 22.04 is EOL April 2027.
@@ -186,6 +186,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~v0.8.1: fix memory kind serialization (#16), add currentOnly to memory_context (#9), Windows ONNX Runtime auto-download (#22), null LSP response guard~~ (7273769, eee5fbc) — `MemoryKind::discriminant_name()` for clean kind strings in all responses. `memory_context` now accepts `currentOnly` param. Windows auto-downloads `onnxruntime.dll` v1.20.0 on first run. `sendRequestWithRetry` guards against null LSP responses in all 26 vscode.lm tool handlers.
 - ~~v0.8.0: MCP npm package, VSIX, version alignment~~ (8acba43) — Created `@memoryx/codegraph-mcp` npm package with Node.js launcher (`codegraph-mcp.js`) and postinstall verification. Aligned all versions to 0.8.0 (workspace Cargo.toml, both crates via `version.workspace = true`, npm package, VS Code extension). Rewrote README as feature presentation. Built `codegraph-0.8.0.vsix` with all 4 platform binaries (70MB).
 - ~~Rebuild all platform binaries for 0.8.0~~ — Rebuilt all 4 binaries: darwin-arm64/x64 (local), linux-x64 (native cargo build on WSL2 with rustls TLS), win32-x64 (ort-load-dynamic to avoid CRT mismatch). Key fixes: fastembed uses `hf-hub-rustls-tls` (avoids OpenSSL on Linux), platform-conditional Cargo.toml deps (`ort-download-binaries` on macOS/Linux, `ort-load-dynamic` on Windows).
 - ~~Migrate embedding engine from Model2Vec to fastembed BGE-Small-EN-v1.5 (T1-2 Phase 1)~~ (12108c1) — Replaced model2vec (256d static) with fastembed v4 (384d ONNX). Removed model_download.rs, discovery.rs, ureq dependency. Added v3→v4 database migration. All three projects (codegraph, tempera, smelt) now share the same embedding stack. Verified: semantic search works with zero keyword overlap.
