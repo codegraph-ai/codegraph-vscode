@@ -24,9 +24,10 @@ impl FastembedEmbedding {
     /// The model is automatically downloaded to `cache_dir` on first use.
     /// On Windows, also ensures onnxruntime.dll is available (downloaded if needed).
     pub(crate) fn new(cache_dir: PathBuf) -> Result<Self> {
-        // Set cache path env var to prevent fastembed from polluting CWD
-        // (same pattern as tempera indexer.rs)
-        std::env::set_var("FASTEMBED_CACHE_PATH", &cache_dir);
+        // MUST set FASTEMBED_CACHE_DIR before InitOptions::new() — its Default impl
+        // calls get_cache_dir() which falls back to ".fastembed_cache" in CWD.
+        // Note: the env var is FASTEMBED_CACHE_DIR (not _PATH).
+        unsafe { std::env::set_var("FASTEMBED_CACHE_DIR", &cache_dir) };
 
         // On Windows with ort-load-dynamic, ensure onnxruntime.dll is available
         #[cfg(target_os = "windows")]
