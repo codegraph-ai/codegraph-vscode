@@ -343,7 +343,7 @@ fn analyze_complexity_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_complexity".to_string(),
-        description: Some("Measures code complexity metrics for refactoring decisions. USE WHEN: identifying functions that need simplification, reviewing code quality, or prioritizing technical debt. Returns cyclomatic complexity score per function, with name, line range, and file path. Scores >10 typically indicate refactoring candidates, >20 is high complexity. Use threshold to filter — only functions at or above the threshold are returned. Omit line to analyze all functions in a file.".to_string()),
+        description: Some("Measures code complexity metrics for refactoring decisions. USE WHEN: identifying functions that need simplification, reviewing code quality, or prioritizing technical debt. Returns cyclomatic complexity score per function, with name, line range, and file path. Scores >10 typically indicate refactoring candidates, >20 is high complexity. Use threshold to filter — only functions at or above the threshold are returned. Omit line to analyze all functions in a file. Returns: {functions:[{name, complexity, grade, node_id, line_start, line_end, details:{branches, loops, logical_operators, nesting_depth, exception_handlers, early_returns, lines_of_code}}], summary:{total_functions, average_complexity, max_complexity, above_threshold, threshold, overall_grade}, recommendations:[]}".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),

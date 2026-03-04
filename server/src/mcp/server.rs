@@ -3354,6 +3354,10 @@ impl McpServer {
         let mut max_complexity = 0u32;
         let mut above_threshold = 0u32;
 
+        // Track per-function data for recommendations
+        let mut func_names_above_threshold: Vec<(String, u32, char)> = Vec::new();
+        let mut deep_nesting_count = 0u32;
+
         for node_id in file_nodes {
             if let Ok(node) = graph.get_node(node_id) {
                 // Only analyze functions
@@ -3361,10 +3365,11 @@ impl McpServer {
                     continue;
                 }
 
+                let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
+                let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
+
                 // Check line filter
                 if let Some(target_line) = line {
-                    let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
-                    let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
                     if target_line < start || target_line > end {
                         continue;
                     }
@@ -3374,6 +3379,8 @@ impl McpServer {
 
                 // Read AST-based complexity from node properties (populated by upstream parsers)
                 let complexity = node.properties.get_int("complexity").unwrap_or(1) as u32;
+                let nesting_depth =
+                    node.properties.get_int("complexity_nesting").unwrap_or(0) as u32;
 
                 let grade = node
                     .properties
@@ -3391,6 +3398,10 @@ impl McpServer {
                 max_complexity = max_complexity.max(complexity);
                 if complexity > threshold {
                     above_threshold += 1;
+                    func_names_above_threshold.push((name.to_string(), complexity, grade));
+                }
+                if nesting_depth > 4 {
+                    deep_nesting_count += 1;
                 }
 
                 functions.push(serde_json::json!({
@@ -3398,11 +3409,16 @@ impl McpServer {
                     "complexity": complexity,
                     "grade": grade.to_string(),
                     "node_id": node_id.to_string(),
+                    "line_start": start,
+                    "line_end": end,
                     "details": {
                         "branches": node.properties.get_int("complexity_branches").unwrap_or(0),
                         "loops": node.properties.get_int("complexity_loops").unwrap_or(0),
                         "logical_operators": node.properties.get_int("complexity_logical_ops").unwrap_or(0),
-                        "nesting_depth": node.properties.get_int("complexity_nesting").unwrap_or(0),
+                        "nesting_depth": nesting_depth,
+                        "exception_handlers": node.properties.get_int("complexity_exceptions").unwrap_or(0),
+                        "early_returns": node.properties.get_int("complexity_early_returns").unwrap_or(0),
+                        "lines_of_code": end.saturating_sub(start) + 1,
                     }
                 }));
             }
@@ -3414,6 +3430,35 @@ impl McpServer {
             0.0
         };
 
+        let overall_grade = match avg_complexity as u32 {
+            0..=5 => "A",
+            6..=10 => "B",
+            11..=20 => "C",
+            21..=50 => "D",
+            _ => "F",
+        };
+
+        // Generate recommendations (same logic as LSP handler)
+        let mut recommendations: Vec<String> = Vec::new();
+        for (name, complexity, grade) in &func_names_above_threshold {
+            recommendations.push(format!(
+                "Consider refactoring '{}' (complexity: {}, grade: {}). Break into smaller functions.",
+                name, complexity, grade
+            ));
+        }
+        if avg_complexity > 15.0 {
+            recommendations.push(
+                "File has high average complexity. Consider splitting into multiple modules."
+                    .to_string(),
+            );
+        }
+        if deep_nesting_count > 0 {
+            recommendations.push(format!(
+                "{} function(s) have deep nesting (>4 levels). Use early returns or extract methods.",
+                deep_nesting_count
+            ));
+        }
+
         // Include diagnostic note when no functions found
         if functions.is_empty() {
             serde_json::json!({
@@ -3424,7 +3469,9 @@ impl McpServer {
                     "max_complexity": 0,
                     "above_threshold": 0,
                     "threshold": threshold,
+                    "overall_grade": "A",
                 },
+                "recommendations": [],
                 "note": "No functions found in this file. This may indicate: (1) the language parser doesn't extract function-level details for this file type, (2) the file doesn't contain any functions, or (3) the workspace needs to be re-indexed."
             })
         } else {
@@ -3436,7 +3483,9 @@ impl McpServer {
                     "max_complexity": max_complexity,
                     "above_threshold": above_threshold,
                     "threshold": threshold,
-                }
+                    "overall_grade": overall_grade,
+                },
+                "recommendations": recommendations,
             })
         }
     }
