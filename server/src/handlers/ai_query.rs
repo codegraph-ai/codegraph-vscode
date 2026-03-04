@@ -65,6 +65,7 @@ pub struct SymbolInfoResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
     pub is_public: bool,
+    pub visibility: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -781,6 +782,7 @@ fn symbol_info_to_response(info: &crate::ai_query::SymbolInfo) -> SymbolInfoResp
         signature: info.signature.clone(),
         docstring: info.docstring.clone(),
         is_public: info.is_public,
+        visibility: info.visibility.clone(),
     }
 }
 

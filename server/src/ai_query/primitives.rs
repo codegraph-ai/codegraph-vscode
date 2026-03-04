@@ -163,6 +163,8 @@ pub struct SymbolInfo {
     pub docstring: Option<String>,
     /// Whether the symbol is exported/public
     pub is_public: bool,
+    /// Visibility level: "public", "private", "protected", "pub", "pub(crate)", etc.
+    pub visibility: String,
 }
 
 /// A match result from symbol search.

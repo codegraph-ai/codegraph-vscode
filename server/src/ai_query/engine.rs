@@ -401,12 +401,17 @@ impl QueryEngine {
             (end_line - start_line + 1) as usize
         };
 
-        // Check if public
+        // Check if public — fall back to visibility string when booleans are absent
         let is_public = node
             .properties
             .get_bool("is_public")
             .or_else(|| node.properties.get_bool("exported"))
-            .unwrap_or(true);
+            .unwrap_or_else(|| {
+                node.properties
+                    .get_string("visibility")
+                    .map(|v| matches!(v, "public" | "pub"))
+                    .unwrap_or(true)
+            });
 
         // Check if deprecated
         let is_deprecated = node.properties.get_bool("deprecated").unwrap_or(false);
@@ -986,11 +991,22 @@ impl QueryEngine {
             (sig, doc)
         };
 
+        let visibility_str = node.properties.get_string("visibility");
+
         let is_public = node
             .properties
             .get_bool("is_public")
             .or_else(|| node.properties.get_bool("exported"))
-            .unwrap_or(true);
+            .unwrap_or_else(|| {
+                // Fall back to visibility string property
+                visibility_str
+                    .map(|v| matches!(v, "public" | "pub"))
+                    .unwrap_or(true)
+            });
+
+        let visibility = visibility_str
+            .unwrap_or(if is_public { "public" } else { "private" })
+            .to_string();
 
         Some(SymbolInfo {
             name,
@@ -999,6 +1015,7 @@ impl QueryEngine {
             signature,
             docstring,
             is_public,
+            visibility,
         })
     }
 

@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-01 (v0.8.2)
+> Last updated: 2026-03-03 (v0.8.2, 314 tests)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -20,31 +20,34 @@ Remaining false positive categories (not blocking, diminishing returns):
 ### ~~9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)~~
 ~~Fixed (7273769). Most filters already worked. Remaining gap was `memory_context` missing `currentOnly` parameter — now parsed and passed to SearchConfig. See also #16.~~
 
-### 10. Fix traverse_graph edgeTypes and nodeTypes filters
-4/8 scenarios warn. `edgeTypes: ["calls"]` and `nodeTypes: ["function"]` filters are accepted but don't constrain results — all edge/node types are returned regardless.
+### ~~10. Fix traverse_graph edgeTypes and nodeTypes filters~~
+~~Fixed (8be0e51). Edge type and node type filters now correctly constrain results. Traverse summary mode also implemented.~~
 
-### 11. Fix symbolType filter in symbol_search for class/interface
-`symbolType: "class"` returns functions. The type filter mapping doesn't correctly translate MCP parameter values to internal NodeType filtering.
+### ~~11. Fix symbolType filter in symbol_search for class/interface~~
+~~Fixed (8be0e51). Type filter mapping now correctly translates MCP parameter values to internal NodeType filtering.~~
 
-### 12. Implement summary/compact response modes (RC-2)
-`summary: true` and `compact: true` parameters are accepted but produce identical output to default mode. Affects get_dependency_graph, get_call_graph, analyze_coupling, traverse_graph.
+### ~~12. Implement summary/compact response modes (RC-2)~~
+~~Fixed (8be0e51). Summary and compact modes now produce condensed output for get_dependency_graph, get_call_graph, analyze_coupling, traverse_graph.~~
 
 ## Medium Priority
 
-### 3. Expose ComplexityMetrics in tool responses
-MCP and LSP complexity handlers return raw integers. The `ComplexityMetrics` struct from codegraph-parser-api provides richer data: grade, breakdown by category, threshold comparison. Would improve `codegraph_analyze_complexity` output.
+### ~~3. Expose ComplexityMetrics in tool responses~~
+~~Fixed (792f40e). MCP `analyze_complexity` now returns full details (branches, loops, logical_operators, nesting_depth, exception_handlers, early_returns, lines_of_code), line_start/line_end per function, overall_grade in summary, and actionable recommendations. At parity with LSP handler.~~
 
 ### 4. Use PropertyMap improvements
 Adopt `StringList` / `IntList` property variants for multi-valued properties (e.g., storing multiple imported symbols on an edge as a `StringList` instead of a comma-separated string).
 
-### 13. Fix result deduplication across tools (RC-8)
-Some tools return duplicate entries for the same symbol. Affects symbol_search and find_entry_points when a function appears in multiple index paths.
+### ~~13. Fix result deduplication across tools (RC-8)~~
+~~Fixed (6a5a43f). Added deduplication to symbol_search and find_entry_points handlers.~~
 
 ### 14. Fix TS private method visibility indexing
 TypeScript private methods are indexed but `visibility` property is not consistently set, causing `modifiers: ["private"]` filter in find_by_signature to miss them.
 
-### 15. Fix memory_invalidate error on nonexistent IDs
-`memory_invalidate` silently succeeds when given a non-existent memory ID. Should return an error.
+### 24. LSP get_symbol_info doesn't read visibility string property
+All 14 parsers store `visibility` as a string property ("public"/"protected"/"private") on function/class nodes. But the LSP server's `get_symbol_info` only checks boolean `is_public`/`exported`, defaulting to `true`. The MCP `get_symbol_info` handler should read the `visibility` property and expose it. Related to #14.
+
+### ~~15. Fix memory_invalidate error on nonexistent IDs~~
+~~Fixed (6a5a43f). memory_invalidate now returns an error for non-existent IDs.~~
 
 ### ~~16. Fix memory_stats byKind serialization~~
 ~~Fixed (7273769). Added `MemoryKind::discriminant_name()` returning clean `"debug_context"` etc. Applied in all 4 response sites in server.rs + stats() in storage.rs.~~
@@ -186,6 +189,10 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Expose ComplexityMetrics in MCP response (#3)~~ (792f40e) — MCP `analyze_complexity` now returns full breakdown (exception_handlers, early_returns, lines_of_code), line range, overall_grade, and recommendations. Parity with LSP handler.
+- ~~Fix fastembed cache CWD pollution~~ (fd1dd98) — Wrong env var name (`FASTEMBED_CACHE_PATH` → `FASTEMBED_CACHE_DIR`) caused `.fastembed_cache/` to appear in workspace dir. Fixed in codegraph-memory, tempera, and smelt.
+- ~~Fix result deduplication (#13) and memory_invalidate error (#15)~~ (6a5a43f) — Dedup in symbol_search/find_entry_points. memory_invalidate returns error for non-existent IDs.
+- ~~Fix traverse_graph filters (#10), symbolType filter (#11), summary/compact modes (#12)~~ (8be0e51) — Edge/node type filters, symbol type mapping, and summary modes all working.
 - ~~v0.8.1: fix memory kind serialization (#16), add currentOnly to memory_context (#9), Windows ONNX Runtime auto-download (#22), null LSP response guard~~ (7273769, eee5fbc) — `MemoryKind::discriminant_name()` for clean kind strings in all responses. `memory_context` now accepts `currentOnly` param. Windows auto-downloads `onnxruntime.dll` v1.20.0 on first run. `sendRequestWithRetry` guards against null LSP responses in all 26 vscode.lm tool handlers.
 - ~~v0.8.0: MCP npm package, VSIX, version alignment~~ (8acba43) — Created `@memoryx/codegraph-mcp` npm package with Node.js launcher (`codegraph-mcp.js`) and postinstall verification. Aligned all versions to 0.8.0 (workspace Cargo.toml, both crates via `version.workspace = true`, npm package, VS Code extension). Rewrote README as feature presentation. Built `codegraph-0.8.0.vsix` with all 4 platform binaries (70MB).
 - ~~Rebuild all platform binaries for 0.8.0~~ — Rebuilt all 4 binaries: darwin-arm64/x64 (local), linux-x64 (native cargo build on WSL2 with rustls TLS), win32-x64 (ort-load-dynamic to avoid CRT mismatch). Key fixes: fastembed uses `hf-hub-rustls-tls` (avoids OpenSSL on Linux), platform-conditional Cargo.toml deps (`ort-download-binaries` on macOS/Linux, `ort-load-dynamic` on Windows).
