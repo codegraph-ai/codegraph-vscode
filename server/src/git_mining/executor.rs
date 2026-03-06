@@ -180,6 +180,107 @@ impl GitExecutor {
         Ok(String::from_utf8(output.stdout)?)
     }
 
+    /// Get the current branch name. Returns `"HEAD"` if in detached HEAD state.
+    pub fn current_branch(&self) -> Result<String, GitMiningError> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitMiningError::CommandFailed(stderr.to_string()));
+        }
+
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
+    /// Get the current HEAD commit hash. Works in both normal and detached HEAD states.
+    pub fn head_commit(&self) -> Result<String, GitMiningError> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitMiningError::CommandFailed(stderr.to_string()));
+        }
+
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
+    /// Get files changed between two refs with their status.
+    ///
+    /// Returns `Vec<(status, path)>` where status is `'A'` (added), `'M'` (modified),
+    /// `'D'` (deleted), or `'R'` (renamed).
+    pub fn diff_name_status(
+        &self,
+        from_ref: &str,
+        to_ref: &str,
+    ) -> Result<Vec<(char, std::path::PathBuf)>, GitMiningError> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args([
+                "diff",
+                "--name-status",
+                &format!("{}..{}", from_ref, to_ref),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitMiningError::CommandFailed(stderr.to_string()));
+        }
+
+        let stdout = String::from_utf8(output.stdout)?;
+        let mut results = Vec::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Format: "M\tpath/to/file" or "R100\told\tnew"
+            let mut parts = line.splitn(2, '\t');
+            if let (Some(status_str), Some(path_str)) = (parts.next(), parts.next()) {
+                let status = status_str.chars().next().unwrap_or('M');
+                // For renames (R100\told\tnew), take the new path
+                let path = if status == 'R' {
+                    path_str.split('\t').next_back().unwrap_or(path_str)
+                } else {
+                    path_str
+                };
+                results.push((status, std::path::PathBuf::from(path)));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Resolve the actual `.git` directory path (handles worktrees where `.git` is a file).
+    pub fn git_dir(&self) -> Result<std::path::PathBuf, GitMiningError> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(["rev-parse", "--git-dir"])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitMiningError::CommandFailed(stderr.to_string()));
+        }
+
+        let git_dir = String::from_utf8(output.stdout)?.trim().to_string();
+        let path = std::path::PathBuf::from(&git_dir);
+
+        // If relative, resolve against repo_path
+        if path.is_relative() {
+            Ok(self.repo_path.join(path))
+        } else {
+            Ok(path)
+        }
+    }
+
     /// Get repository root path.
     pub fn repo_path(&self) -> &Path {
         &self.repo_path

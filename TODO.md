@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-03 (v0.8.2, 314 tests)
+> Last updated: 2026-03-05 (v0.8.2, 316 tests)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -40,11 +40,11 @@ Adopt `StringList` / `IntList` property variants for multi-valued properties (e.
 ### ~~13. Fix result deduplication across tools (RC-8)~~
 ~~Fixed (6a5a43f). Added deduplication to symbol_search and find_entry_points handlers.~~
 
-### 14. Fix TS private method visibility indexing
-TypeScript private methods are indexed but `visibility` property is not consistently set, causing `modifiers: ["private"]` filter in find_by_signature to miss them.
+### ~~14. Fix TS private method visibility indexing~~
+~~Fixed (20ea74a). TypeScript was the only mapper not transferring `func.visibility` to graph node properties. Added `.with("visibility", ...)` to functions, classes, and interfaces in the TS mapper. Integration test verifies private/protected/public.~~
 
-### 24. LSP get_symbol_info doesn't read visibility string property
-All 14 parsers store `visibility` as a string property ("public"/"protected"/"private") on function/class nodes. But the LSP server's `get_symbol_info` only checks boolean `is_public`/`exported`, defaulting to `true`. The MCP `get_symbol_info` handler should read the `visibility` property and expose it. Related to #14.
+### ~~24. Expose visibility string property in get_symbol_info~~
+~~Fixed (5f4752f). MCP `get_symbol_info` now reads the `visibility` string property and exposes it. `is_public` boolean fallback improved to derive from visibility string when booleans absent.~~
 
 ### ~~15. Fix memory_invalidate error on nonexistent IDs~~
 ~~Fixed (6a5a43f). memory_invalidate now returns an error for non-existent IDs.~~
@@ -189,6 +189,8 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Fix TS private method visibility indexing (#14)~~ (20ea74a) — TypeScript mapper was the only one not transferring visibility to graph properties. Added `.with("visibility", ...)` for functions, classes, interfaces. Integration test for private/protected/public.
+- ~~Expose visibility string property in get_symbol_info (#24)~~ (5f4752f) — MCP handler now reads visibility string and exposes it. `is_public` fallback derives from visibility string when booleans absent.
 - ~~Expose ComplexityMetrics in MCP response (#3)~~ (792f40e) — MCP `analyze_complexity` now returns full breakdown (exception_handlers, early_returns, lines_of_code), line range, overall_grade, and recommendations. Parity with LSP handler.
 - ~~Fix fastembed cache CWD pollution~~ (fd1dd98) — Wrong env var name (`FASTEMBED_CACHE_PATH` → `FASTEMBED_CACHE_DIR`) caused `.fastembed_cache/` to appear in workspace dir. Fixed in codegraph-memory, tempera, and smelt.
 - ~~Fix result deduplication (#13) and memory_invalidate error (#15)~~ (6a5a43f) — Dedup in symbol_search/find_entry_points. memory_invalidate returns error for non-existent IDs.

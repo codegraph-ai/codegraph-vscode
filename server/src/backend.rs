@@ -3,6 +3,7 @@
 //! This module implements the Language Server Protocol for CodeGraph.
 
 use crate::ai_query::QueryEngine;
+use crate::branch_watcher::BranchWatcher;
 use crate::cache::QueryCache;
 use crate::error::{LspError, LspResult};
 use crate::index::SymbolIndex;
@@ -12,7 +13,7 @@ use crate::watcher::{FileWatcher, GraphUpdater};
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use codegraph_parser_api::FileInfo;
 use dashmap::DashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
@@ -50,6 +51,9 @@ pub struct CodeGraphBackend {
 
     /// File system watcher for incremental updates.
     file_watcher: Arc<Mutex<Option<FileWatcher>>>,
+
+    /// Branch watcher for detecting git branch switches.
+    branch_watcher: Arc<Mutex<Option<BranchWatcher>>>,
 }
 
 impl CodeGraphBackend {
@@ -70,6 +74,7 @@ impl CodeGraphBackend {
             memory_manager: Arc::new(MemoryManager::new(None)),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             file_watcher: Arc::new(Mutex::new(None)),
+            branch_watcher: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -94,6 +99,7 @@ impl CodeGraphBackend {
             memory_manager: Arc::new(MemoryManager::new(None)),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             file_watcher: Arc::new(Mutex::new(None)),
+            branch_watcher: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -134,6 +140,35 @@ impl CodeGraphBackend {
                     .log_message(
                         MessageType::ERROR,
                         format!("Failed to create file watcher: {e}"),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Start the branch watcher for git-aware re-indexing on branch switches.
+    pub async fn start_branch_watcher(&self, workspace_root: &Path) {
+        match BranchWatcher::new(
+            Arc::clone(&self.graph),
+            Arc::clone(&self.parsers),
+            Arc::clone(&self.symbol_index),
+            Arc::clone(&self.query_engine),
+            Arc::clone(&self.query_cache),
+            self.client.clone(),
+            Arc::clone(&self.memory_manager),
+            workspace_root.to_path_buf(),
+        ) {
+            Ok(watcher) => {
+                *self.branch_watcher.lock().await = Some(watcher);
+                self.client
+                    .log_message(MessageType::INFO, "Branch watcher started")
+                    .await;
+            }
+            Err(e) => {
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to start branch watcher: {e}"),
                     )
                     .await;
             }
@@ -827,6 +862,11 @@ impl LanguageServer for CodeGraphBackend {
         // Start file watcher for incremental updates
         if !folders.is_empty() {
             self.start_file_watcher(&folders).await;
+        }
+
+        // Start branch watcher for git-aware re-indexing on branch switches
+        if let Some(first_folder) = folders.first() {
+            self.start_branch_watcher(first_folder).await;
         }
     }
 

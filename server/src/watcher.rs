@@ -237,7 +237,7 @@ impl FileWatcher {
     }
 
     /// Collect all node IDs for a file (for memory invalidation).
-    fn collect_file_node_ids(graph: &CodeGraph, path: &Path) -> Vec<String> {
+    pub(crate) fn collect_file_node_ids(graph: &CodeGraph, path: &Path) -> Vec<String> {
         let path_str = path.to_string_lossy().to_string();
         if let Ok(nodes) = graph.query().property("path", path_str).execute() {
             nodes.iter().map(|n| n.to_string()).collect()
@@ -247,7 +247,7 @@ impl FileWatcher {
     }
 
     /// Remove all nodes associated with a file from the graph.
-    fn remove_file_nodes(
+    pub(crate) fn remove_file_nodes(
         graph: &mut CodeGraph,
         path: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

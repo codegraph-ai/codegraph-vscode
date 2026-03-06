@@ -11,6 +11,7 @@
 
 pub mod ai_query;
 pub mod backend;
+pub mod branch_watcher;
 pub mod cache;
 pub mod custom_requests;
 pub mod error;
