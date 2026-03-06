@@ -497,6 +497,43 @@
                 }
             },
             {
+                "name": "codegraph_get_edit_context",
+                "displayName": "Get Edit Context",
+                "description": "Assembles everything needed to edit code at a specific location in one call",
+                "modelDescription": "Assembles everything needed to edit code at a specific location in a single call. USE WHEN: you are about to modify, refactor, or fix code and need full context before making changes. PREFER THIS over codegraph_get_ai_context when you are about to write or modify code — it includes callers (impact), tests (what to update), and git history (recent context) that get_ai_context does not. Use get_ai_context instead when you only need to understand or explain code. RETURNS 5 sections: (1) symbol — full source code of the function/method, (2) callers — functions that call this symbol (to assess impact), (3) tests — related test functions (to know what to update/run), (4) memories — relevant debug notes and architectural decisions, (5) recentChanges — recent git commits touching this file. EXAMPLE: Before modifying a function's signature, call this to see all callers that would break, tests that need updating, and whether someone recently changed this code.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "edit_context",
+                "userDescription": "Gets comprehensive context for editing code: source, callers, tests, memories, and git history",
+                "tags": [
+                    "code-analysis",
+                    "editing",
+                    "context",
+                    "primary-tool"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "uri": {
+                            "type": "string",
+                            "description": "The file URI of the code being edited"
+                        },
+                        "line": {
+                            "type": "number",
+                            "description": "Line number being edited (0-indexed)"
+                        },
+                        "maxTokens": {
+                            "type": "number",
+                            "description": "Maximum tokens of context to return",
+                            "default": 8000
+                        }
+                    },
+                    "required": [
+                        "uri",
+                        "line"
+                    ]
+                }
+            },
+            {
                 "name": "codegraph_find_related_tests",
                 "displayName": "Find Related Tests",
                 "description": "Find test files and test functions related to a code location",

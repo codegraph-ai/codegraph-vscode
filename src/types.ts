@@ -128,6 +128,25 @@ export interface AIContextResponse {
     };
 }
 
+export interface EditContextResponse {
+    symbol: {
+        name: string;
+        type: string;
+        code: string;
+        language: string;
+        location: { uri: string; range: { start: Position; end: Position } };
+    };
+    callers: Array<{ name: string; code?: string; file: string; line: number }>;
+    tests: Array<{ name: string; relationship: string; code?: string }>;
+    memories: Array<{ id: string; title: string; content: string; kind: string }>;
+    recentChanges: Array<{ hash: string; subject: string; author: string; date: string }>;
+    metadata: {
+        totalTokens: number;
+        maxTokens: number;
+        queryTime: number;
+    };
+}
+
 // ==========================================
 // Impact Analysis Types
 // ==========================================

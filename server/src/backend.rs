@@ -738,6 +738,7 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.getParserMetrics".to_string(),
                         "codegraph.reindexWorkspace".to_string(),
                         "codegraph.getAIContext".to_string(),
+                        "codegraph.getEditContext".to_string(),
                         "codegraph.findRelatedTests".to_string(),
                         "codegraph.getNodeLocation".to_string(),
                         "codegraph.getWorkspaceSymbols".to_string(),
@@ -1421,6 +1422,16 @@ impl LanguageServer for CodeGraphBackend {
                     })?;
                 let response = self.handle_get_ai_context(params).await?;
                 Ok(Some(serde_json::to_value(response).unwrap()))
+            }
+
+            "codegraph.getEditContext" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let edit_params: serde_json::Value = serde_json::from_value(args.clone())
+                    .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+                let response = self.handle_get_edit_context(edit_params).await?;
+                Ok(Some(response))
             }
 
             "codegraph.findRelatedTests" => {
@@ -2703,6 +2714,316 @@ impl CodeGraphBackend {
             "commitsSkipped": result.commits_skipped,
             "memoryIds": result.memory_ids,
             "warnings": result.warnings
+        }))
+    }
+
+    /// Read source code for a graph node by extracting its file path and line range.
+    async fn get_source_for_node(&self, node_id: NodeId) -> Option<String> {
+        let (path, start_line, end_line) = {
+            let graph = self.graph.read().await;
+            let node = graph.get_node(node_id).ok()?;
+            let path = node.properties.get_string("path")?.to_string();
+            let start_line =
+                node.properties
+                    .get_int("line_start")
+                    .or_else(|| node.properties.get_int("start_line"))? as usize;
+            let end_line =
+                node.properties
+                    .get_int("line_end")
+                    .or_else(|| node.properties.get_int("end_line"))? as usize;
+            (path, start_line, end_line)
+        };
+        let content = std::fs::read_to_string(&path).ok()?;
+        let lines: Vec<&str> = content.lines().collect();
+        if start_line > 0 && end_line <= lines.len() {
+            Some(lines[start_line - 1..end_line].join("\n"))
+        } else {
+            None
+        }
+    }
+
+    /// Handle get_edit_context LSP request by forwarding to MCP-style composition.
+    ///
+    /// Params: `{ uri: string, line: number, maxTokens?: number }`
+    pub async fn handle_get_edit_context(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let uri = params
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Missing 'uri' parameter"))?;
+        let line = params
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Missing 'line' parameter"))?;
+        let max_tokens = params
+            .get("maxTokens")
+            .or_else(|| params.get("max_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(8000);
+
+        let start_time = std::time::Instant::now();
+
+        // Resolve target symbol
+        let url = tower_lsp::lsp_types::Url::parse(uri)
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid URI"))?;
+        let file_path = url
+            .to_file_path()
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
+        let path_str = file_path.to_string_lossy().to_string();
+
+        // Find symbol at line
+        let (target, name, node_type, language, line_start, line_end) = {
+            let graph = self.graph.read().await;
+            let nodes = graph
+                .query()
+                .property("path", path_str.clone())
+                .execute()
+                .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+
+            // Exact match first, then nearest
+            let mut found = None;
+            for &nid in &nodes {
+                if let Ok(node) = graph.get_node(nid) {
+                    let start = node
+                        .properties
+                        .get_int("line_start")
+                        .or_else(|| node.properties.get_int("start_line"))
+                        .unwrap_or(0) as u32;
+                    let end = node
+                        .properties
+                        .get_int("line_end")
+                        .or_else(|| node.properties.get_int("end_line"))
+                        .unwrap_or(start as i64) as u32;
+                    if line >= start && line <= end {
+                        found = Some(nid);
+                        break;
+                    }
+                }
+            }
+            // Fallback: nearest
+            if found.is_none() {
+                let mut best: Option<(NodeId, i64)> = None;
+                for &nid in &nodes {
+                    if let Ok(node) = graph.get_node(nid) {
+                        let start = node
+                            .properties
+                            .get_int("line_start")
+                            .or_else(|| node.properties.get_int("start_line"))
+                            .unwrap_or(0);
+                        let end = node
+                            .properties
+                            .get_int("line_end")
+                            .or_else(|| node.properties.get_int("end_line"))
+                            .unwrap_or(start);
+                        let dist = if start > line as i64 {
+                            start - line as i64
+                        } else {
+                            (line as i64 - end) + 1000
+                        };
+                        if best.is_none() || dist < best.unwrap().1 {
+                            best = Some((nid, dist));
+                        }
+                    }
+                }
+                found = best.map(|(id, _)| id);
+            }
+
+            let target = found.ok_or_else(|| {
+                tower_lsp::jsonrpc::Error::invalid_params("No symbols found at this location")
+            })?;
+
+            let node = graph
+                .get_node(target)
+                .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+            let name = node
+                .properties
+                .get_string("name")
+                .unwrap_or_default()
+                .to_string();
+            let node_type = format!("{:?}", node.node_type).to_lowercase();
+            let language = node
+                .properties
+                .get_string("language")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    std::path::Path::new(&path_str)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            let line_start = node
+                .properties
+                .get_int("line_start")
+                .or_else(|| node.properties.get_int("start_line"))
+                .unwrap_or(0);
+            let line_end = node
+                .properties
+                .get_int("line_end")
+                .or_else(|| node.properties.get_int("end_line"))
+                .unwrap_or(line_start);
+            (target, name, node_type, language, line_start, line_end)
+        };
+
+        // Section 1: Symbol source code
+        let source_code = self.get_source_for_node(target).await.unwrap_or_default();
+        let source_tokens = source_code.len() / 4;
+        let mut budget_remaining = max_tokens.saturating_sub(source_tokens);
+
+        let symbol = serde_json::json!({
+            "name": name,
+            "type": node_type,
+            "code": source_code,
+            "language": language,
+            "location": {
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_start, "character": 0 },
+                    "end": { "line": line_end, "character": 0 },
+                }
+            }
+        });
+
+        // Section 2: Callers
+        let caller_budget = max_tokens / 4;
+        let callers = self.query_engine.get_callers(target, 1).await;
+        let mut caller_tokens_used = 0usize;
+        let mut callers_json = Vec::new();
+        for caller in callers.iter().take(10) {
+            if caller_tokens_used >= caller_budget {
+                break;
+            }
+            let code = self.get_source_for_node(caller.node_id).await;
+            let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
+            caller_tokens_used += code_tokens;
+            callers_json.push(serde_json::json!({
+                "name": caller.symbol.name,
+                "code": code,
+                "file": caller.symbol.location.file,
+                "line": caller.symbol.location.line,
+            }));
+        }
+        budget_remaining = budget_remaining.saturating_sub(caller_tokens_used);
+
+        // Section 3: Related tests (compact — names only)
+        let mut tests_json = Vec::new();
+        {
+            let entry_types = vec![crate::ai_query::EntryType::TestEntry];
+            let tests = self.query_engine.find_entry_points(&entry_types).await;
+            let mut seen = std::collections::HashSet::new();
+            seen.insert(target);
+            for test in tests.iter().take(20) {
+                if tests_json.len() >= 5 {
+                    break;
+                }
+                let callees = self.query_engine.get_callees(test.node_id, 3).await;
+                if callees.iter().any(|c| c.node_id == target) && seen.insert(test.node_id) {
+                    tests_json.push(serde_json::json!({
+                        "name": test.symbol.name,
+                        "relationship": "calls_target",
+                    }));
+                }
+            }
+        }
+
+        // Section 4: Memories
+        let memories_json = {
+            let config = crate::memory::SearchConfig {
+                limit: 5,
+                current_only: true,
+                ..Default::default()
+            };
+            match self.memory_manager.search(&path_str, &config, &[]).await {
+                Ok(results) => {
+                    let memory_budget = max_tokens * 15 / 100;
+                    let mut mem_tokens = 0usize;
+                    let mut seen_titles = std::collections::HashSet::new();
+                    let mut mem_list = Vec::new();
+                    for r in &results {
+                        if mem_tokens >= memory_budget {
+                            break;
+                        }
+                        if !seen_titles.insert(r.memory.title.clone()) {
+                            continue;
+                        }
+                        let content_tokens = r.memory.content.len() / 4;
+                        mem_tokens += content_tokens;
+                        budget_remaining = budget_remaining.saturating_sub(content_tokens);
+                        mem_list.push(serde_json::json!({
+                            "id": r.memory.id,
+                            "title": r.memory.title,
+                            "content": r.memory.content,
+                            "kind": r.memory.kind.discriminant_name(),
+                        }));
+                    }
+                    mem_list
+                }
+                Err(_) => Vec::new(),
+            }
+        };
+
+        // Section 5: Recent git changes
+        let git_json = {
+            let workspace = self.workspace_folders.read().await;
+            let ws = workspace.first().cloned();
+            drop(workspace);
+            let file_path_clone = path_str.clone();
+            match ws {
+                Some(ws_path) => tokio::task::spawn_blocking(move || {
+                    let executor = crate::git_mining::GitExecutor::new(&ws_path).ok()?;
+                    let log_output = executor
+                        .log(
+                            "%H%x00%s%x00%an%x00%ai",
+                            Some(10),
+                            Some(std::path::Path::new(&file_path_clone)),
+                        )
+                        .ok()?;
+                    let commits: Vec<serde_json::Value> = log_output
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .take(5)
+                        .filter_map(|line| {
+                            let parts: Vec<&str> = line.split('\0').collect();
+                            if parts.len() >= 4 {
+                                Some(serde_json::json!({
+                                    "hash": &parts[0][..8.min(parts[0].len())],
+                                    "subject": parts[1],
+                                    "author": parts[2],
+                                    "date": parts[3],
+                                }))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    Some(commits)
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+
+        let query_time = start_time.elapsed().as_millis() as u64;
+        let total_tokens = max_tokens.saturating_sub(budget_remaining);
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "callers": callers_json,
+            "tests": tests_json,
+            "memories": memories_json,
+            "recentChanges": git_json,
+            "metadata": {
+                "totalTokens": total_tokens,
+                "maxTokens": max_tokens,
+                "queryTime": query_time,
+            }
         }))
     }
 }

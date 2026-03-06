@@ -8,11 +8,12 @@ use std::collections::HashMap;
 /// Get all available CodeGraph tools
 pub fn get_all_tools() -> Vec<Tool> {
     vec![
-        // Analysis Tools (9)
+        // Analysis Tools (10)
         get_dependency_graph_tool(),
         get_call_graph_tool(),
         analyze_impact_tool(),
         get_ai_context_tool(),
+        get_edit_context_tool(),
         find_related_tests_tool(),
         get_symbol_info_tool(),
         analyze_complexity_tool(),
@@ -256,6 +257,35 @@ fn get_ai_context_tool() -> Tool {
     Tool {
         name: "codegraph_get_ai_context".to_string(),
         description: Some("Gathers comprehensive code context optimized for AI understanding. USE WHEN: explaining code, planning modifications, debugging issues, or writing tests. THIS IS YOUR PRIMARY TOOL for understanding unfamiliar code. Returns: primaryContext (full source code, language, location), relatedSymbols (with source code, relationship type, relevance scores), dependencies (imports), usageExamples (callers with descriptions), and architecture (module name, detected layer, neighbor modules). Intent controls which related symbols are prioritized: 'explain' returns dependencies + callers, 'modify' returns tests + callers, 'debug' traces the call chain to entry point, 'test' returns example tests + mockable dependencies. maxTokens controls how many related symbols fit — primary source is always included.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: Some(vec!["uri".to_string(), "line".to_string()]),
+        },
+    }
+}
+
+fn get_edit_context_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "uri".to_string(),
+        string_prop("The file URI of the code being edited"),
+    );
+    properties.insert(
+        "line".to_string(),
+        number_prop("Line number being edited (0-indexed)", None),
+    );
+    properties.insert(
+        "maxTokens".to_string(),
+        number_prop(
+            "Maximum tokens of context to return (default: 8000)",
+            Some(8000.0),
+        ),
+    );
+
+    Tool {
+        name: "codegraph_get_edit_context".to_string(),
+        description: Some("Assembles everything needed to edit code at a specific location in a single call. USE WHEN: you are about to modify, refactor, or fix code and need full context before making changes. PREFER THIS over codegraph_get_ai_context when you are about to write or modify code — it includes callers (impact), tests (what to update), and git history (recent context) that get_ai_context does not. Use get_ai_context instead when you only need to understand or explain code. Returns 5 sections: (1) symbol — full source code of the function/method at the given line, (2) callers — functions that call this symbol (to assess impact of changes), (3) tests — related test functions (to know what to update/run), (4) memories — relevant debug notes, architectural decisions, and known issues, (5) recentChanges — recent git commits that touched this file. EXAMPLE: Before modifying a function's signature, call this to see all callers that would break, tests that need updating, and whether someone recently changed this code. Token budget controls total context size with priority: symbol > callers > tests > memories > git history.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -1059,8 +1089,8 @@ mod tests {
     #[test]
     fn test_get_all_tools_count() {
         let tools = get_all_tools();
-        // Analysis: 9, Search: 5, Navigation: 3, Memory: 9, Admin: 1 = 27 tools
-        assert_eq!(tools.len(), 27, "Expected 27 tools, got {}", tools.len());
+        // Analysis: 10, Search: 5, Navigation: 3, Memory: 9, Admin: 1 = 28 tools
+        assert_eq!(tools.len(), 28, "Expected 28 tools, got {}", tools.len());
     }
 
     #[test]

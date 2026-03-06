@@ -7,7 +7,7 @@ use super::resources::get_all_resources;
 use super::tools::get_all_tools;
 use super::transport::AsyncStdioTransport;
 use crate::ai_query::QueryEngine;
-use crate::git_mining::{GitMiner, MiningConfig};
+use crate::git_mining::{GitExecutor, GitMiner, MiningConfig};
 use crate::memory::MemoryManager;
 use crate::parser_registry::ParserRegistry;
 use codegraph::CodeGraph;
@@ -1333,6 +1333,27 @@ impl McpServer {
                 Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
             }
 
+            "codegraph_get_edit_context" => {
+                let uri = args
+                    .get("uri")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'uri' parameter")?;
+                let line = args
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .ok_or("Missing 'line' parameter")?;
+                let max_tokens = args
+                    .get("maxTokens")
+                    .or_else(|| args.get("max_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(8000);
+
+                let result = self.get_edit_context(uri, line, max_tokens).await;
+                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+            }
+
             "codegraph_find_related_tests" => {
                 let uri = args
                     .get("uri")
@@ -2507,6 +2528,325 @@ impl McpServer {
         });
 
         // Add fallback metadata if used
+        if used_fallback {
+            if let Some(obj) = response.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+                obj.insert("usedFallback".to_string(), serde_json::json!(true));
+                obj.insert(
+                    "fallbackMessage".to_string(),
+                    serde_json::json!(format!(
+                        "No symbol at line {}. Using nearest symbol '{}' instead.",
+                        line, name
+                    )),
+                );
+            }
+        }
+
+        response
+    }
+
+    /// Assemble comprehensive edit context for a file + line in a single call.
+    ///
+    /// Composes: symbol source, callers, tests, memories, and recent git changes.
+    /// Token budget is allocated with priority: symbol > callers > tests > memories > git.
+    async fn get_edit_context(&self, uri: &str, line: u32, max_tokens: usize) -> serde_json::Value {
+        let start_time = std::time::Instant::now();
+
+        // --- Resolve target symbol ---
+        let (target, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
+            Some(result) => result,
+            None => {
+                return serde_json::json!({
+                    "error": "No symbols found at this location. Try indexing the workspace first.",
+                    "uri": uri,
+                    "line": line
+                });
+            }
+        };
+
+        // Extract symbol metadata
+        let (name, node_type, language, path, line_start, line_end) = {
+            let graph = self.backend.graph.read().await;
+            let node = match graph.get_node(target) {
+                Ok(n) => n,
+                Err(_) => return serde_json::json!({ "error": "Could not load node" }),
+            };
+            let name = node
+                .properties
+                .get_string("name")
+                .unwrap_or_default()
+                .to_string();
+            let node_type = format!("{:?}", node.node_type).to_lowercase();
+            let language = node
+                .properties
+                .get_string("language")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    node.properties
+                        .get_string("path")
+                        .and_then(|p| {
+                            std::path::Path::new(p)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|e| e.to_string())
+                        })
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            let path = node
+                .properties
+                .get_string("path")
+                .unwrap_or_default()
+                .to_string();
+            let line_start = node
+                .properties
+                .get_int("line_start")
+                .or_else(|| node.properties.get_int("start_line"))
+                .unwrap_or(0);
+            let line_end = node
+                .properties
+                .get_int("line_end")
+                .or_else(|| node.properties.get_int("end_line"))
+                .unwrap_or(line_start);
+            (name, node_type, language, path, line_start, line_end)
+        };
+
+        // --- Section 1: Symbol source code (budget: up to 30%) ---
+        let source_code = self
+            .get_symbol_source(target)
+            .await
+            .unwrap_or_else(|| "<source not available>".to_string());
+        let source_tokens = source_code.len() / 4;
+        let mut budget_remaining = max_tokens.saturating_sub(source_tokens);
+
+        let symbol = serde_json::json!({
+            "name": name,
+            "type": node_type,
+            "code": source_code,
+            "language": language,
+            "location": {
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_start, "character": 0 },
+                    "end": { "line": line_end, "character": 0 },
+                }
+            }
+        });
+
+        // --- Section 2: Callers (budget: up to 25% of original) ---
+        let caller_budget = max_tokens / 4;
+        let callers_json = {
+            let callers = self.backend.query_engine.get_callers(target, 1).await;
+            let mut caller_tokens_used = 0usize;
+            let mut caller_list = Vec::new();
+
+            for caller in callers.iter().take(10) {
+                if caller_tokens_used >= caller_budget {
+                    break;
+                }
+                let code = self.get_symbol_source(caller.node_id).await;
+                let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
+                caller_tokens_used += code_tokens;
+
+                caller_list.push(serde_json::json!({
+                    "name": caller.symbol.name,
+                    "code": code,
+                    "file": caller.symbol.location.file,
+                    "line": caller.symbol.location.line,
+                }));
+            }
+            budget_remaining = budget_remaining.saturating_sub(caller_tokens_used);
+            caller_list
+        };
+
+        // --- Section 3: Related tests (budget: up to 20% of original) ---
+        let test_budget = max_tokens / 5;
+        let tests_json = {
+            let mut test_list = Vec::new();
+            let mut test_tokens_used = 0usize;
+            let mut seen_ids = std::collections::HashSet::<codegraph::NodeId>::new();
+            seen_ids.insert(target);
+
+            // Stage 1: Tests that call target
+            let entry_types = vec![crate::ai_query::EntryType::TestEntry];
+            let tests = self
+                .backend
+                .query_engine
+                .find_entry_points(&entry_types)
+                .await;
+
+            for test in tests.iter().take(20) {
+                if test_list.len() >= 5 || test_tokens_used >= test_budget {
+                    break;
+                }
+                let callees = self.backend.query_engine.get_callees(test.node_id, 3).await;
+                if callees.iter().any(|c| c.node_id == target) && seen_ids.insert(test.node_id) {
+                    let code = self.get_symbol_source(test.node_id).await;
+                    let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
+                    test_tokens_used += code_tokens;
+
+                    test_list.push(serde_json::json!({
+                        "name": test.symbol.name,
+                        "relationship": "calls_target",
+                        "code": code,
+                    }));
+                }
+            }
+
+            // Stage 2: Same-file test functions (if room)
+            if test_list.len() < 5 {
+                let graph = self.backend.graph.read().await;
+                if let Ok(file_nodes) = graph.query().property("path", path.clone()).execute() {
+                    for node_id in file_nodes {
+                        if test_list.len() >= 5 || test_tokens_used >= test_budget {
+                            break;
+                        }
+                        if !seen_ids.insert(node_id) {
+                            continue;
+                        }
+                        if let Ok(node) = graph.get_node(node_id) {
+                            if node.node_type == codegraph::NodeType::Function
+                                && Self::is_mcp_test_node(node)
+                            {
+                                let test_name =
+                                    node.properties.get_string("name").unwrap_or("").to_string();
+                                // Don't fetch code for same-file tests (already visible)
+                                test_list.push(serde_json::json!({
+                                    "name": test_name,
+                                    "relationship": "same_file",
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+
+            budget_remaining = budget_remaining.saturating_sub(test_tokens_used);
+            test_list
+        };
+
+        // --- Section 4: Memories (budget: up to 15% of original) ---
+        let memories_json = {
+            let url = tower_lsp::lsp_types::Url::parse(uri).ok();
+            let file_path = url.and_then(|u| u.to_file_path().ok());
+            let search_query = file_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| name.clone());
+
+            let config = crate::memory::SearchConfig {
+                limit: 5,
+                current_only: true,
+                ..Default::default()
+            };
+
+            match self
+                .backend
+                .memory_manager
+                .search(&search_query, &config, &[])
+                .await
+            {
+                Ok(results) => {
+                    let memory_budget = max_tokens * 15 / 100;
+                    let mut mem_tokens_used = 0usize;
+                    let mut mem_list = Vec::new();
+
+                    let mut seen_titles = std::collections::HashSet::new();
+                    for r in &results {
+                        if mem_tokens_used >= memory_budget {
+                            break;
+                        }
+                        if !seen_titles.insert(r.memory.title.clone()) {
+                            continue;
+                        }
+                        let content_tokens = r.memory.content.len() / 4;
+                        mem_tokens_used += content_tokens;
+
+                        mem_list.push(serde_json::json!({
+                            "id": r.memory.id,
+                            "title": r.memory.title,
+                            "content": r.memory.content,
+                            "kind": r.memory.kind.discriminant_name(),
+                            "score": r.score,
+                        }));
+                    }
+
+                    budget_remaining = budget_remaining.saturating_sub(mem_tokens_used);
+                    mem_list
+                }
+                Err(_) => Vec::new(),
+            }
+        };
+
+        // --- Section 5: Recent git changes (budget: up to 10% of original) ---
+        let git_json = {
+            let workspace = self.backend.workspace_folders.first().cloned();
+            let file_path_clone = path.clone();
+
+            match workspace {
+                Some(ws) => {
+                    let git_result = tokio::task::spawn_blocking(move || {
+                        let executor = GitExecutor::new(&ws).ok()?;
+                        // Get recent commits touching this file (last 10)
+                        let log_output = executor
+                            .log(
+                                "%H%x00%s%x00%an%x00%ai",
+                                Some(10),
+                                Some(std::path::Path::new(&file_path_clone)),
+                            )
+                            .ok()?;
+
+                        let commits: Vec<serde_json::Value> = log_output
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .take(5)
+                            .filter_map(|line| {
+                                let parts: Vec<&str> = line.split('\0').collect();
+                                if parts.len() >= 4 {
+                                    Some(serde_json::json!({
+                                        "hash": &parts[0][..8.min(parts[0].len())],
+                                        "subject": parts[1],
+                                        "author": parts[2],
+                                        "date": parts[3],
+                                    }))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        Some(commits)
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                    git_result
+                }
+                None => Vec::new(),
+            }
+        };
+
+        let query_time = start_time.elapsed().as_millis() as u64;
+        let total_tokens = max_tokens.saturating_sub(budget_remaining);
+
+        let mut response = serde_json::json!({
+            "symbol": symbol,
+            "callers": callers_json,
+            "tests": tests_json,
+            "memories": memories_json,
+            "recentChanges": git_json,
+            "metadata": {
+                "totalTokens": total_tokens,
+                "maxTokens": max_tokens,
+                "queryTime": query_time,
+                "sections": {
+                    "symbol": !source_code.is_empty(),
+                    "callers": !callers_json.is_empty(),
+                    "tests": !tests_json.is_empty(),
+                    "memories": !memories_json.is_empty(),
+                    "recentChanges": !git_json.is_empty(),
+                }
+            }
+        });
+
         if used_fallback {
             if let Some(obj) = response.get_mut("metadata").and_then(|m| m.as_object_mut()) {
                 obj.insert("usedFallback".to_string(), serde_json::json!(true));

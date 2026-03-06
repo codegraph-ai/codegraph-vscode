@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-05 (v0.8.2, 316 tests)
+> Last updated: 2026-03-05 (v0.8.2, 316 tests, T1-1 complete)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -56,26 +56,8 @@ Adopt `StringList` / `IntList` property variants for multi-valued properties (e.
 
 Gaps identified via competitive analysis against Augment Code and Cursor. Numbered by priority tier.
 
-### T1-1. Branch-aware graph indexing
-
-**Current**: Zero branch awareness. Single `CodeGraph` instance (`Arc<RwLock<CodeGraph>>` in `backend.rs:22`) shared across all branches. File watcher (`watcher.rs`) triggers incremental updates but doesn't detect branch switches. After `git checkout feature-x`, the graph contains stale nodes from `main` until individual files happen to trigger watcher events.
-
-**Target**: Detect branch switches and incrementally re-index changed files.
-
-**Implementation approach** (extends existing incremental update in `watcher.rs:157-203`):
-1. **Detect**: Watch `.git/HEAD` (regular file, changes on branch switch) via existing `notify` watcher. Store current branch in `CodeGraphBackend`.
-2. **Diff**: On branch change, run `git diff --name-only old-branch..new-branch` to get changed file list.
-3. **Update**: For each changed file, remove old nodes + re-index (same as `handle_file_change()`). For deleted files, remove nodes (same as `handle_file_remove()`). Then `resolve_cross_file_imports()` + `build_indexes()`.
-4. **Optional**: Cache previous branch's graph snapshot for fast switch-back (serialize `CodeGraph` + `SymbolIndex` state).
-
-**Why this works**: The existing file watcher + incremental update pipeline handles single-file changes in <300ms. A branch switch typically changes 10-100 files — incremental re-index should complete in seconds, far faster than Cursor's 10-minute Merkle polling. Augment has real-time per-user branch switching.
-
-**Considerations**:
-- Memory scoping: should memories be branch-specific? Probably not — architectural knowledge transcends branches. But git-mined memories could note the branch.
-- Stash/rebase: `.git/HEAD` also changes during rebase. The diff-based approach handles this correctly since it compares actual file state.
-- Detached HEAD: `git rev-parse --abbrev-ref HEAD` returns `HEAD` — fall back to full re-index.
-
-**Effort**: Medium — most infrastructure exists. Main work is `.git/HEAD` watching + diff-based batch update.
+### ~~T1-1. Branch-aware graph indexing~~
+~~Fixed (c371f1f). Watches `.git/HEAD` for branch switches with 2s debounce, diffs changed files via `git diff --name-status`, and batch re-indexes only what changed. Handles worktrees, detached HEAD, interactive rebase. New module `branch_watcher.rs` (~300 lines), 4 new `GitExecutor` methods, integrated into `CodeGraphBackend::initialized()`.~~
 
 ### T1-2. Configurable embedding model + semantic symbol search
 
@@ -189,6 +171,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Branch-aware graph indexing (T1-1)~~ (c371f1f) — Watches `.git/HEAD` for branch switches (2s debounce), diffs via `git diff --name-status old..new`, batch re-indexes changed files. Handles worktrees, detached HEAD, interactive rebase. New `branch_watcher.rs` module, 4 new `GitExecutor` methods, `pub(crate)` on FileWatcher helpers.
 - ~~Fix TS private method visibility indexing (#14)~~ (20ea74a) — TypeScript mapper was the only one not transferring visibility to graph properties. Added `.with("visibility", ...)` for functions, classes, interfaces. Integration test for private/protected/public.
 - ~~Expose visibility string property in get_symbol_info (#24)~~ (5f4752f) — MCP handler now reads visibility string and exposes it. `is_public` fallback derives from visibility string when booleans absent.
 - ~~Expose ComplexityMetrics in MCP response (#3)~~ (792f40e) — MCP `analyze_complexity` now returns full breakdown (exception_handlers, early_returns, lines_of_code), line range, overall_grade, and recommendations. Parity with LSP handler.

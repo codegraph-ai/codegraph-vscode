@@ -5,6 +5,7 @@ import {
     CallGraphResponse,
     ImpactAnalysisResponse,
     AIContextResponse,
+    EditContextResponse,
     RelatedTestsResponse,
     ComplexityResponse,
     UnusedCodeResponse,
@@ -336,7 +337,41 @@ export class CodeGraphToolManager {
             })
         );
 
-        // Tool 5: Find Related Tests
+        // Tool 5: Get Edit Context
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_get_edit_context', {
+                invoke: async (options, token) => {
+                    const input = options.input as { uri: string; line: number; maxTokens?: number };
+                    const { uri, line, maxTokens = 8000 } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<EditContextResponse>(
+                            'codegraph.getEditContext',
+                            { uri, line, maxTokens },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatEditContext(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'edit context', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri: string; line: number };
+                    const { uri, line } = input;
+                    const fileName = vscode.Uri.parse(uri).path.split('/').pop();
+
+                    return {
+                        invocationMessage: `Assembling edit context for ${fileName}:${line + 1}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 6: Find Related Tests
         this.disposables.push(
             vscode.lm.registerTool('codegraph_find_related_tests', {
                 invoke: async (options, token) => {
@@ -1474,6 +1509,64 @@ export class CodeGraphToolManager {
     /**
      * Format AI context for AI consumption
      */
+    private formatEditContext(response: EditContextResponse): string {
+        let output = '# Edit Context\n\n';
+
+        // Symbol
+        output += `## Symbol: ${response.symbol.name} (${response.symbol.type})\n`;
+        output += `Language: ${response.symbol.language}\n\n`;
+        output += '```' + response.symbol.language + '\n';
+        output += response.symbol.code + '\n';
+        output += '```\n\n';
+
+        // Callers
+        if (response.callers.length > 0) {
+            output += `## Callers (${response.callers.length})\n\n`;
+            for (const caller of response.callers) {
+                output += `### ${caller.name}\n`;
+                output += `${caller.file}:${caller.line}\n`;
+                if (caller.code) {
+                    output += '```\n' + caller.code + '\n```\n';
+                }
+                output += '\n';
+            }
+        }
+
+        // Tests
+        if (response.tests.length > 0) {
+            output += `## Related Tests (${response.tests.length})\n\n`;
+            for (const test of response.tests) {
+                output += `- **${test.name}** (${test.relationship})`;
+                if (test.code) {
+                    output += '\n```\n' + test.code + '\n```';
+                }
+                output += '\n';
+            }
+            output += '\n';
+        }
+
+        // Memories
+        if (response.memories.length > 0) {
+            output += `## Relevant Memories (${response.memories.length})\n\n`;
+            for (const mem of response.memories) {
+                output += `### [${mem.kind}] ${mem.title}\n`;
+                output += mem.content + '\n\n';
+            }
+        }
+
+        // Recent changes
+        if (response.recentChanges.length > 0) {
+            output += `## Recent Changes\n\n`;
+            for (const commit of response.recentChanges) {
+                output += `- \`${commit.hash}\` ${commit.subject} (${commit.author}, ${commit.date})\n`;
+            }
+            output += '\n';
+        }
+
+        output += `_${response.metadata.totalTokens} tokens, ${response.metadata.queryTime}ms_\n`;
+        return output;
+    }
+
     private formatAIContext(response: AIContextResponse): string {
         let output = '# Code Context\n\n';
 
