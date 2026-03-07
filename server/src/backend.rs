@@ -739,6 +739,7 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.reindexWorkspace".to_string(),
                         "codegraph.getAIContext".to_string(),
                         "codegraph.getEditContext".to_string(),
+                        "codegraph.getCuratedContext".to_string(),
                         "codegraph.findRelatedTests".to_string(),
                         "codegraph.getNodeLocation".to_string(),
                         "codegraph.getWorkspaceSymbols".to_string(),
@@ -766,6 +767,7 @@ impl LanguageServer for CodeGraphBackend {
                         // Git mining commands
                         "codegraph.mineGitHistory".to_string(),
                         "codegraph.mineGitHistoryForFile".to_string(),
+                        "codegraph.searchGitHistory".to_string(),
                     ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
@@ -1434,6 +1436,16 @@ impl LanguageServer for CodeGraphBackend {
                 Ok(Some(response))
             }
 
+            "codegraph.getCuratedContext" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let curated_params: serde_json::Value = serde_json::from_value(args.clone())
+                    .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+                let response = self.handle_get_curated_context(curated_params).await?;
+                Ok(Some(response))
+            }
+
             "codegraph.findRelatedTests" => {
                 let args = params.arguments.first().ok_or_else(|| {
                     tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
@@ -1713,6 +1725,16 @@ impl LanguageServer for CodeGraphBackend {
                 let file_params: serde_json::Value = serde_json::from_value(args.clone())
                     .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
                 let response = self.handle_mine_git_history_for_file(file_params).await?;
+                Ok(Some(response))
+            }
+
+            "codegraph.searchGitHistory" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let search_params: serde_json::Value = serde_json::from_value(args.clone())
+                    .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+                let response = self.handle_search_git_history(search_params).await?;
                 Ok(Some(response))
             }
 
@@ -3022,6 +3044,326 @@ impl CodeGraphBackend {
             "metadata": {
                 "totalTokens": total_tokens,
                 "maxTokens": max_tokens,
+                "queryTime": query_time,
+            }
+        }))
+    }
+
+    /// Handle get_curated_context LSP request.
+    ///
+    /// Params: `{ query: string, uri?: string, maxTokens?: number, maxSymbols?: number }`
+    pub async fn handle_get_curated_context(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let query = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                tower_lsp::jsonrpc::Error::invalid_params("Missing 'query' parameter")
+            })?;
+        let anchor_uri = params.get("uri").and_then(|v| v.as_str());
+        let max_tokens = params
+            .get("maxTokens")
+            .or_else(|| params.get("max_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(8000);
+        let max_symbols = params
+            .get("maxSymbols")
+            .or_else(|| params.get("max_symbols"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(5);
+
+        let start_time = std::time::Instant::now();
+        let mut budget_remaining = max_tokens;
+
+        // Step 1: Search for relevant symbols
+        let options = crate::ai_query::SearchOptions {
+            limit: max_symbols * 3,
+            include_private: true,
+            compact: false,
+            ..Default::default()
+        };
+        let search_result = self.query_engine.symbol_search(query, &options).await;
+
+        // Resolve anchor path for prioritization
+        let anchor_path: Option<String> = anchor_uri.and_then(|uri| {
+            tower_lsp::lsp_types::Url::parse(uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok())
+                .map(|p| p.to_string_lossy().to_string())
+        });
+
+        let mut matches = search_result.results;
+        if let Some(ref anchor) = anchor_path {
+            matches.sort_by(|a, b| {
+                let a_anchor = a.symbol.location.file == *anchor;
+                let b_anchor = b.symbol.location.file == *anchor;
+                b_anchor.cmp(&a_anchor).then(b.score.total_cmp(&a.score))
+            });
+        }
+        let top_matches: Vec<_> = matches.into_iter().take(max_symbols).collect();
+
+        if top_matches.is_empty() {
+            return Ok(serde_json::json!({
+                "error": format!("No symbols found matching '{}'", query),
+                "query": query,
+            }));
+        }
+
+        // Step 2: Resolve full source
+        let symbol_budget = max_tokens * 40 / 100;
+        let mut symbols_json = Vec::new();
+        let mut primary_files = std::collections::HashSet::new();
+        let mut symbols_tokens = 0usize;
+
+        for m in &top_matches {
+            if symbols_tokens >= symbol_budget {
+                break;
+            }
+            let code = self.get_source_for_node(m.node_id).await;
+            let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
+            symbols_tokens += code_tokens;
+            primary_files.insert(m.symbol.location.file.clone());
+
+            symbols_json.push(serde_json::json!({
+                "name": m.symbol.name,
+                "kind": m.symbol.kind,
+                "file": m.symbol.location.file,
+                "line": m.symbol.location.line,
+                "score": m.score,
+                "code": code,
+            }));
+        }
+        budget_remaining = budget_remaining.saturating_sub(symbols_tokens);
+
+        // Step 3: Expand — callers of primary symbols
+        let dep_budget = max_tokens * 25 / 100;
+        let mut deps_json = Vec::new();
+        let mut dep_tokens = 0usize;
+        let mut seen_ids = std::collections::HashSet::new();
+        for m in &top_matches {
+            seen_ids.insert(m.node_id);
+        }
+
+        for m in &top_matches {
+            if dep_tokens >= dep_budget {
+                break;
+            }
+            let callers = self.query_engine.get_callers(m.node_id, 1).await;
+            for caller in callers.iter().take(3) {
+                if dep_tokens >= dep_budget || !seen_ids.insert(caller.node_id) {
+                    continue;
+                }
+                let code = self.get_source_for_node(caller.node_id).await;
+                let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
+                if code_tokens > dep_budget / 3 {
+                    deps_json.push(serde_json::json!({
+                        "name": caller.symbol.name,
+                        "kind": caller.symbol.kind,
+                        "file": caller.symbol.location.file,
+                        "relationship": "caller",
+                    }));
+                } else {
+                    dep_tokens += code_tokens;
+                    deps_json.push(serde_json::json!({
+                        "name": caller.symbol.name,
+                        "kind": caller.symbol.kind,
+                        "file": caller.symbol.location.file,
+                        "relationship": "caller",
+                        "code": code,
+                    }));
+                }
+            }
+        }
+        budget_remaining = budget_remaining.saturating_sub(dep_tokens);
+
+        // Step 4: Memories for primary files
+        let memory_budget = max_tokens * 15 / 100;
+        let mut memories_json = Vec::new();
+        let mut mem_tokens = 0usize;
+        let mut seen_titles = std::collections::HashSet::new();
+
+        for file in primary_files.iter().take(3) {
+            if mem_tokens >= memory_budget {
+                break;
+            }
+            let config = crate::memory::SearchConfig {
+                limit: 3,
+                current_only: true,
+                ..Default::default()
+            };
+            if let Ok(results) = self.memory_manager.search(file, &config, &[]).await {
+                for r in &results {
+                    if mem_tokens >= memory_budget {
+                        break;
+                    }
+                    if !seen_titles.insert(r.memory.title.clone()) {
+                        continue;
+                    }
+                    mem_tokens += r.memory.content.len() / 4;
+                    budget_remaining = budget_remaining.saturating_sub(r.memory.content.len() / 4);
+                    memories_json.push(serde_json::json!({
+                        "title": r.memory.title,
+                        "content": r.memory.content,
+                        "kind": r.memory.kind.discriminant_name(),
+                        "relatedFile": file,
+                    }));
+                }
+            }
+        }
+
+        let query_time = start_time.elapsed().as_millis() as u64;
+        let total_tokens = max_tokens.saturating_sub(budget_remaining);
+
+        Ok(serde_json::json!({
+            "query": query,
+            "symbols": symbols_json,
+            "dependencies": deps_json,
+            "memories": memories_json,
+            "metadata": {
+                "totalTokens": total_tokens,
+                "maxTokens": max_tokens,
+                "queryTime": query_time,
+                "symbolsFound": search_result.total_matches,
+                "symbolsIncluded": symbols_json.len(),
+            }
+        }))
+    }
+
+    /// Handle search_git_history LSP request.
+    pub async fn handle_search_git_history(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let query = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                tower_lsp::jsonrpc::Error::invalid_params("Missing 'query' parameter")
+            })?;
+        let since = params.get("since").and_then(|v| v.as_str());
+        let max_results = params
+            .get("maxResults")
+            .or_else(|| params.get("max_results"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(10);
+
+        let start_time = std::time::Instant::now();
+        let mut results = Vec::new();
+        let mut seen_hashes = std::collections::HashSet::new();
+
+        // Strategy 1: Semantic search via memory embeddings
+        let config = crate::memory::SearchConfig {
+            limit: max_results,
+            current_only: false,
+            ..Default::default()
+        };
+        if let Ok(mem_results) = self.memory_manager.search(query, &config, &[]).await {
+            for r in &mem_results {
+                if let crate::memory::MemorySource::GitHistory { ref commit_hash } = r.memory.source
+                {
+                    if seen_hashes.insert(commit_hash.clone()) {
+                        results.push(serde_json::json!({
+                            "hash": &commit_hash[..8.min(commit_hash.len())],
+                            "subject": r.memory.title.trim_start_matches("[Git] "),
+                            "content": r.memory.content,
+                            "kind": r.memory.kind.discriminant_name(),
+                            "score": r.score,
+                            "source": "semantic",
+                        }));
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Keyword search via git log --grep
+        if results.len() < max_results {
+            let workspace = self.workspace_folders.read().await;
+            let ws = workspace.first().cloned();
+            drop(workspace);
+            let query_owned = query.to_string();
+            let since_owned = since.map(|s| s.to_string());
+            let remaining = max_results.saturating_sub(results.len());
+
+            if let Some(ws_path) = ws {
+                let git_results = tokio::task::spawn_blocking(move || {
+                    let executor = crate::git_mining::GitExecutor::new(&ws_path).ok()?;
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.current_dir(&ws_path);
+                    cmd.args([
+                        "log",
+                        "--format=%H%x00%s%x00%an%x00%ai",
+                        &format!("--grep={}", query_owned),
+                        "-i",
+                        &format!("-n{}", remaining * 2),
+                    ]);
+                    if let Some(ref s) = since_owned {
+                        cmd.arg(format!("--since={}", s));
+                    }
+                    cmd.arg("--");
+                    let output = cmd.output().ok()?;
+                    if !output.status.success() {
+                        return None;
+                    }
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let commits: Vec<_> = stdout
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .take(remaining)
+                        .filter_map(|line| {
+                            let parts: Vec<&str> = line.split('\0').collect();
+                            if parts.len() >= 4 {
+                                let files = executor
+                                    .show_files(parts[0])
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .take(10)
+                                    .collect::<Vec<_>>();
+                                Some((
+                                    parts[0].to_string(),
+                                    parts[1].to_string(),
+                                    parts[2].to_string(),
+                                    parts[3].to_string(),
+                                    files,
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    Some(commits)
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+
+                for (hash, subject, author, date, files) in git_results {
+                    if seen_hashes.insert(hash.clone()) {
+                        results.push(serde_json::json!({
+                            "hash": &hash[..8.min(hash.len())],
+                            "subject": subject,
+                            "author": author,
+                            "date": date,
+                            "files": files,
+                            "source": "keyword",
+                        }));
+                    }
+                }
+            }
+        }
+
+        let query_time = start_time.elapsed().as_millis() as u64;
+
+        Ok(serde_json::json!({
+            "query": query,
+            "results": results,
+            "metadata": {
+                "total": results.len(),
                 "queryTime": query_time,
             }
         }))

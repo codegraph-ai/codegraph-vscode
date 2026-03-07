@@ -8,12 +8,13 @@ use std::collections::HashMap;
 /// Get all available CodeGraph tools
 pub fn get_all_tools() -> Vec<Tool> {
     vec![
-        // Analysis Tools (10)
+        // Analysis Tools (11)
         get_dependency_graph_tool(),
         get_call_graph_tool(),
         analyze_impact_tool(),
         get_ai_context_tool(),
         get_edit_context_tool(),
+        get_curated_context_tool(),
         find_related_tests_tool(),
         get_symbol_info_tool(),
         analyze_complexity_tool(),
@@ -39,6 +40,7 @@ pub fn get_all_tools() -> Vec<Tool> {
         memory_stats_tool(),
         mine_git_history_tool(),
         mine_git_file_tool(),
+        search_git_history_tool(),
         // Admin Tools (1)
         reindex_workspace_tool(),
     ]
@@ -290,6 +292,44 @@ fn get_edit_context_tool() -> Tool {
             schema_type: "object".to_string(),
             properties: Some(properties),
             required: Some(vec!["uri".to_string(), "line".to_string()]),
+        },
+    }
+}
+
+fn get_curated_context_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "query".to_string(),
+        string_prop("Natural language description of the context needed, or a symbol/module name (e.g., 'authentication logic', 'error handling in the API layer', 'UserService')"),
+    );
+    properties.insert(
+        "uri".to_string(),
+        string_prop(
+            "Optional file URI to anchor the search — results from this file are prioritized",
+        ),
+    );
+    properties.insert(
+        "maxTokens".to_string(),
+        number_prop(
+            "Maximum tokens of context to return (default: 8000)",
+            Some(8000.0),
+        ),
+    );
+    properties.insert(
+        "maxSymbols".to_string(),
+        number_prop(
+            "Maximum number of primary symbols to include (default: 5)",
+            Some(5.0),
+        ),
+    );
+
+    Tool {
+        name: "codegraph_get_curated_context".to_string(),
+        description: Some("Discovers and assembles context across the entire codebase for a natural language query. USE WHEN: you need to understand a concept, pattern, or subsystem that spans multiple files — e.g., 'how does authentication work?', 'what handles database connections?', 'error handling patterns'. Unlike codegraph_get_ai_context (single symbol) or codegraph_get_edit_context (single location), this searches the whole codebase and curates cross-cutting context. Pipeline: (1) searches for relevant symbols matching query, (2) resolves full source code for top matches, (3) walks dependency graph to find related modules, (4) fetches relevant memories, (5) curates everything within token budget prioritized by relevance. EXAMPLE: query='authentication middleware' returns the auth middleware function source, its callers (routes using it), its dependencies (token verification, user lookup), and any architectural decisions or debug notes about auth.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: Some(vec!["query".to_string()]),
         },
     }
 }
@@ -1068,6 +1108,32 @@ fn mine_git_file_tool() -> Tool {
     }
 }
 
+fn search_git_history_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "query".to_string(),
+        string_prop("Natural language search query (e.g., 'authentication changes', 'bug fix in payment module', 'database migration')"),
+    );
+    properties.insert(
+        "since".to_string(),
+        string_prop("Optional time filter (e.g., '2 weeks ago', '2026-01-01', '3 months ago')"),
+    );
+    properties.insert(
+        "maxResults".to_string(),
+        number_prop("Maximum results to return (default: 10)", Some(10.0)),
+    );
+
+    Tool {
+        name: "codegraph_search_git_history".to_string(),
+        description: Some("Searches git commit history using both semantic matching and keyword search. USE WHEN: you need to understand what changed and why — e.g., 'what changed authentication last month?', 'when was the database schema modified?', 'who fixed the login bug?'. Combines two search strategies: (1) semantic search over git-mined memories (embedding-based, finds conceptually related commits even without keyword overlap), (2) keyword search via git log (catches commits not yet mined into memories). Results include commit hash, subject, author, date, affected files, and memory content when available. Use 'since' to scope results to a time range.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: Some(vec!["query".to_string()]),
+        },
+    }
+}
+
 // === Admin Tools ===
 
 fn reindex_workspace_tool() -> Tool {
@@ -1089,8 +1155,8 @@ mod tests {
     #[test]
     fn test_get_all_tools_count() {
         let tools = get_all_tools();
-        // Analysis: 10, Search: 5, Navigation: 3, Memory: 9, Admin: 1 = 28 tools
-        assert_eq!(tools.len(), 28, "Expected 28 tools, got {}", tools.len());
+        // Analysis: 11, Search: 5, Navigation: 3, Memory: 10, Admin: 1 = 30 tools
+        assert_eq!(tools.len(), 30, "Expected 30 tools, got {}", tools.len());
     }
 
     #[test]

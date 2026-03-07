@@ -6,6 +6,8 @@ import {
     ImpactAnalysisResponse,
     AIContextResponse,
     EditContextResponse,
+    CuratedContextResponse,
+    GitHistorySearchResponse,
     RelatedTestsResponse,
     ComplexityResponse,
     UnusedCodeResponse,
@@ -371,7 +373,38 @@ export class CodeGraphToolManager {
             })
         );
 
-        // Tool 6: Find Related Tests
+        // Tool 6: Get Curated Context
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_get_curated_context', {
+                invoke: async (options, token) => {
+                    const input = options.input as { query: string; uri?: string; maxTokens?: number; maxSymbols?: number };
+                    const { query, uri, maxTokens = 8000, maxSymbols = 5 } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<CuratedContextResponse>(
+                            'codegraph.getCuratedContext',
+                            { query, uri, maxTokens, maxSymbols },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatCuratedContext(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'curated context', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { query: string };
+                    return {
+                        invocationMessage: `Searching codebase for context: "${input.query}"...`
+                    };
+                }
+            })
+        );
+
+        // Tool 7: Find Related Tests
         this.disposables.push(
             vscode.lm.registerTool('codegraph_find_related_tests', {
                 invoke: async (options, token) => {
@@ -1303,7 +1336,39 @@ export class CodeGraphToolManager {
             })
         );
 
-        // Tool 27: Reindex Workspace
+        // Tool 27: Search Git History
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_search_git_history', {
+                invoke: async (options, token) => {
+                    const input = options.input as { query: string; since?: string; maxResults?: number };
+                    const { query, since, maxResults = 10 } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<GitHistorySearchResponse>(
+                            'codegraph.searchGitHistory',
+                            { query, since, maxResults },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(this.formatGitHistorySearch(response))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'git history search', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { query: string; since?: string };
+                    const timeScope = input.since ? ` since ${input.since}` : '';
+                    return {
+                        invocationMessage: `Searching git history for "${input.query}"${timeScope}...`
+                    };
+                }
+            })
+        );
+
+        // Tool 28: Reindex Workspace
         this.disposables.push(
             vscode.lm.registerTool('codegraph_reindex_workspace', {
                 invoke: async (_options, token) => {
@@ -1509,6 +1574,73 @@ export class CodeGraphToolManager {
     /**
      * Format AI context for AI consumption
      */
+    private formatGitHistorySearch(response: GitHistorySearchResponse): string {
+        let output = `# Git History Search: "${response.query}"\n\n`;
+
+        if (!response.results.length) {
+            output += 'No matching commits found.\n';
+            return output;
+        }
+
+        output += `Found ${response.results.length} commit(s):\n\n`;
+
+        for (const commit of response.results) {
+            output += `## \`${commit.hash}\` ${commit.subject}\n`;
+            if (commit.author) {
+                output += `Author: ${commit.author} | ${commit.date}\n`;
+            }
+            if (commit.content) {
+                output += `\n${commit.content}\n`;
+            }
+            if (commit.files && commit.files.length > 0) {
+                output += `Files: ${commit.files.join(', ')}\n`;
+            }
+            output += `_Source: ${commit.source}${commit.score ? ` (relevance: ${(commit.score * 100).toFixed(0)}%)` : ''}_\n\n`;
+        }
+
+        output += `_${response.metadata.queryTime}ms_\n`;
+        return output;
+    }
+
+    private formatCuratedContext(response: CuratedContextResponse): string {
+        let output = `# Curated Context: "${response.query}"\n\n`;
+
+        if (response.symbols.length > 0) {
+            output += `## Matching Symbols (${response.symbols.length})\n\n`;
+            for (const sym of response.symbols) {
+                output += `### ${sym.name} (${sym.kind})\n`;
+                output += `${sym.file}:${sym.line} — relevance: ${(sym.score * 100).toFixed(0)}%\n`;
+                if (sym.code) {
+                    output += '```\n' + sym.code + '\n```\n';
+                }
+                output += '\n';
+            }
+        }
+
+        if (response.dependencies.length > 0) {
+            output += `## Related Code (${response.dependencies.length})\n\n`;
+            for (const dep of response.dependencies) {
+                output += `### ${dep.name} (${dep.relationship})\n`;
+                output += `${dep.file}\n`;
+                if (dep.code) {
+                    output += '```\n' + dep.code + '\n```\n';
+                }
+                output += '\n';
+            }
+        }
+
+        if (response.memories.length > 0) {
+            output += `## Relevant Memories (${response.memories.length})\n\n`;
+            for (const mem of response.memories) {
+                output += `### [${mem.kind}] ${mem.title}\n`;
+                output += mem.content + '\n\n';
+            }
+        }
+
+        output += `_${response.metadata.totalTokens} tokens, ${response.metadata.queryTime}ms, ${response.metadata.symbolsFound} total matches_\n`;
+        return output;
+    }
+
     private formatEditContext(response: EditContextResponse): string {
         let output = '# Edit Context\n\n';
 

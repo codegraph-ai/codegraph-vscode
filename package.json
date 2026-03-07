@@ -534,6 +534,48 @@
                 }
             },
             {
+                "name": "codegraph_get_curated_context",
+                "displayName": "Get Curated Context",
+                "description": "Discovers and assembles cross-codebase context for a natural language query",
+                "modelDescription": "Discovers and assembles context across the entire codebase for a natural language query. USE WHEN: you need to understand a concept, pattern, or subsystem that spans multiple files — e.g., 'how does authentication work?', 'what handles database connections?', 'error handling patterns'. Unlike codegraph_get_ai_context (single symbol) or codegraph_get_edit_context (single location), this searches the whole codebase and curates cross-cutting context. Pipeline: searches for relevant symbols, resolves source code, walks dependencies to find related modules, fetches relevant memories, and curates within token budget. EXAMPLE: query='authentication middleware' returns the auth function source, its callers (routes), its dependencies (token verification), and architectural notes about auth.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "curated_context",
+                "userDescription": "Searches the codebase and assembles context for a concept or question",
+                "tags": [
+                    "code-analysis",
+                    "search",
+                    "context",
+                    "cross-cutting",
+                    "primary-tool"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language description of the context needed, or a symbol/module name"
+                        },
+                        "uri": {
+                            "type": "string",
+                            "description": "Optional file URI to anchor the search — results from this file are prioritized"
+                        },
+                        "maxTokens": {
+                            "type": "number",
+                            "description": "Maximum tokens of context to return",
+                            "default": 8000
+                        },
+                        "maxSymbols": {
+                            "type": "number",
+                            "description": "Maximum number of primary symbols to include",
+                            "default": 5
+                        }
+                    },
+                    "required": [
+                        "query"
+                    ]
+                }
+            },
+            {
                 "name": "codegraph_find_related_tests",
                 "displayName": "Find Related Tests",
                 "description": "Find test files and test functions related to a code location",
@@ -1541,6 +1583,42 @@
                     },
                     "required": [
                         "uri"
+                    ]
+                }
+            },
+            {
+                "name": "codegraph_search_git_history",
+                "displayName": "Search Git History",
+                "description": "Search git commit history with natural language",
+                "modelDescription": "Searches git commit history using both semantic matching and keyword search. USE WHEN: you need to understand what changed and why — e.g., 'what changed authentication last month?', 'when was the database schema modified?', 'who fixed the login bug?'. Combines semantic search (finds conceptually related commits via embeddings) with keyword search (git log --grep). Use 'since' to scope results to a time range. EXAMPLE: query='fix login' since='2 weeks ago' returns recent commits about login fixes with affected files and context.",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "git_search",
+                "userDescription": "Search git commit history with natural language queries",
+                "tags": [
+                    "git",
+                    "history",
+                    "search",
+                    "commits"
+                ],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language search query"
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Optional time filter (e.g., '2 weeks ago', '2026-01-01')"
+                        },
+                        "maxResults": {
+                            "type": "number",
+                            "description": "Maximum results to return",
+                            "default": 10
+                        }
+                    },
+                    "required": [
+                        "query"
                     ]
                 }
             },

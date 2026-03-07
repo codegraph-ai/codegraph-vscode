@@ -128,6 +128,39 @@ export interface AIContextResponse {
     };
 }
 
+export interface GitHistorySearchResponse {
+    query: string;
+    results: Array<{
+        hash: string;
+        fullHash?: string;
+        subject: string;
+        content?: string;
+        kind?: string;
+        score?: number;
+        author?: string;
+        date?: string;
+        files?: string[];
+        source: 'semantic' | 'keyword' | 'time_range';
+    }>;
+    metadata: { total: number; queryTime: number; semanticMatches?: number; keywordMatches?: number };
+}
+
+export interface CuratedContextResponse {
+    query: string;
+    symbols: Array<{ name: string; kind: string; file: string; line: number; score: number; matchReason?: string; code?: string }>;
+    dependencies: Array<{ name: string; kind: string; file: string; relationship: string; code?: string }>;
+    memories: Array<{ title: string; content: string; kind: string; relatedFile: string }>;
+    metadata: {
+        totalTokens: number;
+        maxTokens: number;
+        queryTime: number;
+        symbolsFound: number;
+        symbolsIncluded: number;
+        dependenciesIncluded: number;
+        memoriesIncluded: number;
+    };
+}
+
 export interface EditContextResponse {
     symbol: {
         name: string;
