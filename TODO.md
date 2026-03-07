@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-05 (v0.8.2, 316 tests, T1-1 complete)
+> Last updated: 2026-03-06 (v0.8.2, 316 tests, T1-1 + T2-1/T2-2/T2-3 complete)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -101,33 +101,14 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 **Effort**: High — needs multi-workspace coordination, service registry, shared graph instance or graph federation. This is Augment's killer feature and their hardest engineering investment.
 
-### T2-1. Hierarchical context curation
+### ~~T2-1. Hierarchical context curation~~
+~~Fixed (f8ee5f1). New `get_curated_context` MCP tool composes symbol search → source resolution → dependency expansion → memory retrieval into a single token-budgeted response. Priority-based percentage allocation across sections (40% symbols, 25% callers, 15% memories, 10% dependencies, 10% metadata).~~
 
-**Current**: `get_ai_context` has simple token budgeting (4000 default, `chars/4` estimate in `ai_context.rs:125`). Includes symbols until budget exhausted with no prioritization beyond intent-specific ordering. Other tools return raw results.
+### ~~T2-2. Change-aware automatic context~~
+~~Fixed (be4dd36). New `get_edit_context` MCP tool: given file + line, auto-assembles function source + callers + tests + memories + recent git changes. Single call replaces 5+ manual tool invocations.~~
 
-**Target**: Higher-level retrieval pipeline: identify relevant modules → zoom into implementation → walk dependency chain → assemble curated context with token budget awareness. Like Augment's "Infinite Context Window" — broad identification then focused deep-dive.
-
-**Approach**: New MCP tool `get_curated_context` that composes `get_ai_context` + `get_dependency_graph` + `memory_context` + `analyze_impact` into a single response, respecting a configurable token budget (default: 8000). Prioritize by relevance, not discovery order.
-
-**Effort**: Medium — compose existing tools, add smarter token allocation.
-
-### T2-2. Change-aware automatic context
-
-**Current**: Agent must manually call individual tools to build context for an edit.
-
-**Target**: Single endpoint: given a file + line being edited, automatically assemble: function source + all callers + tests + related memories + recent git changes to that function. What Augment does proactively.
-
-**Implementation**: New MCP tool `get_edit_context(file, line)` that internally calls `get_ai_context(intent=modify)` + `memory_context(file)` + git log for the function's line range. Low effort — all data sources exist.
-
-**Effort**: Low — composition of existing tools into one call.
-
-### T2-3. Searchable commit history
-
-**Current**: `mine_git_history` (`git_mining/miner.rs`) extracts memories from commits via pattern matching (BugFix, BreakingChange, etc. at 0.7-0.95 confidence). One-time bootstrapping — not queryable alongside code. Only 6 of 10 commit categories create memories; Test/Docs/Refactor/Other are skipped.
-
-**Target**: Make git history a first-class retrieval source. "What changed authentication last month?" returns relevant commits + affected functions + diff context. Index all commits (not just pattern-matched ones) with embeddings for semantic search.
-
-**Effort**: Medium — extend git mining to maintain a searchable commit index with embeddings. Could store in same RocksDB as memories with a new kind.
+### ~~T2-3. Searchable commit history~~
+~~Fixed (f8ee5f1). New `search_git_history` MCP tool combines semantic memory search (embeddings) + keyword git log (`--grep`) + time_range fallback for comprehensive commit history retrieval. No new persistence needed — reuses existing git-mined memories.~~
 
 ### T3-1. Architectural layer detection
 
@@ -171,6 +152,9 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Hierarchical context curation (T2-1)~~ (f8ee5f1) — New `get_curated_context` MCP tool: symbol search → source → dependency expansion → memories, with priority-based token budget allocation.
+- ~~Change-aware automatic context (T2-2)~~ (be4dd36) — New `get_edit_context` MCP tool: file+line → function source + callers + tests + memories + git changes in one call.
+- ~~Searchable commit history (T2-3)~~ (f8ee5f1) — New `search_git_history` MCP tool: semantic + keyword + time_range search over git history via existing memories.
 - ~~Branch-aware graph indexing (T1-1)~~ (c371f1f) — Watches `.git/HEAD` for branch switches (2s debounce), diffs via `git diff --name-status old..new`, batch re-indexes changed files. Handles worktrees, detached HEAD, interactive rebase. New `branch_watcher.rs` module, 4 new `GitExecutor` methods, `pub(crate)` on FileWatcher helpers.
 - ~~Fix TS private method visibility indexing (#14)~~ (20ea74a) — TypeScript mapper was the only one not transferring visibility to graph properties. Added `.with("visibility", ...)` for functions, classes, interfaces. Integration test for private/protected/public.
 - ~~Expose visibility string property in get_symbol_info (#24)~~ (5f4752f) — MCP handler now reads visibility string and exposes it. `is_public` fallback derives from visibility string when booleans absent.

@@ -4387,6 +4387,7 @@ impl McpServer {
 
                 // Check for callers (via Calls edges)
                 let callers = self.backend.query_engine.get_callers(node_id, 1).await;
+                let total_callers = callers.len();
 
                 // When include_tests is false, filter out callers that are test functions
                 let effective_callers = if !include_tests {
@@ -4400,8 +4401,27 @@ impl McpServer {
                         })
                         .count()
                 } else {
-                    callers.len()
+                    total_callers
                 };
+
+                // Test helper detection: if a function has callers but ALL are
+                // test functions, it's test infrastructure — not dead production code
+                if !include_tests && effective_callers == 0 && total_callers > 0 {
+                    continue;
+                }
+
+                // Struct/class-used-via-methods: if a struct has child methods
+                // (via Contains edges) that have callers, OR if sibling functions
+                // in the same file are called (Rust impl methods aren't linked
+                // via Contains), the struct itself is used
+                if matches!(
+                    node.node_type,
+                    codegraph::NodeType::Class | codegraph::NodeType::Type
+                ) && (Self::has_called_child_methods(&graph, node_id)
+                    || Self::has_active_same_file_functions(&graph, node_id))
+                {
+                    continue;
+                }
 
                 // Check for usage edges (excluding structural Contains/Defines edges)
                 let has_usage_edge = graph
@@ -4646,11 +4666,110 @@ impl McpServer {
     }
 
     /// Check if a name is a well-known framework entry point or lifecycle hook
+    /// Check if a struct/class has child methods (via Contains edges) that are called.
+    /// If a struct has methods with callers, the struct itself is in use even without
+    /// direct Instantiates/References edges (common for Rust struct literal instantiation).
+    fn has_called_child_methods(graph: &codegraph::CodeGraph, node_id: codegraph::NodeId) -> bool {
+        let children = match graph.get_neighbors(node_id, codegraph::Direction::Outgoing) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        for &child_id in &children {
+            // Check if this is a Contains edge to a function
+            let is_contained_fn = graph
+                .get_edges_between(node_id, child_id)
+                .unwrap_or_default()
+                .iter()
+                .any(|&eid| {
+                    graph
+                        .get_edge(eid)
+                        .map(|e| e.edge_type == codegraph::EdgeType::Contains)
+                        .unwrap_or(false)
+                });
+            if !is_contained_fn {
+                continue;
+            }
+            if let Ok(child) = graph.get_node(child_id) {
+                if child.node_type != codegraph::NodeType::Function {
+                    continue;
+                }
+            }
+            // Check if this child method has any incoming Calls edges
+            if let Ok(neighbors) = graph.get_neighbors(child_id, codegraph::Direction::Incoming) {
+                for &neighbor_id in &neighbors {
+                    let has_call = graph
+                        .get_edges_between(neighbor_id, child_id)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|&eid| {
+                            graph
+                                .get_edge(eid)
+                                .map(|e| e.edge_type == codegraph::EdgeType::Calls)
+                                .unwrap_or(false)
+                        });
+                    if has_call {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a struct/class shares its file with functions that have callers.
+    /// In Rust, `impl` block methods are separate function nodes (not linked via
+    /// Contains edges), so we use a same-file heuristic: if the file has called
+    /// functions, its structs are almost certainly used (as params, returns, etc.).
+    fn has_active_same_file_functions(
+        graph: &codegraph::CodeGraph,
+        node_id: codegraph::NodeId,
+    ) -> bool {
+        let path = match graph.get_node(node_id) {
+            Ok(n) => match n.properties.get_string("path") {
+                Some(p) => p.to_string(),
+                None => return false,
+            },
+            Err(_) => return false,
+        };
+        // Get all function nodes in the same file
+        let file_functions = graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .property("path", path)
+            .execute()
+            .unwrap_or_default();
+        // Check if any of them have incoming Calls edges
+        for &func_id in &file_functions {
+            if func_id == node_id {
+                continue;
+            }
+            if let Ok(neighbors) = graph.get_neighbors(func_id, codegraph::Direction::Incoming) {
+                for &neighbor_id in &neighbors {
+                    let has_call = graph
+                        .get_edges_between(neighbor_id, func_id)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|&eid| {
+                            graph
+                                .get_edge(eid)
+                                .map(|e| e.edge_type == codegraph::EdgeType::Calls)
+                                .unwrap_or(false)
+                        });
+                    if has_call {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a name is a well-known framework entry point or lifecycle hook
     fn is_framework_entry_point(name: &str) -> bool {
         matches!(
             name,
             // Rust/general
-            "main" | "setup"
+            "main" | "setup" | "Args"
             // JS test frameworks
             | "it"
             | "describe"
@@ -4749,6 +4868,25 @@ impl McpServer {
                 // Display/Debug/Error
                 | "source"
                 | "description"
+                // Embedding/ML trait methods
+                | "embed"
+                | "embed_batch"
+                | "dimension"
+                | "encode"
+                // Index/collection/metric trait methods
+                | "insert"
+                | "remove"
+                | "get"
+                | "contains"
+                | "len"
+                | "is_empty"
+                | "iter"
+                | "clear"
+                | "distance"
+                // Conversion/builder
+                | "build"
+                | "parse"
+                | "new"
                 // JS built-ins called by runtime
                 | "toString"
                 | "valueOf"
@@ -4782,6 +4920,11 @@ impl McpServer {
         // Serde default functions (referenced by #[serde(default = "...")] attribute)
         if name.starts_with("default_") {
             return 0.1;
+        }
+
+        // Migration functions (called by migration framework/runner)
+        if name.starts_with("migrate_") || name.starts_with("migration_") {
+            return 0.2;
         }
 
         // Event handler patterns (on_click, on_change, handleSubmit, etc.)
