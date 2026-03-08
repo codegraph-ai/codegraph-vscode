@@ -21,6 +21,7 @@ pub mod index;
 pub mod mcp;
 pub mod memory;
 pub mod parser_registry;
+pub mod runtime_deps;
 pub mod watcher;
 
 pub use backend::CodeGraphBackend;

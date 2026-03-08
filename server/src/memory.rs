@@ -17,16 +17,14 @@ pub use codegraph_memory::{
     MemoryError, MemoryNode, MemorySearch, MemoryStore, SearchConfig, SearchResult, VectorEngine,
 };
 
-/// Derive a global data directory for a workspace under `~/.codegraph/projects/<slug>/`.
+/// Generate a project slug from a workspace path.
 ///
 /// The slug is `<dir-name-lowercase>-<4-hex-hash>` where the hash is derived
 /// from the full canonical path, ensuring uniqueness even when two projects
 /// share the same directory name.
-fn project_data_dir(workspace_path: &Path) -> Result<PathBuf, MemoryError> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or_else(|| MemoryError::Other("Cannot determine home directory".to_string()))?;
-
+///
+/// Example: `/Users/dev/projects/codegraph-vscode` → `"codegraph-vscode-a3f2"`
+pub(crate) fn project_slug(workspace_path: &Path) -> String {
     // Canonicalize for stable hashing (resolve symlinks, normalize)
     let canonical = workspace_path
         .canonicalize()
@@ -55,7 +53,28 @@ fn project_data_dir(workspace_path: &Path) -> Result<PathBuf, MemoryError> {
     let hash = hasher.finish();
     let short_hash = format!("{:04x}", hash & 0xFFFF);
 
-    let slug = format!("{slug_base}-{short_hash}");
+    format!("{slug_base}-{short_hash}")
+}
+
+/// Path to the shared graph database.
+///
+/// All projects share a single RocksDB at `~/.codegraph/graph.db`,
+/// with per-project key namespacing via [`codegraph::NamespacedBackend`].
+pub(crate) fn shared_graph_db_path() -> Result<PathBuf, MemoryError> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| MemoryError::Other("Cannot determine home directory".to_string()))?;
+
+    Ok(PathBuf::from(home).join(".codegraph").join("graph.db"))
+}
+
+/// Derive a global data directory for a workspace under `~/.codegraph/projects/<slug>/`.
+fn project_data_dir(workspace_path: &Path) -> Result<PathBuf, MemoryError> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| MemoryError::Other("Cannot determine home directory".to_string()))?;
+
+    let slug = project_slug(workspace_path);
 
     Ok(PathBuf::from(home)
         .join(".codegraph")

@@ -8,9 +8,9 @@ use super::tools::get_all_tools;
 use super::transport::AsyncStdioTransport;
 use crate::ai_query::QueryEngine;
 use crate::git_mining::{GitExecutor, GitMiner, MiningConfig};
-use crate::memory::MemoryManager;
+use crate::memory::{self, MemoryManager};
 use crate::parser_registry::ParserRegistry;
-use codegraph::CodeGraph;
+use codegraph::{CodeGraph, NamespacedBackend, RocksDBBackend};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,11 +27,20 @@ pub struct McpBackend {
     pub query_engine: Arc<QueryEngine>,
     pub memory_manager: Arc<MemoryManager>,
     pub workspace_folders: Vec<PathBuf>,
+    /// Project slug used as namespace in the shared graph database
+    pub project_slug: String,
 }
 
 impl McpBackend {
-    /// Create a new MCP backend for the given workspace
+    /// Create a new MCP backend for the given workspace.
+    ///
+    /// Starts with a fresh in-memory graph (re-indexes all files on startup).
+    /// After indexing, persists to the shared database at `~/.codegraph/graph.db`
+    /// (namespaced by project slug) for cross-project access.
     pub fn new(workspace: PathBuf) -> Self {
+        let slug = memory::project_slug(&workspace);
+        tracing::info!("Project slug: {}", slug);
+
         let graph = Arc::new(RwLock::new(
             CodeGraph::in_memory().expect("Failed to create in-memory graph"),
         ));
@@ -59,7 +68,60 @@ impl McpBackend {
             parsers: Arc::new(ParserRegistry::new()),
             memory_manager: Arc::new(MemoryManager::new(extension_path)),
             workspace_folders: vec![workspace],
+            project_slug: slug,
         }
+    }
+
+    /// Open the shared graph database with project-scoped namespacing.
+    ///
+    /// Opens RocksDB at `~/.codegraph/graph.db`, wraps with NamespacedBackend,
+    /// loads all data into in-memory caches, then detaches storage to release
+    /// the database lock. Used for cross-project graph access (T1-4).
+    #[allow(dead_code)]
+    fn open_persistent_graph(slug: &str) -> Result<CodeGraph, String> {
+        let db_path = memory::shared_graph_db_path().map_err(|e| format!("{e}"))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create ~/.codegraph: {e}"))?;
+        }
+
+        let rocks =
+            RocksDBBackend::open(&db_path).map_err(|e| format!("Failed to open graph.db: {e}"))?;
+        let namespaced = NamespacedBackend::new(Box::new(rocks), slug);
+        let mut graph = CodeGraph::with_backend(Box::new(namespaced))
+            .map_err(|e| format!("Failed to load graph: {e}"))?;
+
+        // Detach to release the RocksDB lock — all data is now in memory
+        graph
+            .detach_storage()
+            .map_err(|e| format!("Failed to detach storage: {e}"))?;
+
+        Ok(graph)
+    }
+
+    /// Persist the current graph state to the shared database.
+    ///
+    /// Opens RocksDB briefly, writes all data with namespace prefix, then closes.
+    fn persist_graph(&self, graph: &CodeGraph) -> Result<(), String> {
+        let db_path = memory::shared_graph_db_path().map_err(|e| format!("{e}"))?;
+
+        let rocks = RocksDBBackend::open(&db_path)
+            .map_err(|e| format!("Failed to open graph.db for persist: {e}"))?;
+        let namespaced = NamespacedBackend::new(Box::new(rocks), &self.project_slug);
+
+        graph
+            .persist_to(Box::new(namespaced))
+            .map_err(|e| format!("Failed to persist graph: {e}"))?;
+
+        tracing::info!(
+            "Persisted {} nodes, {} edges to graph.db (namespace: {})",
+            graph.node_count(),
+            graph.edge_count(),
+            self.project_slug
+        );
+        Ok(())
     }
 
     /// Index the workspace
@@ -69,7 +131,6 @@ impl McpBackend {
             total += self.index_directory(folder).await;
 
             // Initialize memory manager with workspace path
-            // Note: Uses .codegraph/memory which may conflict with LSP if both run simultaneously
             if let Err(e) = self.memory_manager.initialize(folder).await {
                 tracing::warn!("Failed to initialize memory manager: {:?}", e);
             }
@@ -79,6 +140,30 @@ impl McpBackend {
         {
             let mut graph = self.graph.write().await;
             crate::watcher::GraphUpdater::resolve_cross_file_imports(&mut graph);
+        }
+
+        // Detect runtime dependencies: HTTP routes and client calls
+        {
+            let mut graph = self.graph.write().await;
+            let routes = crate::runtime_deps::detect_route_handlers(&mut graph);
+            let clients = crate::runtime_deps::detect_http_client_calls(&mut graph);
+            if routes > 0 || clients > 0 {
+                let edges = crate::runtime_deps::create_runtime_call_edges(&mut graph);
+                tracing::info!(
+                    "Runtime deps: {} routes, {} clients, {} edges",
+                    routes,
+                    clients,
+                    edges
+                );
+            }
+        }
+
+        // Persist graph to shared database
+        {
+            let graph = self.graph.read().await;
+            if let Err(e) = self.persist_graph(&graph) {
+                tracing::warn!("Failed to persist graph: {}", e);
+            }
         }
 
         // Build query engine indexes

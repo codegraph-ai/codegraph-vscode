@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-06 (v0.8.2, 316 tests, T1-1 + T2-1/T2-2/T2-3 complete)
+> Last updated: 2026-03-07 (v0.8.2, 314 tests, T1-1 + T1-2p1 + T2-1/T2-2/T2-3 + #8 complete)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -8,14 +8,8 @@
 
 Issues discovered via MCP tool verification (162 scenarios, 78 pass / 30 fail / 54 warn).
 
-### 8. Fix find_unused_code false positives (RC-4)
-~~Core issue resolved.~~ False positives reduced from 158 → 50 at ≥0.8 confidence across 4 fixes (8a–8d + cross-file imports). Remaining 50 items are mostly Rust test helpers, VS Code callback methods, and ~19 interfaces only used within their defining file via `as` casts or inline patterns the parser doesn't yet detect.
-
-Remaining false positive categories (not blocking, diminishing returns):
-- **Rust test helpers** (~14): `create_test_backend`, `make_commit`, etc. — correctly flagged when `includeTests: false`
-- **VS Code callbacks** (~8): `provideFollowups`, `getIcon`, `setup` — framework entry points called by VS Code runtime, not via code. Could add to `is_framework_entry_point` allowlist.
-- **Classes instantiated cross-file** (~9): `MemoryTreeProvider`, `SymbolTreeProvider`, etc. — `new ClassName()` not detected as Instantiates edge cross-file
-- **Interfaces used only inline** (~19): `*Params` interfaces used via `as` casts or in same-file `RequestType<>` generics without cross-file import
+### ~~8. Fix find_unused_code false positives (RC-4)~~
+~~Fixed (0143da9). False positives reduced from 158 → 0 at ≥0.8 confidence. Three rounds of fixes: (1) 8a–8d + cross-file imports (158→50), (2) test helper detection + same-file struct heuristic + expanded trait/confidence patterns (50→2). Remaining 2 items are true dead code. Key heuristics: skip functions whose ALL callers are tests, detect Rust struct usage via sibling function calls in same file, expanded trait impl method allowlist.~~
 
 ### ~~9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)~~
 ~~Fixed (7273769). Most filters already worked. Remaining gap was `memory_context` missing `currentOnly` parameter — now parsed and passed to SearchConfig. See also #16.~~
@@ -63,7 +57,7 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 ~~**Phase 1 — Migrate to fastembed + BGE-Small**~~ (12108c1): Done. Replaced `model2vec` (256d) with `fastembed v4` BGE-Small-EN-v1.5 (384d ONNX). All three projects now share the same embedding stack. Database migration v3→v4 auto-clears old vectors and re-embeds on load. Verified: semantic search works with zero keyword overlap.
 
-**Remaining — Phase 1 gap**: Symbol search (`ai_query/text_index.rs`) is still **BM25-only** with no semantic component. Should add fastembed embedding to the symbol search pipeline for queries like "authentication logic" → `verifyJWT()`.
+~~**Phase 1 gap — Hybrid BM25 + semantic symbol search**~~ (d77d806e): Done. Reused VectorEngine from MemoryManager in QueryEngine. `build_symbol_vectors()` batch-embeds all Function/Class/Variable/Interface/Type nodes (name + signature + docstring). `symbol_search()` now uses hybrid scoring (0.4×BM25 + 0.6×semantic). Zero-keyword-overlap queries like "persistent storage retrieval" now return semantically relevant results (MemoryStore, MemorySearch, etc.).
 
 **Phase 2 — Configurable model + experiment with code-tuned models**:
 - Add `embedding_model` setting to codegraph config (enum or string matching fastembed model codes)
@@ -152,6 +146,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Fix find_unused_code false positives (#8)~~ (0143da9) — 158→0 false positives at ≥0.8 confidence. Test helper detection, same-file struct heuristic, expanded trait impl allowlist.
 - ~~Hierarchical context curation (T2-1)~~ (f8ee5f1) — New `get_curated_context` MCP tool: symbol search → source → dependency expansion → memories, with priority-based token budget allocation.
 - ~~Change-aware automatic context (T2-2)~~ (be4dd36) — New `get_edit_context` MCP tool: file+line → function source + callers + tests + memories + git changes in one call.
 - ~~Searchable commit history (T2-3)~~ (f8ee5f1) — New `search_git_history` MCP tool: semantic + keyword + time_range search over git history via existing memories.
@@ -166,6 +161,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 - ~~v0.8.0: MCP npm package, VSIX, version alignment~~ (8acba43) — Created `@memoryx/codegraph-mcp` npm package with Node.js launcher (`codegraph-mcp.js`) and postinstall verification. Aligned all versions to 0.8.0 (workspace Cargo.toml, both crates via `version.workspace = true`, npm package, VS Code extension). Rewrote README as feature presentation. Built `codegraph-0.8.0.vsix` with all 4 platform binaries (70MB).
 - ~~Rebuild all platform binaries for 0.8.0~~ — Rebuilt all 4 binaries: darwin-arm64/x64 (local), linux-x64 (native cargo build on WSL2 with rustls TLS), win32-x64 (ort-load-dynamic to avoid CRT mismatch). Key fixes: fastembed uses `hf-hub-rustls-tls` (avoids OpenSSL on Linux), platform-conditional Cargo.toml deps (`ort-download-binaries` on macOS/Linux, `ort-load-dynamic` on Windows).
 - ~~Migrate embedding engine from Model2Vec to fastembed BGE-Small-EN-v1.5 (T1-2 Phase 1)~~ (12108c1) — Replaced model2vec (256d static) with fastembed v4 (384d ONNX). Removed model_download.rs, discovery.rs, ureq dependency. Added v3→v4 database migration. All three projects (codegraph, tempera, smelt) now share the same embedding stack. Verified: semantic search works with zero keyword overlap.
+- ~~Add hybrid BM25 + semantic symbol search (T1-2 Phase 1 gap)~~ (d77d806e) — Reused VectorEngine from MemoryManager in QueryEngine. `build_symbol_vectors()` batch-embeds all symbols. `symbol_search()` now uses 0.4×BM25 + 0.6×semantic hybrid scoring. Zero-keyword-overlap queries return semantically relevant results.
 - ~~Fix MCP tool name mismatch (#22)~~ (45d284d) — Aligned `mine_git_file` → `mine_git_history_for_file` across server/package.json/toolManager. Added missing `reindex_workspace` to package.json and toolManager. All 27 tools now match across 3 layers.
 - ~~Remove @codegraph chat participant~~ (38acce0) — Redundant with 26 language model tools via `#` picker. Removed chatParticipants from package.json, implementation class, tests, and extension.ts references.
 - ~~Cross-platform binary builds~~ — Native builds for all 4 platforms: darwin-arm64 (local), darwin-x64 (local cross-compile), linux-x64 (WSL2 192.168.254.107), win32-x64 (Windows 192.168.254.103). VSIX now 70MB with all binaries.
