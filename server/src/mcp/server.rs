@@ -84,6 +84,13 @@ impl McpBackend {
         // Build query engine indexes
         self.query_engine.build_indexes().await;
 
+        // Share vector engine with query engine for semantic symbol search
+        if let Some(engine) = self.memory_manager.get_vector_engine().await {
+            self.query_engine.set_vector_engine(engine).await;
+            self.query_engine.build_symbol_vectors().await;
+            tracing::info!("Semantic symbol search initialized for MCP");
+        }
+
         total
     }
 

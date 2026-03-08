@@ -841,6 +841,15 @@ impl LanguageServer for CodeGraphBackend {
                     self.client
                         .log_message(MessageType::INFO, "✓ Memory store initialized successfully")
                         .await;
+
+                    // Share vector engine with query engine for semantic symbol search
+                    if let Some(engine) = self.memory_manager.get_vector_engine().await {
+                        self.query_engine.set_vector_engine(engine).await;
+                        self.query_engine.build_symbol_vectors().await;
+                        self.client
+                            .log_message(MessageType::INFO, "✓ Semantic symbol search initialized")
+                            .await;
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Memory store initialization failed: {:?}", e);
@@ -1403,6 +1412,7 @@ impl LanguageServer for CodeGraphBackend {
 
                 // Rebuild AI query engine indexes
                 self.query_engine.build_indexes().await;
+                self.query_engine.build_symbol_vectors().await;
 
                 self.client
                     .log_message(

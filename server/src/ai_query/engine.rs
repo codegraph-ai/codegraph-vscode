@@ -11,10 +11,16 @@ use super::primitives::{
 };
 use super::text_index::{TextIndex, TextIndexBuilder};
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
+use codegraph_memory::VectorEngine;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+
+/// Weight for BM25 score in hybrid search (0-1)
+const BM25_WEIGHT: f32 = 0.4;
+/// Weight for semantic similarity score in hybrid search (0-1)
+const SEMANTIC_WEIGHT: f32 = 0.6;
 
 /// AI Query Engine for fast code exploration.
 pub struct QueryEngine {
@@ -28,6 +34,12 @@ pub struct QueryEngine {
     caller_index: Arc<RwLock<HashMap<NodeId, Vec<NodeId>>>>,
     /// Callee index: function -> list of callees
     callee_index: Arc<RwLock<HashMap<NodeId, Vec<NodeId>>>>,
+    /// Shared vector engine for semantic embedding (set after memory init)
+    vector_engine: Arc<RwLock<Option<Arc<VectorEngine>>>>,
+    /// Symbol embeddings: NodeId -> 384-dim vector
+    symbol_vectors: Arc<RwLock<HashMap<NodeId, Vec<f32>>>>,
+    /// Symbol text used for embedding (for rebuilding)
+    symbol_texts: Arc<RwLock<HashMap<NodeId, String>>>,
 }
 
 impl QueryEngine {
@@ -39,6 +51,9 @@ impl QueryEngine {
             import_index: Arc::new(RwLock::new(HashMap::new())),
             caller_index: Arc::new(RwLock::new(HashMap::new())),
             callee_index: Arc::new(RwLock::new(HashMap::new())),
+            vector_engine: Arc::new(RwLock::new(None)),
+            symbol_vectors: Arc::new(RwLock::new(HashMap::new())),
+            symbol_texts: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -105,8 +120,100 @@ impl QueryEngine {
         *self.callee_index.write().await = callee_map;
     }
 
+    /// Set the shared vector engine for semantic search.
+    /// Called after MemoryManager initialization provides the engine.
+    pub async fn set_vector_engine(&self, engine: Arc<VectorEngine>) {
+        *self.vector_engine.write().await = Some(engine);
+    }
+
+    /// Build symbol embedding vectors for semantic search.
+    /// Requires vector_engine to be set first. Embeds name + signature + docstring
+    /// for each symbol in batch for efficiency.
+    pub async fn build_symbol_vectors(&self) {
+        let engine = match self.vector_engine.read().await.clone() {
+            Some(e) => e,
+            None => {
+                tracing::warn!("[QueryEngine] No vector engine available, skipping symbol vectors");
+                return;
+            }
+        };
+
+        let start = Instant::now();
+        let graph = self.graph.read().await;
+
+        // Collect symbol texts for embedding
+        let mut node_ids = Vec::new();
+        let mut texts = Vec::new();
+        let mut text_map = HashMap::new();
+
+        for (node_id, node) in graph.iter_nodes() {
+            // Only embed meaningful symbol types
+            if !matches!(
+                node.node_type,
+                NodeType::Function
+                    | NodeType::Class
+                    | NodeType::Variable
+                    | NodeType::Interface
+                    | NodeType::Type
+            ) {
+                continue;
+            }
+
+            let name = node.properties.get_string("name").unwrap_or("");
+            if name.is_empty() || name == "arrow_function" || name == "anonymous" {
+                continue;
+            }
+
+            // Build embedding text: "name: signature — docstring"
+            let signature = node.properties.get_string("signature").unwrap_or("");
+            let docstring = node.properties.get_string("doc").unwrap_or("");
+
+            let embed_text = if !docstring.is_empty() && !signature.is_empty() {
+                format!("{name}: {signature} — {docstring}")
+            } else if !signature.is_empty() {
+                format!("{name}: {signature}")
+            } else if !docstring.is_empty() {
+                format!("{name} — {docstring}")
+            } else {
+                name.to_string()
+            };
+
+            node_ids.push(node_id);
+            texts.push(embed_text.clone());
+            text_map.insert(node_id, embed_text);
+        }
+
+        drop(graph); // Release graph lock before embedding
+
+        if texts.is_empty() {
+            return;
+        }
+
+        // Batch embed all symbol texts
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        match engine.embed_batch(&text_refs) {
+            Ok(vectors) => {
+                let mut symbol_vecs = HashMap::with_capacity(vectors.len());
+                for (i, vec) in vectors.into_iter().enumerate() {
+                    symbol_vecs.insert(node_ids[i], vec);
+                }
+                let count = symbol_vecs.len();
+                *self.symbol_vectors.write().await = symbol_vecs;
+                *self.symbol_texts.write().await = text_map;
+                tracing::info!(
+                    "[QueryEngine] Built {} symbol vectors in {:?}",
+                    count,
+                    start.elapsed()
+                );
+            }
+            Err(e) => {
+                tracing::error!("[QueryEngine] Failed to build symbol vectors: {:?}", e);
+            }
+        }
+    }
+
     /// Search for symbols by name, docstring, or comments.
-    /// Returns results sorted by BM25 relevance.
+    /// Uses hybrid BM25 + semantic scoring when vector engine is available.
     pub async fn symbol_search(&self, query: &str, options: &SearchOptions) -> SymbolSearchResult {
         let start = Instant::now();
 
@@ -120,11 +227,58 @@ impl QueryEngine {
             10
         };
         let text_results = text_index.search(query, options.limit * fetch_multiplier);
-        let total_matches = text_results.len();
 
-        let mut results = Vec::new();
-        for text_result in &text_results {
-            if let Ok(node) = graph.get_node(text_result.node_id) {
+        // Compute semantic scores if vector engine is available
+        let semantic_scores = self.compute_semantic_scores(query).await;
+        let has_semantic = !semantic_scores.is_empty();
+
+        // Find max BM25 score for normalization
+        let max_bm25 = text_results
+            .iter()
+            .map(|r| r.score)
+            .fold(0.0f32, f32::max)
+            .max(0.001); // avoid division by zero
+
+        // Merge BM25 candidates with semantic-only candidates
+        let mut all_candidate_ids: HashSet<NodeId> =
+            text_results.iter().map(|r| r.node_id).collect();
+        if has_semantic {
+            // Add top semantic candidates that BM25 missed (the key value of semantic search)
+            let mut semantic_sorted: Vec<_> = semantic_scores.iter().collect();
+            semantic_sorted
+                .sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+            for (node_id, _) in semantic_sorted
+                .iter()
+                .take(options.limit * fetch_multiplier)
+            {
+                all_candidate_ids.insert(**node_id);
+            }
+        }
+
+        // Build BM25 score lookup
+        let bm25_scores: HashMap<NodeId, f32> =
+            text_results.iter().map(|r| (r.node_id, r.score)).collect();
+        let bm25_reasons: HashMap<NodeId, &str> = text_results
+            .iter()
+            .map(|r| {
+                (
+                    r.node_id,
+                    match r.match_reason {
+                        super::text_index::MatchReason::SymbolName => "SymbolName",
+                        super::text_index::MatchReason::Docstring => "Docstring",
+                        super::text_index::MatchReason::Comment => "Comment",
+                        super::text_index::MatchReason::Multiple => "Multiple",
+                    },
+                )
+            })
+            .collect();
+
+        let total_matches = all_candidate_ids.len();
+
+        // Score and filter all candidates
+        let mut scored_results = Vec::new();
+        for &node_id in &all_candidate_ids {
+            if let Ok(node) = graph.get_node(node_id) {
                 // Apply symbol type filter
                 if !options.symbol_types.is_empty() {
                     let node_type_matches = options.symbol_types.iter().any(|st| {
@@ -143,36 +297,88 @@ impl QueryEngine {
                     }
                 }
 
-                // Build symbol info (use compact mode if requested)
-                let symbol_info =
-                    self.node_to_symbol_info_opts(&graph, text_result.node_id, options.compact);
+                let symbol_info = self.node_to_symbol_info_opts(&graph, node_id, options.compact);
                 if let Some(symbol) = symbol_info {
-                    // Apply visibility filter
                     if !options.include_private && !symbol.is_public {
                         continue;
                     }
 
-                    results.push(SymbolMatch {
-                        node_id: text_result.node_id,
+                    // Compute hybrid score
+                    let bm25_norm = bm25_scores.get(&node_id).copied().unwrap_or(0.0) / max_bm25;
+                    let semantic_sim = semantic_scores.get(&node_id).copied().unwrap_or(0.0);
+
+                    let score = if has_semantic {
+                        BM25_WEIGHT * bm25_norm + SEMANTIC_WEIGHT * semantic_sim
+                    } else {
+                        bm25_norm // pure BM25 fallback
+                    };
+
+                    let match_reason = if let Some(&reason) = bm25_reasons.get(&node_id) {
+                        if has_semantic && semantic_sim > 0.3 && bm25_norm < 0.01 {
+                            "Semantic".to_string()
+                        } else {
+                            reason.to_string()
+                        }
+                    } else {
+                        "Semantic".to_string()
+                    };
+
+                    scored_results.push(SymbolMatch {
+                        node_id,
                         symbol,
-                        score: text_result.score,
-                        match_reason: format!("{:?}", text_result.match_reason),
+                        score,
+                        match_reason,
                     });
                 }
             }
-
-            if results.len() >= options.limit {
-                break;
-            }
         }
+
+        // Sort by hybrid score descending
+        scored_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored_results.truncate(options.limit);
 
         let query_time_ms = start.elapsed().as_millis() as u64;
 
         SymbolSearchResult {
-            results,
+            results: scored_results,
             total_matches,
             query_time_ms,
         }
+    }
+
+    /// Compute semantic similarity scores for all indexed symbols against a query.
+    /// Returns empty map if vector engine or symbol vectors aren't available.
+    async fn compute_semantic_scores(&self, query: &str) -> HashMap<NodeId, f32> {
+        let engine = match self.vector_engine.read().await.clone() {
+            Some(e) => e,
+            None => return HashMap::new(),
+        };
+
+        let symbol_vecs = self.symbol_vectors.read().await;
+        if symbol_vecs.is_empty() {
+            return HashMap::new();
+        }
+
+        // Embed the query
+        let query_vec = match engine.embed(query) {
+            Ok(v) => v,
+            Err(_) => return HashMap::new(),
+        };
+
+        // Brute-force cosine similarity against all symbol vectors
+        let mut scores = HashMap::with_capacity(symbol_vecs.len());
+        for (&node_id, symbol_vec) in symbol_vecs.iter() {
+            let sim = cosine_similarity(&query_vec, symbol_vec);
+            if sim > 0.1 {
+                // Skip very low similarity to reduce noise
+                scores.insert(node_id, sim);
+            }
+        }
+        scores
     }
 
     /// Find code by imported libraries/modules.
@@ -1126,6 +1332,18 @@ impl QueryEngine {
         }
 
         None
+    }
+}
+
+/// Cosine similarity between two vectors. Returns 0.0 for zero-length vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        0.0
+    } else {
+        dot / (norm_a * norm_b)
     }
 }
 

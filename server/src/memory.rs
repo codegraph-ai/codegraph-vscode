@@ -200,6 +200,12 @@ impl MemoryManager {
         self.data_dir.read().await.is_some() && self.engine.read().await.is_some()
     }
 
+    /// Get the shared VectorEngine for embedding operations.
+    /// Returns None if memory manager hasn't been initialized yet.
+    pub async fn get_vector_engine(&self) -> Option<Arc<VectorEngine>> {
+        self.engine.read().await.clone()
+    }
+
     /// Open a fresh MemoryStore for an operation
     ///
     /// The store is dropped when it goes out of scope, releasing the DB lock.
