@@ -41,6 +41,8 @@ pub fn get_all_tools() -> Vec<Tool> {
         mine_git_history_tool(),
         mine_git_file_tool(),
         search_git_history_tool(),
+        // Cross-Project Tools (1)
+        cross_project_search_tool(),
         // Admin Tools (1)
         reindex_workspace_tool(),
     ]
@@ -1136,6 +1138,45 @@ fn search_git_history_tool() -> Tool {
 
 // === Admin Tools ===
 
+fn cross_project_search_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "query".to_string(),
+        string_prop("Symbol name or substring to search for across other indexed projects"),
+    );
+    properties.insert(
+        "symbolType".to_string(),
+        enum_prop(
+            "Filter results by symbol type",
+            vec![
+                "function",
+                "class",
+                "method",
+                "variable",
+                "interface",
+                "type",
+                "module",
+                "any",
+            ],
+            Some("any"),
+        ),
+    );
+    properties.insert(
+        "limit".to_string(),
+        number_prop("Maximum number of results to return", Some(20.0)),
+    );
+
+    Tool {
+        name: "codegraph_cross_project_search".to_string(),
+        description: Some("Search for symbols across ALL other indexed projects in the shared graph database. USE WHEN: finding cross-repo dependencies, discovering API consumers in other services, or understanding how a symbol is used across the organization. Returns matches with project attribution (which project, file path, line numbers). Only searches projects that have been previously indexed by codegraph. Does NOT search the current project (use symbol_search for that).".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: Some(vec!["query".to_string()]),
+        },
+    }
+}
+
 fn reindex_workspace_tool() -> Tool {
     Tool {
         name: "codegraph_reindex_workspace".to_string(),
@@ -1155,8 +1196,8 @@ mod tests {
     #[test]
     fn test_get_all_tools_count() {
         let tools = get_all_tools();
-        // Analysis: 11, Search: 5, Navigation: 3, Memory: 10, Admin: 1 = 30 tools
-        assert_eq!(tools.len(), 30, "Expected 30 tools, got {}", tools.len());
+        // Analysis: 11, Search: 5, Navigation: 3, Memory: 10, Cross-Project: 1, Admin: 1 = 31 tools
+        assert_eq!(tools.len(), 31, "Expected 31 tools, got {}", tools.len());
     }
 
     #[test]

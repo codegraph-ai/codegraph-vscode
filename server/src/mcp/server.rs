@@ -10,7 +10,7 @@ use crate::ai_query::QueryEngine;
 use crate::git_mining::{GitExecutor, GitMiner, MiningConfig};
 use crate::memory::{self, MemoryManager};
 use crate::parser_registry::ParserRegistry;
-use codegraph::{CodeGraph, NamespacedBackend, RocksDBBackend};
+use codegraph::{CodeGraph, NamespacedBackend, RocksDBBackend, StorageBackend};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ const SERVER_NAME: &str = "codegraph";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// MCP Backend - wraps CodeGraph components for MCP access
+#[derive(Clone)]
 pub struct McpBackend {
     pub graph: Arc<RwLock<CodeGraph>>,
     pub parsers: Arc<ParserRegistry>,
@@ -77,7 +78,6 @@ impl McpBackend {
     /// Opens RocksDB at `~/.codegraph/graph.db`, wraps with NamespacedBackend,
     /// loads all data into in-memory caches, then detaches storage to release
     /// the database lock. Used for cross-project graph access (T1-4).
-    #[allow(dead_code)]
     fn open_persistent_graph(slug: &str) -> Result<CodeGraph, String> {
         let db_path = memory::shared_graph_db_path().map_err(|e| format!("{e}"))?;
 
@@ -103,12 +103,44 @@ impl McpBackend {
 
     /// Persist the current graph state to the shared database.
     ///
-    /// Opens RocksDB briefly, writes all data with namespace prefix, then closes.
+    /// Opens RocksDB briefly, writes registry entry + all data with namespace prefix, then closes.
     fn persist_graph(&self, graph: &CodeGraph) -> Result<(), String> {
         let db_path = memory::shared_graph_db_path().map_err(|e| format!("{e}"))?;
 
-        let rocks = RocksDBBackend::open(&db_path)
+        // Ensure parent directory exists
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create ~/.codegraph: {e}"))?;
+        }
+
+        let mut rocks = RocksDBBackend::open(&db_path)
             .map_err(|e| format!("Failed to open graph.db for persist: {e}"))?;
+
+        // Write project registry entry (un-namespaced, global key)
+        let workspace_path = self
+            .workspace_folders
+            .first()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let registry_value = serde_json::json!({
+            "slug": self.project_slug,
+            "workspace": workspace_path,
+            "node_count": graph.node_count(),
+            "edge_count": graph.edge_count(),
+            "last_indexed": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
+        let registry_key = format!("_registry:{}", self.project_slug);
+        rocks
+            .put(
+                registry_key.as_bytes(),
+                registry_value.to_string().as_bytes(),
+            )
+            .map_err(|e| format!("Failed to write registry: {e}"))?;
+
+        // Write graph data with namespace prefix
         let namespaced = NamespacedBackend::new(Box::new(rocks), &self.project_slug);
 
         graph
@@ -122,6 +154,147 @@ impl McpBackend {
             self.project_slug
         );
         Ok(())
+    }
+
+    /// List all projects indexed in the shared graph database.
+    ///
+    /// Scans `_registry:*` keys to discover project metadata without loading graphs.
+    fn list_indexed_projects() -> Result<Vec<serde_json::Value>, String> {
+        let db_path = memory::shared_graph_db_path().map_err(|e| format!("{e}"))?;
+
+        if !db_path.exists() {
+            return Ok(vec![]);
+        }
+
+        let rocks =
+            RocksDBBackend::open(&db_path).map_err(|e| format!("Failed to open graph.db: {e}"))?;
+
+        let entries = rocks
+            .scan_prefix(b"_registry:")
+            .map_err(|e| format!("Failed to scan registry: {e}"))?;
+
+        let mut projects = Vec::new();
+        for (_key, value) in entries {
+            if let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&value) {
+                projects.push(metadata);
+            }
+        }
+
+        Ok(projects)
+    }
+
+    /// Search for symbols across all other indexed projects.
+    ///
+    /// Opens each project's graph from the shared DB (excluding the current project),
+    /// searches for matching symbols by name substring, and returns aggregated results.
+    fn cross_project_search(
+        &self,
+        query: &str,
+        symbol_type: Option<&str>,
+        limit: usize,
+    ) -> Result<serde_json::Value, String> {
+        let projects = Self::list_indexed_projects()?;
+        let query_lower = query.to_lowercase();
+
+        let mut all_results = Vec::new();
+        let mut searched_projects = Vec::new();
+
+        for project in &projects {
+            let slug = project.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+            let workspace = project
+                .get("workspace")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Skip the current project
+            if slug == self.project_slug {
+                continue;
+            }
+
+            // Open the project graph from shared DB
+            let graph = match Self::open_persistent_graph(slug) {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!("Failed to open project {}: {}", slug, e);
+                    continue;
+                }
+            };
+
+            searched_projects.push(serde_json::json!({
+                "slug": slug,
+                "workspace": workspace,
+                "node_count": graph.node_count(),
+            }));
+
+            // Search nodes by name substring match
+            let type_filter: Option<codegraph::NodeType> = symbol_type.and_then(|st| match st {
+                "function" | "method" => Some(codegraph::NodeType::Function),
+                "class" => Some(codegraph::NodeType::Class),
+                "variable" => Some(codegraph::NodeType::Variable),
+                "interface" => Some(codegraph::NodeType::Interface),
+                "type" => Some(codegraph::NodeType::Type),
+                "module" => Some(codegraph::NodeType::Module),
+                _ => None,
+            });
+
+            for (_id, node) in graph.iter_nodes() {
+                if all_results.len() >= limit {
+                    break;
+                }
+
+                // Apply type filter
+                if let Some(ref tf) = type_filter {
+                    if &node.node_type != tf {
+                        continue;
+                    }
+                }
+
+                // Skip CodeFile nodes
+                if node.node_type == codegraph::NodeType::CodeFile {
+                    continue;
+                }
+
+                let name = node.properties.get_string("name").unwrap_or("");
+                if !name.to_lowercase().contains(&query_lower) {
+                    continue;
+                }
+
+                let file_path = node.properties.get_string("path").unwrap_or("");
+                let line_start = node.properties.get_int("line_start").unwrap_or(0);
+                let line_end = node.properties.get_int("line_end").unwrap_or(0);
+                let signature = node.properties.get_string("signature").unwrap_or("");
+
+                let mut result = serde_json::json!({
+                    "name": name,
+                    "kind": format!("{}", node.node_type),
+                    "project": slug,
+                    "project_workspace": workspace,
+                    "file": file_path,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                });
+
+                if !signature.is_empty() {
+                    result["signature"] = serde_json::Value::String(signature.to_string());
+                }
+                if let Some(route) = node.properties.get_string("route") {
+                    result["route"] = serde_json::Value::String(route.to_string());
+                    if let Some(method) = node.properties.get_string("http_method") {
+                        result["http_method"] = serde_json::Value::String(method.to_string());
+                    }
+                }
+
+                all_results.push(result);
+            }
+        }
+
+        Ok(serde_json::json!({
+            "query": query,
+            "current_project": self.project_slug,
+            "searched_projects": searched_projects,
+            "results": all_results,
+            "total": all_results.len(),
+        }))
     }
 
     /// Index the workspace
@@ -2004,6 +2177,37 @@ impl McpServer {
 
                 let result = self.search_git_history(query, since, max_results).await;
                 Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+            }
+
+            // ==================== Cross-Project Tools ====================
+            "codegraph_cross_project_search" => {
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'query' parameter")?;
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(20);
+                let symbol_type = args
+                    .get("symbolType")
+                    .or_else(|| args.get("symbol_type"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| if s == "any" { None } else { Some(s) });
+
+                // Run cross-project search in blocking task (opens RocksDB)
+                let backend = self.backend.clone();
+                let query_owned = query.to_string();
+                let symbol_type_owned = symbol_type.map(|s| s.to_string());
+
+                let result = tokio::task::spawn_blocking(move || {
+                    backend.cross_project_search(&query_owned, symbol_type_owned.as_deref(), limit)
+                })
+                .await
+                .map_err(|e| format!("Task failed: {e}"))??;
+
+                Ok(result)
             }
 
             // ==================== Admin Tools ====================

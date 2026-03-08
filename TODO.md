@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-07 (v0.8.2, 314 tests, T1-1 + T1-2p1 + T2-1/T2-2/T2-3 + #8 complete)
+> Last updated: 2026-03-08 (v0.8.2, 330 tests, T1-1/T1-2p1/T1-3p1/T1-4p1+p2 + T2-1/T2-2/T2-3 + #8 complete)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
 
@@ -77,23 +77,17 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 ### T1-3. Runtime dependency detection
 
-**Current**: Pure static analysis via AST. Misses all runtime connections: HTTP calls (`fetch("/api/users")`), gRPC stubs, message queue producers/consumers, database queries.
+~~**Phase 1 — Route handler + HTTP client detection**~~ (2df7ca2): Done. New `runtime_deps` module detects Flask/FastAPI/NestJS/Spring route handlers from decorators (sets `route` and `http_method` properties) and HTTP client calls from function callees (fetch, axios, requests, httpx, etc.). 15 unit tests. Runs automatically during `index_workspace()`.
 
-**Target**: Parse string literals in function call arguments for HTTP routes, gRPC service names, queue topics. Create `RuntimeDependency` edge type linking call site to handler. Within single repo first, cross-repo later (T1-4).
-
-**Starting point**: `extract_endpoints` MCP tool already identifies Express/FastAPI/Django route handlers. Missing piece is the call-site detection — finding `fetch()`, `axios.get()`, `requests.post()` calls and matching their URL argument to known routes.
-
-**Effort**: Medium — regex/heuristic scanning of string arguments in known HTTP client functions.
+**Phase 2 — Route matching + RuntimeCalls edges**: Stub exists in `create_runtime_call_edges()`. Needs URL argument capture from parsers to match `fetch("/api/users")` → `@app.get("/api/users")`. Blocked on parser support for string literal extraction in call arguments.
 
 ### T1-4. Cross-repository graph linking
 
-**Current**: Single workspace only (`workspace_folders` in `backend.rs:30`). Can't trace dependencies across repo boundaries.
+~~**Phase 1 — Shared graph database + project registry**~~ (2df7ca2): Done. All projects share a single RocksDB at `~/.codegraph/graph.db` with `NamespacedBackend` key-prefix isolation. Project registry (`_registry:<slug>` keys) tracks workspace path, node/edge count, last indexed timestamp. On-demand open/close pattern: `persist_to()` writes briefly then releases lock, `open_persistent_graph()` loads then detaches via `detach_storage()`.
 
-**Target**: Index multiple repos. Detect REST/gRPC/queue connections between services via runtime dependency detection (T1-3). Enable cross-repo impact analysis ("changing this API endpoint breaks 3 consumers in other repos").
+~~**Phase 2 — Cross-project symbol search**~~: Done. New MCP tool `codegraph_cross_project_search` searches symbols across all other indexed projects. Opens each project's graph from shared DB, does name substring matching with optional type filter, returns results with project attribution.
 
-**Depends on**: T1-3 (runtime dependency detection within single repo first).
-
-**Effort**: High — needs multi-workspace coordination, service registry, shared graph instance or graph federation. This is Augment's killer feature and their hardest engineering investment.
+**Phase 3 — Cross-project impact analysis**: Extend `analyze_impact` to show consumers in other projects. Match route handlers in one project against HTTP client calls in others to create cross-project RuntimeCalls edges.
 
 ### ~~T2-1. Hierarchical context curation~~
 ~~Fixed (f8ee5f1). New `get_curated_context` MCP tool composes symbol search → source resolution → dependency expansion → memory retrieval into a single token-budgeted response. Priority-based percentage allocation across sections (40% symbols, 25% callers, 15% memories, 10% dependencies, 10% metadata).~~
