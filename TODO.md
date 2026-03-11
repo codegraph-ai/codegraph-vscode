@@ -4,26 +4,7 @@
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) | [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md)
 
-## Active — MCP Tool Bugs
-
-Issues discovered via MCP tool verification (2026-03-08: 181 scenarios, 149 pass, 3 fail, 7 warn, 22 skipped).
-
-### 25. Fix `includeReferences=false` ignored in get_symbol_info
-Handler doesn't check the `includeReferences` flag — always includes references regardless of parameter value. (Test 8.4, FAIL)
-
-### 26. Fix memory_invalidate not idempotent
-Re-invalidating an already-invalidated memory returns "Memory not found" error. Invalidation removes from primary lookup index, making already-invalidated memories unreachable by ID. Should succeed silently. (Test 24.2, FAIL)
-
-### 27. Add minimum similarity threshold to search_git_history
-Nonsense queries return 10 low-confidence semantic results (scores ~0.29-0.31). Semantic search has no minimum similarity cutoff — always returns top-N regardless of relevance. Should filter below a threshold (e.g., 0.5). (Test 29.5, FAIL)
-
-### 28. Fix analyze_impact summary mode returning null fields
-Summary mode returns `symbol=null, risk_score=0.0, affected_file_count=0` instead of condensed data. Different code path for summary doesn't populate these fields. (Test 3.4, WARN)
-
 ## Medium Priority
-
-### 4. Use PropertyMap improvements
-Adopt `StringList` / `IntList` property variants for multi-valued properties (e.g., storing multiple imported symbols on an edge as a `StringList` instead of a comma-separated string).
 
 ## Strategic — Competitive Capabilities
 
@@ -116,6 +97,8 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Adopt PropertyValue::StringList for multi-valued properties (#4)~~ (a79ef71, 6521447) — All 14 language mappers now use native `StringList` instead of `.join(",")` comma-separated strings. Properties migrated: symbols, attributes, annotations, parameters, unresolved_calls, unresolved_type_refs, type_parameters, required_methods. Added `get_string_list_compat()` for backwards-compatible reading. Updated 5 consumers in codegraph-vscode server.
+- ~~Fix 4 MCP tool bugs (#25-28)~~ (17e061d) — includeReferences flag (get_symbol_info), idempotent memory_invalidate, similarity threshold (search_git_history), summary mode keys (analyze_impact).
 - ~~MCP tool verification suite~~ (890e79a) — 31 tools, 181 scenarios in `test_scenarios.md`. Results: 149/159 pass, 3 fail, 7 warn. Verification skill runs full suite with parallel agents.
 - ~~Cross-project symbol search (T1-4 Phase 2)~~ (6b6ac29) — New `codegraph_cross_project_search` MCP tool. Searches symbols across all indexed projects via shared RocksDB.
 - ~~Runtime dependency detection + shared graph persistence (T1-3p1, T1-4p1)~~ (2df7ca2) — Route handler detection (Flask/FastAPI/NestJS/Spring), HTTP client detection, shared RocksDB with NamespacedBackend, project registry.
