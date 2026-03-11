@@ -104,14 +104,13 @@ pub fn detect_route_handlers(graph: &mut CodeGraph) -> usize {
             continue;
         }
 
-        // Check attributes property (comma-separated decorator strings)
-        let attrs = match node.properties.get_string("attributes") {
-            Some(a) if !a.is_empty() => a.to_string(),
+        // Check attributes property for route decorators
+        let attrs = match node.properties.get_string_list_compat("attributes") {
+            Some(a) if !a.is_empty() => a,
             _ => continue,
         };
 
-        for attr in attrs.split(',') {
-            let attr = attr.trim();
+        for attr in &attrs {
             if let Some((route, method)) = parse_route_decorator(attr) {
                 updates.push((node_id, route, method));
                 break; // One route per function
@@ -250,15 +249,10 @@ pub fn detect_http_client_calls(graph: &mut CodeGraph) -> usize {
         // Check unresolved_calls property for HTTP client function names
         let unresolved = node
             .properties
-            .get_string("unresolved_calls")
-            .unwrap_or("")
-            .to_string();
+            .get_string_list_compat("unresolved_calls")
+            .unwrap_or_default();
 
-        for callee in unresolved.split(',') {
-            let callee = callee.trim();
-            if callee.is_empty() {
-                continue;
-            }
+        for callee in &unresolved {
             for &client_fn in &client_fn_names {
                 if callee == client_fn || callee.ends_with(client_fn) {
                     callers.push((node_id, extract_http_method_from_name(callee)));

@@ -374,41 +374,37 @@ impl GraphUpdater {
                             if let Ok(edge) = graph.get_edge(edge_id) {
                                 if edge.edge_type == EdgeType::Imports {
                                     // Check if this edge has symbols that we can resolve
-                                    if let Some(symbols_str) = edge.properties.get_string("symbols")
+                                    if let Some(symbols) =
+                                        edge.properties.get_string_list_compat("symbols")
                                     {
-                                        // Parse the comma-separated symbols
-                                        for symbol in symbols_str.split(',') {
-                                            let symbol = symbol.trim();
-                                            if !symbol.is_empty() {
-                                                // Look up the symbol in our map
-                                                if let Some(&symbol_id) = symbol_map.get(symbol) {
-                                                    // Check if we already have an edge to this symbol
-                                                    let already_linked = graph
-                                                        .get_edges_between(file_id, symbol_id)
-                                                        .map(|edges| {
-                                                            edges.iter().any(|e| {
-                                                                graph
-                                                                    .get_edge(*e)
-                                                                    .map(|edge| {
-                                                                        edge.edge_type
-                                                                            == EdgeType::Imports
-                                                                    })
-                                                                    .unwrap_or(false)
-                                                            })
+                                        for symbol in &symbols {
+                                            let symbol = symbol.as_str();
+                                            // Look up the symbol in our map
+                                            if let Some(&symbol_id) = symbol_map.get(symbol) {
+                                                // Check if we already have an edge to this symbol
+                                                let already_linked = graph
+                                                    .get_edges_between(file_id, symbol_id)
+                                                    .map(|edges| {
+                                                        edges.iter().any(|e| {
+                                                            graph
+                                                                .get_edge(*e)
+                                                                .map(|edge| {
+                                                                    edge.edge_type
+                                                                        == EdgeType::Imports
+                                                                })
+                                                                .unwrap_or(false)
                                                         })
-                                                        .unwrap_or(false);
+                                                    })
+                                                    .unwrap_or(false);
 
-                                                    if !already_linked {
-                                                        // Queue edge creation
-                                                        let props = PropertyMap::new()
-                                                            .with("imported_symbol", symbol)
-                                                            .with(
-                                                                "resolved_by",
-                                                                "cross_file_resolution",
-                                                            );
-                                                        edges_to_add
-                                                            .push((file_id, symbol_id, props));
-                                                    }
+                                                if !already_linked {
+                                                    let props = PropertyMap::new()
+                                                        .with("imported_symbol", symbol)
+                                                        .with(
+                                                            "resolved_by",
+                                                            "cross_file_resolution",
+                                                        );
+                                                    edges_to_add.push((file_id, symbol_id, props));
                                                 }
                                             }
                                         }
@@ -434,12 +430,12 @@ impl GraphUpdater {
         if let Ok(functions) = graph.query().node_type(NodeType::Function).execute() {
             for func_id in functions {
                 if let Ok(node) = graph.get_node(func_id) {
-                    if let Some(unresolved) = node.properties.get_string("unresolved_calls") {
-                        // Parse comma-separated callee names
-                        for callee_name in unresolved.split(',') {
-                            let callee_name = callee_name.trim();
+                    if let Some(unresolved) =
+                        node.properties.get_string_list_compat("unresolved_calls")
+                    {
+                        for callee_name in &unresolved {
+                            let callee_name = callee_name.as_str();
                             if !callee_name.is_empty() {
-                                // Look up the callee in our symbol map
                                 if let Some(&callee_id) = symbol_map.get(callee_name) {
                                     // Check if we already have a call edge
                                     let already_linked = graph
@@ -481,30 +477,29 @@ impl GraphUpdater {
         if let Ok(functions) = graph.query().node_type(NodeType::Function).execute() {
             for func_id in functions {
                 if let Ok(node) = graph.get_node(func_id) {
-                    if let Some(unresolved) = node.properties.get_string("unresolved_type_refs") {
-                        for type_name in unresolved.split(',') {
-                            let type_name = type_name.trim();
-                            if !type_name.is_empty() {
-                                if let Some(&type_id) = symbol_map.get(type_name) {
-                                    let already_linked = graph
-                                        .get_edges_between(func_id, type_id)
-                                        .map(|edges| {
-                                            edges.iter().any(|e| {
-                                                graph
-                                                    .get_edge(*e)
-                                                    .map(|edge| {
-                                                        edge.edge_type == EdgeType::References
-                                                    })
-                                                    .unwrap_or(false)
-                                            })
+                    if let Some(unresolved) = node
+                        .properties
+                        .get_string_list_compat("unresolved_type_refs")
+                    {
+                        for type_name in &unresolved {
+                            let type_name = type_name.as_str();
+                            if let Some(&type_id) = symbol_map.get(type_name) {
+                                let already_linked = graph
+                                    .get_edges_between(func_id, type_id)
+                                    .map(|edges| {
+                                        edges.iter().any(|e| {
+                                            graph
+                                                .get_edge(*e)
+                                                .map(|edge| edge.edge_type == EdgeType::References)
+                                                .unwrap_or(false)
                                         })
-                                        .unwrap_or(false);
+                                    })
+                                    .unwrap_or(false);
 
-                                    if !already_linked {
-                                        let props = PropertyMap::new()
-                                            .with("resolved_by", "cross_file_resolution");
-                                        ref_edges_to_add.push((func_id, type_id, props));
-                                    }
+                                if !already_linked {
+                                    let props = PropertyMap::new()
+                                        .with("resolved_by", "cross_file_resolution");
+                                    ref_edges_to_add.push((func_id, type_id, props));
                                 }
                             }
                         }
