@@ -1,63 +1,36 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-08 (v0.8.2, 330 tests, T1-1/T1-2p1/T1-3p1/T1-4p1+p2 + T2-1/T2-2/T2-3 + #8 complete)
+> Last updated: 2026-03-10 (v0.8.2, 330 tests, 31 MCP tools, 149/159 verification pass)
 >
-> See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) for full competitive context.
+> See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) | [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md)
 
-## High Priority — MCP Tool Fixes
+## Active — MCP Tool Bugs
 
-Issues discovered via MCP tool verification (162 scenarios, 78 pass / 30 fail / 54 warn).
+Issues discovered via MCP tool verification (2026-03-08: 181 scenarios, 149 pass, 3 fail, 7 warn, 22 skipped).
 
-### ~~8. Fix find_unused_code false positives (RC-4)~~
-~~Fixed (0143da9). False positives reduced from 158 → 0 at ≥0.8 confidence. Three rounds of fixes: (1) 8a–8d + cross-file imports (158→50), (2) test helper detection + same-file struct heuristic + expanded trait/confidence patterns (50→2). Remaining 2 items are true dead code. Key heuristics: skip functions whose ALL callers are tests, detect Rust struct usage via sibling function calls in same file, expanded trait impl method allowlist.~~
+### 25. Fix `includeReferences=false` ignored in get_symbol_info
+Handler doesn't check the `includeReferences` flag — always includes references regardless of parameter value. (Test 8.4, FAIL)
 
-### ~~9. Fix memory filtering: kinds, tags, currentOnly, offset (RC-6)~~
-~~Fixed (7273769). Most filters already worked. Remaining gap was `memory_context` missing `currentOnly` parameter — now parsed and passed to SearchConfig. See also #16.~~
+### 26. Fix memory_invalidate not idempotent
+Re-invalidating an already-invalidated memory returns "Memory not found" error. Invalidation removes from primary lookup index, making already-invalidated memories unreachable by ID. Should succeed silently. (Test 24.2, FAIL)
 
-### ~~10. Fix traverse_graph edgeTypes and nodeTypes filters~~
-~~Fixed (8be0e51). Edge type and node type filters now correctly constrain results. Traverse summary mode also implemented.~~
+### 27. Add minimum similarity threshold to search_git_history
+Nonsense queries return 10 low-confidence semantic results (scores ~0.29-0.31). Semantic search has no minimum similarity cutoff — always returns top-N regardless of relevance. Should filter below a threshold (e.g., 0.5). (Test 29.5, FAIL)
 
-### ~~11. Fix symbolType filter in symbol_search for class/interface~~
-~~Fixed (8be0e51). Type filter mapping now correctly translates MCP parameter values to internal NodeType filtering.~~
-
-### ~~12. Implement summary/compact response modes (RC-2)~~
-~~Fixed (8be0e51). Summary and compact modes now produce condensed output for get_dependency_graph, get_call_graph, analyze_coupling, traverse_graph.~~
+### 28. Fix analyze_impact summary mode returning null fields
+Summary mode returns `symbol=null, risk_score=0.0, affected_file_count=0` instead of condensed data. Different code path for summary doesn't populate these fields. (Test 3.4, WARN)
 
 ## Medium Priority
-
-### ~~3. Expose ComplexityMetrics in tool responses~~
-~~Fixed (792f40e). MCP `analyze_complexity` now returns full details (branches, loops, logical_operators, nesting_depth, exception_handlers, early_returns, lines_of_code), line_start/line_end per function, overall_grade in summary, and actionable recommendations. At parity with LSP handler.~~
 
 ### 4. Use PropertyMap improvements
 Adopt `StringList` / `IntList` property variants for multi-valued properties (e.g., storing multiple imported symbols on an edge as a `StringList` instead of a comma-separated string).
 
-### ~~13. Fix result deduplication across tools (RC-8)~~
-~~Fixed (6a5a43f). Added deduplication to symbol_search and find_entry_points handlers.~~
-
-### ~~14. Fix TS private method visibility indexing~~
-~~Fixed (20ea74a). TypeScript was the only mapper not transferring `func.visibility` to graph node properties. Added `.with("visibility", ...)` to functions, classes, and interfaces in the TS mapper. Integration test verifies private/protected/public.~~
-
-### ~~24. Expose visibility string property in get_symbol_info~~
-~~Fixed (5f4752f). MCP `get_symbol_info` now reads the `visibility` string property and exposes it. `is_public` boolean fallback improved to derive from visibility string when booleans absent.~~
-
-### ~~15. Fix memory_invalidate error on nonexistent IDs~~
-~~Fixed (6a5a43f). memory_invalidate now returns an error for non-existent IDs.~~
-
-### ~~16. Fix memory_stats byKind serialization~~
-~~Fixed (7273769). Added `MemoryKind::discriminant_name()` returning clean `"debug_context"` etc. Applied in all 4 response sites in server.rs + stats() in storage.rs.~~
-
 ## Strategic — Competitive Capabilities
-
-Gaps identified via competitive analysis against Augment Code and Cursor. Numbered by priority tier.
-
-### ~~T1-1. Branch-aware graph indexing~~
-~~Fixed (c371f1f). Watches `.git/HEAD` for branch switches with 2s debounce, diffs changed files via `git diff --name-status`, and batch re-indexes only what changed. Handles worktrees, detached HEAD, interactive rebase. New module `branch_watcher.rs` (~300 lines), 4 new `GitExecutor` methods, integrated into `CodeGraphBackend::initialized()`.~~
 
 ### T1-2. Configurable embedding model + semantic symbol search
 
-~~**Phase 1 — Migrate to fastembed + BGE-Small**~~ (12108c1): Done. Replaced `model2vec` (256d) with `fastembed v4` BGE-Small-EN-v1.5 (384d ONNX). All three projects now share the same embedding stack. Database migration v3→v4 auto-clears old vectors and re-embeds on load. Verified: semantic search works with zero keyword overlap.
-
-~~**Phase 1 gap — Hybrid BM25 + semantic symbol search**~~ (d77d806e): Done. Reused VectorEngine from MemoryManager in QueryEngine. `build_symbol_vectors()` batch-embeds all Function/Class/Variable/Interface/Type nodes (name + signature + docstring). `symbol_search()` now uses hybrid scoring (0.4×BM25 + 0.6×semantic). Zero-keyword-overlap queries like "persistent storage retrieval" now return semantically relevant results (MemoryStore, MemorySearch, etc.).
+~~**Phase 1 — Migrate to fastembed + BGE-Small**~~ (12108c1): Done.
+~~**Phase 1 gap — Hybrid BM25 + semantic symbol search**~~ (d77d806e): Done.
 
 **Phase 2 — Configurable model + experiment with code-tuned models**:
 - Add `embedding_model` setting to codegraph config (enum or string matching fastembed model codes)
@@ -77,26 +50,16 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 ### T1-3. Runtime dependency detection
 
-~~**Phase 1 — Route handler + HTTP client detection**~~ (2df7ca2): Done. New `runtime_deps` module detects Flask/FastAPI/NestJS/Spring route handlers from decorators (sets `route` and `http_method` properties) and HTTP client calls from function callees (fetch, axios, requests, httpx, etc.). 15 unit tests. Runs automatically during `index_workspace()`.
+~~**Phase 1 — Route handler + HTTP client detection**~~ (2df7ca2): Done.
 
 **Phase 2 — Route matching + RuntimeCalls edges**: Stub exists in `create_runtime_call_edges()`. Needs URL argument capture from parsers to match `fetch("/api/users")` → `@app.get("/api/users")`. Blocked on parser support for string literal extraction in call arguments.
 
 ### T1-4. Cross-repository graph linking
 
-~~**Phase 1 — Shared graph database + project registry**~~ (2df7ca2): Done. All projects share a single RocksDB at `~/.codegraph/graph.db` with `NamespacedBackend` key-prefix isolation. Project registry (`_registry:<slug>` keys) tracks workspace path, node/edge count, last indexed timestamp. On-demand open/close pattern: `persist_to()` writes briefly then releases lock, `open_persistent_graph()` loads then detaches via `detach_storage()`.
-
-~~**Phase 2 — Cross-project symbol search**~~: Done. New MCP tool `codegraph_cross_project_search` searches symbols across all other indexed projects. Opens each project's graph from shared DB, does name substring matching with optional type filter, returns results with project attribution.
+~~**Phase 1 — Shared graph database + project registry**~~ (2df7ca2): Done.
+~~**Phase 2 — Cross-project symbol search**~~ (6b6ac29): Done.
 
 **Phase 3 — Cross-project impact analysis**: Extend `analyze_impact` to show consumers in other projects. Match route handlers in one project against HTTP client calls in others to create cross-project RuntimeCalls edges.
-
-### ~~T2-1. Hierarchical context curation~~
-~~Fixed (f8ee5f1). New `get_curated_context` MCP tool composes symbol search → source resolution → dependency expansion → memory retrieval into a single token-budgeted response. Priority-based percentage allocation across sections (40% symbols, 25% callers, 15% memories, 10% dependencies, 10% metadata).~~
-
-### ~~T2-2. Change-aware automatic context~~
-~~Fixed (be4dd36). New `get_edit_context` MCP tool: given file + line, auto-assembles function source + callers + tests + memories + recent git changes. Single call replaces 5+ manual tool invocations.~~
-
-### ~~T2-3. Searchable commit history~~
-~~Fixed (f8ee5f1). New `search_git_history` MCP tool combines semantic memory search (embeddings) + keyword git log (`--grep`) + time_range fallback for comprehensive commit history retrieval. No new persistence needed — reuses existing git-mined memories.~~
 
 ### T3-1. Architectural layer detection
 
@@ -110,9 +73,25 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 **Current**: Single-user, fully local. Graph in `~/.codegraph/projects/<slug>/`, memories in same location.
 
-**Target**: Team-wide shared graph + memories. "The intern debugged this same issue last week — here's what they found." Shared architectural decisions, shared known issues.
+**Target**: Team-wide shared graph + memories. Shared architectural decisions, shared known issues.
 
 **Effort**: High — needs network transport, auth, conflict resolution, selective sharing.
+
+## Strategic — IDE Fork
+
+### T4-1. CodeGraph IDE (Lapce fork)
+
+Fork Lapce v0.4.6 (Apache-2.0) and integrate CodeGraph as a core subsystem with AI chat. See [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md) for full architecture.
+
+**Phase 0 — Fork + validate**: Fork Lapce, add `lapce-graph` crate, hook tree-sitter `Syntax::parse()` to feed ASTs to graph engine. Verify parse-once-use-twice works.
+
+**Phase 1 — Graph panels**: Graph Explorer (callers/callees/tests for cursor symbol), Impact Preview (blast radius), dead code dimming, structural search, inline complexity code lens.
+
+**Phase 2 — AI chat with graph context**: Multi-provider AI (Claude API, OpenRouter, Ollama), Context Assembler using graph queries, agent loop with tool system, inline diff for proposed edits.
+
+**Phase 3 — Copilot + inline completion**: GitHub Copilot via language server, graph-enhanced tab completion.
+
+**Phase 4 — Advanced**: Architectural constraint rules, multi-file composer, shadow workspace validation.
 
 ---
 
@@ -120,9 +99,6 @@ Gaps identified via competitive analysis against Augment Code and Cursor. Number
 
 ### 6. Publish to VS Code Marketplace + npm
 v0.8.2 VSIX built (`codegraph-0.8.2.vsix`, 70MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
-
-### ~~22. Windows: bundle or auto-download onnxruntime.dll~~
-~~Fixed (7273769). Added `ensure_ort_dll()` in fastembed_embed.rs that auto-downloads ONNX Runtime v1.20.0 from GitHub releases on first run. Sets `ORT_DYLIB_PATH` before fastembed init. Gated with `#[cfg(target_os = "windows")]`. Verified on Windows — binary starts and runs cleanly.~~
 
 ### 23. Linux binary requires glibc 2.39+ (Ubuntu 24.04+)
 Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Won't work on Ubuntu 22.04 (glibc 2.35). zigbuild can't cross-compile ONNX Runtime C++ code (`std::filesystem` symbols). Accepted tradeoff — Ubuntu 22.04 is EOL April 2027.
@@ -140,6 +116,10 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~MCP tool verification suite~~ (890e79a) — 31 tools, 181 scenarios in `test_scenarios.md`. Results: 149/159 pass, 3 fail, 7 warn. Verification skill runs full suite with parallel agents.
+- ~~Cross-project symbol search (T1-4 Phase 2)~~ (6b6ac29) — New `codegraph_cross_project_search` MCP tool. Searches symbols across all indexed projects via shared RocksDB.
+- ~~Runtime dependency detection + shared graph persistence (T1-3p1, T1-4p1)~~ (2df7ca2) — Route handler detection (Flask/FastAPI/NestJS/Spring), HTTP client detection, shared RocksDB with NamespacedBackend, project registry.
+- ~~Docs cleanup~~ — Deleted 7 obsolete docs (246KB): ai_agent_query_architecture, AI_TOOL_EXAMPLES, memory instructions/plan/status, RED_TEAM_TIER2, UPGRADE_RECOMMENDATIONS. Updated competitive-analysis.md with current state (31 tools, fastembed, cross-project, branch-aware).
 - ~~Fix find_unused_code false positives (#8)~~ (0143da9) — 158→0 false positives at ≥0.8 confidence. Test helper detection, same-file struct heuristic, expanded trait impl allowlist.
 - ~~Hierarchical context curation (T2-1)~~ (f8ee5f1) — New `get_curated_context` MCP tool: symbol search → source → dependency expansion → memories, with priority-based token budget allocation.
 - ~~Change-aware automatic context (T2-2)~~ (be4dd36) — New `get_edit_context` MCP tool: file+line → function source + callers + tests + memories + git changes in one call.

@@ -1261,14 +1261,13 @@ impl McpServer {
                                     );
                                 }
                             }
-                            // Optionally include references (callers are already in DetailedSymbolInfo)
-                            if include_refs && info.callers.is_empty() {
-                                // Only note if explicitly requested but none found
+                            // Strip callers/callees/dependencies/dependents when includeReferences=false
+                            if !include_refs {
                                 if let Some(obj) = response.as_object_mut() {
-                                    obj.insert(
-                                        "references_note".to_string(),
-                                        serde_json::json!("No references found. Check 'callers' field for call sites."),
-                                    );
+                                    obj.remove("callers");
+                                    obj.remove("callees");
+                                    obj.remove("dependencies");
+                                    obj.remove("dependents");
                                 }
                             }
                             Ok(response)
@@ -1513,24 +1512,33 @@ impl McpServer {
                 let result = self.analyze_impact(uri, line, change_type).await;
 
                 if summary {
-                    let affected_count = result
-                        .get("affected_files")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
+                    let total_impacted = result
+                        .get("total_impacted")
+                        .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    let risk_score = result
-                        .get("risk_score")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let symbol = result
-                        .get("symbol")
-                        .cloned()
-                        .unwrap_or(serde_json::json!(null));
+                    let direct_impacted = result
+                        .get("direct_impacted")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let risk_level = result
+                        .get("risk_level")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let symbol_name = result
+                        .get("symbol_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let symbol_id = result
+                        .get("symbol_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     Ok(serde_json::json!({
-                        "symbol": symbol,
+                        "symbol": symbol_name,
+                        "symbol_id": symbol_id,
                         "summary": {
-                            "affected_file_count": affected_count,
-                            "risk_score": risk_score,
+                            "total_impacted": total_impacted,
+                            "direct_impacted": direct_impacted,
+                            "risk_level": risk_level,
                             "change_type": change_type,
                         }
                     }))
@@ -1944,28 +1952,45 @@ impl McpServer {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'id' parameter")?;
 
-                // Check if memory exists before invalidating
-                let exists = self
+                // Try to invalidate — idempotent: re-invalidating an already-invalidated
+                // memory succeeds silently (returns "already_invalidated" status).
+                match self
                     .backend
-                    .memory_manager
-                    .get(id)
-                    .await
-                    .map_err(|e| format!("Failed to check memory: {:?}", e))?;
-
-                if exists.is_none() {
-                    return Err(format!("Memory not found: {}", id));
-                }
-
-                self.backend
                     .memory_manager
                     .invalidate(id, "Invalidated via MCP")
                     .await
-                    .map_err(|e| format!("Failed to invalidate memory: {:?}", e))?;
-
-                Ok(serde_json::json!({
-                    "id": id,
-                    "status": "invalidated"
-                }))
+                {
+                    Ok(()) => Ok(serde_json::json!({
+                        "id": id,
+                        "status": "invalidated"
+                    })),
+                    Err(e) => {
+                        let err_str = format!("{:?}", e);
+                        // If the memory doesn't exist in the primary index, check if it's
+                        // already invalidated (visible via get_all_memories with currentOnly=false)
+                        if err_str.contains("not found") || err_str.contains("Not found") {
+                            // Check if it exists as an invalidated memory
+                            let all_memories = self
+                                .backend
+                                .memory_manager
+                                .get_all_memories(false)
+                                .await
+                                .unwrap_or_default();
+                            let is_already_invalidated =
+                                all_memories.iter().any(|m| m.id.to_string() == id);
+                            if is_already_invalidated {
+                                Ok(serde_json::json!({
+                                    "id": id,
+                                    "status": "already_invalidated"
+                                }))
+                            } else {
+                                Err(format!("Memory not found: {}", id))
+                            }
+                        } else {
+                            Err(format!("Failed to invalidate memory: {}", err_str))
+                        }
+                    }
+                }
             }
 
             "codegraph_memory_list" => {
@@ -3428,6 +3453,9 @@ impl McpServer {
             current_only: false, // include invalidated — historical context matters
             ..Default::default()
         };
+        // Minimum similarity threshold — filter out low-relevance semantic results
+        const MIN_SIMILARITY: f32 = 0.5;
+
         if let Ok(mem_results) = self
             .backend
             .memory_manager
@@ -3435,6 +3463,10 @@ impl McpServer {
             .await
         {
             for r in &mem_results {
+                // Skip low-confidence results
+                if r.score < MIN_SIMILARITY {
+                    continue;
+                }
                 if let crate::memory::MemorySource::GitHistory { ref commit_hash } = r.memory.source
                 {
                     if seen_hashes.insert(commit_hash.clone()) {
