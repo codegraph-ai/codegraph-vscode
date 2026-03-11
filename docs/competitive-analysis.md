@@ -1,12 +1,12 @@
 # Competitive Analysis: CodeGraph vs Augment Code vs Cursor
 
-> Date: 2026-02-28
+> Date: 2026-03-08 (updated from 2026-02-28)
 
 ## Executive Summary
 
 CodeGraph's structural intelligence (AST-parsed dependency graphs, call graphs, impact analysis, complexity scoring, coupling metrics) is genuinely superior to both Augment Code and Cursor. Neither competitor builds a real graph from parsed code. Augment's strength is retrieval quality (custom embeddings, hierarchical curation, cross-repo intelligence). Cursor relies entirely on embeddings + grep + LSP linting with no structural understanding.
 
-CodeGraph's biggest gaps are embedding quality, cross-repo support, and runtime dependency detection. Its biggest moats are 27 granular MCP tools, persistent memory with code links, fully-local execution, and provably correct structural analysis.
+CodeGraph's remaining gaps are embedding configurability (single model, no reranking), full runtime dependency matching (route detection done, URL matching pending), and team/shared indices. Its biggest moats are 31 granular MCP tools, persistent memory with code links, cross-project search, branch-aware indexing, fully-local execution, and provably correct structural analysis.
 
 ---
 
@@ -24,14 +24,14 @@ CodeGraph's biggest gaps are embedding quality, cross-repo support, and runtime 
 | **Git history mining** | Auto-extract knowledge from commits | LLM-summarized commits as context | None |
 | **Entry point discovery** | Framework-aware (6 frameworks) | Unknown | None |
 | **Intent-aware context** | 4 modes: explain/modify/debug/test | Single retrieval mode | Single retrieval mode |
-| **MCP tool granularity** | 27 specialized tools | 1 tool (codebase-retrieval) | 6 agent tools |
-| **Semantic search** | Model2Vec + BM25 + graph proximity | Custom paired embeddings + reranker | Embeddings + cross-encoder reranker |
-| **Cross-repo intelligence** | Single workspace only | Multi-repo, service-to-service | Single workspace only |
-| **Runtime dependency detection** | None (static analysis only) | REST, gRPC, queues, DB migrations | None |
+| **MCP tool granularity** | 31 specialized tools | 1 tool (codebase-retrieval) | 6 agent tools |
+| **Semantic search** | fastembed BGE-Small + BM25 hybrid | Custom paired embeddings + reranker | Embeddings + cross-encoder reranker |
+| **Cross-repo intelligence** | Cross-project search via shared graph | Multi-repo, service-to-service | Single workspace only |
+| **Runtime dependency detection** | Route handlers + HTTP client detection | REST, gRPC, queues, DB migrations | None |
 | **Runs locally** | Fully local, no cloud | Cloud-dependent | Cloud-dependent (embeddings) |
 | **Languages** | 14 (tree-sitter + rustpython) | ~14 | Via tree-sitter (chunking only) |
-| **Context compression** | Raw results (except get_ai_context) | Hierarchical curation, 200K tokens | Fixed token budget chunking |
-| **Branch-aware indexing** | No | Per-user, real-time branch switching | Shared indices via Merkle trees |
+| **Context compression** | Token-budgeted curation (3 context tools) | Hierarchical curation, 200K tokens | Fixed token budget chunking |
+| **Branch-aware indexing** | git HEAD watcher, 2s debounce, diff-based | Per-user, real-time branch switching | Shared indices via Merkle trees |
 | **Team/shared indices** | No | Per-user with dedup across tenants | 92% reuse across teammates |
 | **Incremental updates** | File watcher, 300ms debounce | ~45 seconds for changed files | 10-minute polling via Merkle diff |
 | **External source integration** | None (memory stores knowledge only) | Jira, Confluence, design docs | @docs, @web |
@@ -104,7 +104,7 @@ CodeGraph's biggest gaps are embedding quality, cross-repo support, and runtime 
 ## CodeGraph Strengths
 
 ### 1. Structural Intelligence (Unique)
-27 MCP tools providing granular, composable access to code structure. The graph model tracks 8 node types and 11 edge types with full property support. No competitor provides this level of structural detail through a standardized protocol.
+31 MCP tools providing granular, composable access to code structure. The graph model tracks 8 node types and 11 edge types with full property support. No competitor provides this level of structural detail through a standardized protocol.
 
 ### 2. Intent-Aware Context (Unique)
 `get_ai_context` selects different related symbols based on the AI's intent:
@@ -132,67 +132,46 @@ Works with any MCP-compatible agent: Claude Code, Cursor, Codex, Zed. Not locked
 
 ## CodeGraph Gaps — Priority Roadmap
 
-### Tier 1: Close Critical Gaps
+### Tier 1: ~~Close Critical Gaps~~ Mostly Closed
 
-**1. Better Embeddings + Reranking**
-- **Current**: Model2Vec static embeddings — optimized for speed (~8000 samples/sec), not retrieval quality
-- **Target**: Code-tuned embedding model (UniXcoder, Voyage Code, or CodeBERT) + cross-encoder reranking step
-- **Why**: A query for "authentication logic" must reliably find `verifyJWT()` even without keyword overlap. Augment and Cursor both use specialized code embeddings with reranking.
-- **Impact**: Dramatically improves `symbol_search`, `memory_search`, and any semantic query
-- **Effort**: Medium — swap embedding model in indexer, add reranker to retrieval pipeline
+**~~1. Better Embeddings~~** ✅ Done (d77d806)
+- Migrated from Model2Vec to fastembed BGE-Small-EN-v1.5 (384d ONNX). Hybrid BM25 + semantic search with 0.4×BM25 + 0.6×semantic scoring. Zero-keyword-overlap queries now return semantically relevant results.
+- **Remaining**: Configurable model selection (T1-2 Phase 2), cross-encoder reranking (T1-2 Phase 3).
 
-**2. Cross-Repository Graph Linking**
-- **Current**: Single workspace only
-- **Target**: Index multiple repos, detect REST/gRPC/queue connections between services
-- **Why**: Enterprise codebases span dozens of repos. Service-to-service dependencies are invisible to single-repo analysis. This is Augment's killer feature.
-- **Impact**: Enables impact analysis across service boundaries
-- **Effort**: High — needs service discovery heuristics, multi-workspace coordination, HTTP route matching
+**~~2. Cross-Repository Graph Linking~~** ✅ Done (2df7ca2, 6b6ac29)
+- Shared RocksDB at `~/.codegraph/graph.db` with `NamespacedBackend` key-prefix isolation. Project registry tracks all indexed projects. `codegraph_cross_project_search` searches symbols across all indexed projects with type filtering.
+- **Remaining**: Cross-project impact analysis — match route handlers against HTTP clients across projects (T1-4 Phase 3).
 
-**3. Runtime Dependency Detection**
-- **Current**: Pure static analysis via AST — misses all runtime connections
-- **Target**: Parse string literals for HTTP routes, gRPC service names, queue topic names. Link `fetch("/api/users")` to the Express route handler in another file.
-- **Why**: Modern architectures communicate via HTTP/gRPC/queues, not imports. Static-only analysis misses the most important connections in microservice architectures.
-- **Impact**: Reveals the true dependency structure of distributed systems
-- **Effort**: Medium — regex/heuristic scanning of string arguments in function calls
+**~~3. Runtime Dependency Detection~~** Partial (2df7ca2)
+- Route handler detection for Flask/FastAPI/NestJS/Spring via decorator parsing. HTTP client call detection (fetch, axios, requests, httpx). Sets `route` and `http_method` properties on handler nodes.
+- **Remaining**: URL argument extraction from parsers to match `fetch("/api/users")` → `@app.get("/api/users")` (T1-3 Phase 2, blocked on parser support).
 
-### Tier 2: Differentiate
+### Tier 2: ~~Differentiate~~ Done
 
-**4. Hierarchical Context Curation**
-- **Current**: Tools return raw results; the agent decides what to include
-- **Target**: Build a curation pipeline: identify relevant services -> zoom into implementation -> walk dependency chain. Return a curated context package with token budget awareness.
-- **Why**: Augment's "Infinite Context Window" approach outperforms raw retrieval. Raw graph data can overwhelm context windows.
-- **Effort**: Medium — compose existing tools into a higher-level retrieval pipeline
+**~~4. Hierarchical Context Curation~~** ✅ Done (f8ee5f1)
+- `get_curated_context`: symbol search → source resolution → dependency expansion → memory retrieval, with priority-based token budget allocation (40% symbols, 25% callers, 15% memories, 10% dependencies, 10% metadata).
 
-**5. Change-Aware Automatic Context**
-- **Current**: Agent must manually call individual tools
-- **Target**: When the user is modifying code, automatically assemble: function being edited + all callers + all tests + related memories + recent git changes to that function
-- **Why**: This is what makes Augment's context engine feel magical — it proactively gathers the right context. CodeGraph has all the data but requires manual tool orchestration.
-- **Effort**: Low — compose existing tools into a single "what do I need to know about this edit?" endpoint
+**~~5. Change-Aware Automatic Context~~** ✅ Done (be4dd36)
+- `get_edit_context`: given file + line, auto-assembles function source + callers + tests + memories + recent git changes. Single call replaces 5+ manual tool invocations.
 
-**6. Commit History as Searchable Context**
-- **Current**: `mine_git_history` extracts memories from commits (one-time bootstrapping). Not queryable alongside code.
-- **Target**: Make git history a first-class retrieval source. "What changed authentication last month?" returns relevant commits + affected functions + the diff context.
-- **Why**: Augment's "Context Lineage" injects LLM-summarized commit history into every prompt automatically.
-- **Effort**: Medium — extend git mining to maintain a searchable commit index
+**~~6. Commit History as Searchable Context~~** ✅ Done (f8ee5f1)
+- `search_git_history`: combines semantic memory search (embeddings) + keyword git log (`--grep`) + time_range fallback.
 
 ### Tier 3: Moat Building
 
 **7. Architectural Layer Detection**
-- **Current**: Modules are flat — no concept of "this is a service layer" vs "this is a data layer"
-- **Target**: Auto-classify modules as service/controller/repository/utility/test based on naming conventions, dependency patterns, and framework usage. Enable queries like "show me all database access patterns."
-- **Why**: Neither Augment nor Cursor does this structurally. Would enable architectural violation detection (UI calling DB directly, circular layer dependencies).
+- **Current**: `get_ai_context` returns `detected_layer` based on file path patterns. No concept of service/controller/repository boundaries.
+- **Target**: Auto-classify modules based on naming conventions, dependency patterns, and framework usage. Architectural violation detection.
 - **Effort**: High — needs heuristic classification + layer boundary rules
 
 **8. Cross-Session Learning (Refine Existing Moat)**
 - **Current**: Tempera BKMs + codegraph memory already provide persistent learning. No competitor has this.
-- **Target**: Push harder. Auto-capture debugging strategies when errors are resolved. Surface relevant memories proactively. Track which context retrievals actually led to successful edits.
-- **Why**: This is the hardest feature to replicate. A system that gets better at helping you the more you use it is the ultimate moat.
+- **Target**: Auto-capture debugging strategies. Surface relevant memories proactively. Track retrieval effectiveness.
 - **Effort**: Incremental — infrastructure exists, refine capture triggers and retrieval quality
 
 **9. Multi-User Shared Graph**
 - **Current**: Single-user only
-- **Target**: Team-wide code intelligence. Shared graph + shared memories across developers. "The intern just debugged the same issue last week — here's what they found."
-- **Why**: Augment does per-user indices with dedup. Cursor shares embedding indices. A shared structural graph + shared team memories would be more valuable than either.
+- **Target**: Team-wide code intelligence. Shared graph + shared memories across developers.
 - **Effort**: High — needs auth, conflict resolution, network transport
 
 ---
@@ -208,7 +187,7 @@ Works with any MCP-compatible agent: Claude Code, Cursor, Codex, Zed. Not locked
 3. **For both**: CodeGraph as MCP server works WITH both Cursor and Claude Code. It's not a competing IDE — it's infrastructure that makes any agent better.
 
 ### Defensibility
-- **27 specialized MCP tools** are hard to replicate — each encodes domain knowledge about how AI agents use code context
+- **31 specialized MCP tools** are hard to replicate — each encodes domain knowledge about how AI agents use code context
 - **Persistent memory with code links** is a unique concept no competitor has attempted
 - **14-language AST parsing** with real graph construction is months of engineering work
 - **Fully local** means no ongoing cloud costs, no data privacy concerns, no vendor lock-in
