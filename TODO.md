@@ -1,10 +1,8 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-10 (v0.8.2, 330 tests, 31 MCP tools, 149/159 verification pass)
+> Last updated: 2026-03-11 (v0.8.2, 330 tests, 31 MCP tools, all verification bugs fixed)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) | [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md)
-
-## Medium Priority
 
 ## Strategic — Competitive Capabilities
 
