@@ -237,6 +237,44 @@ export function registerCommands(
                 vscode.window.showErrorMessage(`CodeGraph: Failed to reindex workspace: ${error}`);
             }
     });
+
+    // Index Directory - pick folders to index on demand
+    safeRegisterCommand('codegraph.indexDirectory', async () => {
+            const uris = await vscode.window.showOpenDialog({
+                canSelectFolders: true,
+                canSelectFiles: false,
+                canSelectMany: true,
+                openLabel: 'Index',
+                title: 'Select directories to index',
+            });
+
+            if (!uris || uris.length === 0) {
+                return;
+            }
+
+            const paths = uris.map(uri => uri.fsPath);
+
+            try {
+                await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: `CodeGraph: Indexing ${paths.length} director${paths.length === 1 ? 'y' : 'ies'}...`,
+                        cancellable: false,
+                    },
+                    async () => {
+                        await client.sendRequest('workspace/executeCommand', {
+                            command: 'codegraph.indexDirectory',
+                            arguments: [{ paths }]
+                        });
+                    }
+                );
+                vscode.window.showInformationMessage(
+                    `CodeGraph: Indexed ${paths.length} director${paths.length === 1 ? 'y' : 'ies'} successfully`
+                );
+            } catch (error) {
+                vscode.window.showErrorMessage(`CodeGraph: Failed to index directories: ${error}`);
+            }
+    });
 }
 
 /**

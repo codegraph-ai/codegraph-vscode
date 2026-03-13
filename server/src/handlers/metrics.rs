@@ -220,7 +220,7 @@ impl CodeGraphBackend {
         let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
         let lines_of_code = end.saturating_sub(start) + 1;
 
-        if let Some(parsed_complexity) = node.properties.get_int("complexity") {
+        if let Some(parsed_complexity) = node.properties.get_int("cyclomatic_complexity") {
             // Use upstream complexity from codegraph parsers (AST-based)
             let complexity = parsed_complexity as u32;
             let grade = node
@@ -229,13 +229,13 @@ impl CodeGraphBackend {
                 .and_then(|s| s.chars().next())
                 .unwrap_or_else(|| Self::complexity_grade(complexity));
             let details = ComplexityDetails {
-                branches: node.properties.get_int("complexity_branches").unwrap_or(0) as u32,
-                loops: node.properties.get_int("complexity_loops").unwrap_or(0) as u32,
+                branches: node.properties.get_int("branches").unwrap_or(0) as u32,
+                loops: node.properties.get_int("loops").unwrap_or(0) as u32,
                 conditions: node
                     .properties
-                    .get_int("complexity_logical_ops")
+                    .get_int("logical_operators")
                     .unwrap_or(0) as u32,
-                nesting_depth: node.properties.get_int("complexity_nesting").unwrap_or(0) as u32,
+                nesting_depth: node.properties.get_int("max_nesting_depth").unwrap_or(0) as u32,
                 lines_of_code,
             };
             (complexity, details, grade)

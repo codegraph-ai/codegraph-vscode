@@ -127,6 +127,11 @@
                 "command": "codegraph.mineGitHistory",
                 "title": "Mine Git History for Memories",
                 "category": "CodeGraph"
+            },
+            {
+                "command": "codegraph.indexDirectory",
+                "title": "Index Directory",
+                "category": "CodeGraph"
             }
         ],
         "configuration": {
@@ -162,8 +167,8 @@
                 },
                 "codegraph.indexOnStartup": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "Index workspace on startup"
+                    "default": false,
+                    "description": "Index workspace on startup. When false, use 'Index Directory' command to index specific folders on demand."
                 },
                 "codegraph.maxFileSizeKB": {
                     "type": "number",
@@ -187,6 +192,14 @@
                         "**/tmp/**"
                     ],
                     "description": "Glob patterns for files to exclude"
+                },
+                "codegraph.indexPaths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Specific directories to index. When empty and indexOnStartup is true, all workspace folders are indexed. Use 'Index Directory' command to add paths interactively."
                 },
                 "codegraph.includePrivate": {
                     "type": "boolean",

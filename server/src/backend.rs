@@ -20,6 +20,34 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+/// Configuration for indexing behavior, populated from VS Code settings.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CodeGraphConfig {
+    #[serde(default)]
+    pub index_on_startup: bool,
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
+    #[serde(default)]
+    pub index_paths: Vec<String>,
+    #[serde(default = "default_max_file_size_kb")]
+    pub max_file_size_kb: u64,
+}
+
+fn default_max_file_size_kb() -> u64 {
+    1024
+}
+
+impl Default for CodeGraphConfig {
+    fn default() -> Self {
+        Self {
+            index_on_startup: false,
+            exclude_patterns: Vec::new(),
+            index_paths: Vec::new(),
+            max_file_size_kb: 1024,
+        }
+    }
+}
+
 /// CodeGraph Language Server backend.
 pub struct CodeGraphBackend {
     /// LSP client for sending notifications.
@@ -54,6 +82,9 @@ pub struct CodeGraphBackend {
 
     /// Branch watcher for detecting git branch switches.
     branch_watcher: Arc<Mutex<Option<BranchWatcher>>>,
+
+    /// Indexing configuration from VS Code settings.
+    pub config: Arc<RwLock<CodeGraphConfig>>,
 }
 
 impl CodeGraphBackend {
@@ -75,6 +106,7 @@ impl CodeGraphBackend {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             file_watcher: Arc::new(Mutex::new(None)),
             branch_watcher: Arc::new(Mutex::new(None)),
+            config: Arc::new(RwLock::new(CodeGraphConfig::default())),
         }
     }
 
@@ -100,6 +132,7 @@ impl CodeGraphBackend {
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
             file_watcher: Arc::new(Mutex::new(None)),
             branch_watcher: Arc::new(Mutex::new(None)),
+            config: Arc::new(RwLock::new(CodeGraphConfig::default())),
         }
     }
 
@@ -217,13 +250,73 @@ impl CodeGraphBackend {
         self.symbol_index.remove_file(path);
     }
 
+    /// Maximum recursion depth for directory traversal. Prevents runaway
+    /// indexing into deeply nested result/log directory trees.
+    const MAX_INDEX_DEPTH: u32 = 20;
+
+    /// Maximum number of files to index per workspace. Acts as a safety valve
+    /// so the server cannot OOM on huge directory trees.
+    const MAX_INDEXED_FILES: usize = 5_000;
+
+    /// Directories that should be skipped during indexing.
+    const SKIP_DIRECTORIES: &'static [&'static str] = &[
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "out",
+        ".git",
+        "__pycache__",
+        "vendor",
+        "DerivedData",
+        "tmp",
+        "coverage",
+        "htmlcov",
+        "results",
+        "logs",
+    ];
+
     /// Index all supported files in a directory
     pub fn index_directory<'a>(
         &'a self,
         dir: &'a std::path::Path,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.index_directory_inner(dir, 0, counter)
+    }
+
+    /// Inner recursive implementation with depth tracking and a shared file counter.
+    fn index_directory_inner<'a>(
+        &'a self,
+        dir: &'a std::path::Path,
+        depth: u32,
+        total_files: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
         Box::pin(async move {
             use std::fs;
+            use std::sync::atomic::Ordering;
+
+            if depth > Self::MAX_INDEX_DEPTH {
+                tracing::warn!(
+                    "Skipping {:?}: exceeded max indexing depth of {}",
+                    dir,
+                    Self::MAX_INDEX_DEPTH
+                );
+                return 0;
+            }
+
+            if total_files.load(Ordering::Relaxed) >= Self::MAX_INDEXED_FILES {
+                return 0;
+            }
+
+            // Read config for exclude patterns and max file size
+            let config = self.config.read().await.clone();
+            let max_file_size = config.max_file_size_kb * 1024;
+            let exclude_globs: Vec<glob::Pattern> = config
+                .exclude_patterns
+                .iter()
+                .filter_map(|p| glob::Pattern::new(p).ok())
+                .collect();
 
             let mut indexed_count = 0;
             let supported_extensions = self.parsers.supported_extensions();
@@ -232,6 +325,14 @@ impl CodeGraphBackend {
 
             if let Ok(entries) = fs::read_dir(dir) {
                 for entry in entries.flatten() {
+                    if total_files.load(Ordering::Relaxed) >= Self::MAX_INDEXED_FILES {
+                        tracing::warn!(
+                            "Reached max indexed file limit of {}; stopping",
+                            Self::MAX_INDEXED_FILES
+                        );
+                        break;
+                    }
+
                     let path = entry.path();
 
                     // Skip hidden files and directories
@@ -242,27 +343,46 @@ impl CodeGraphBackend {
                     }
 
                     if path.is_dir() {
-                        // Skip common directories
                         let dir_name = path.file_name().unwrap().to_string_lossy();
-                        if matches!(
-                            dir_name.as_ref(),
-                            "node_modules"
-                                | "target"
-                                | "dist"
-                                | "build"
-                                | "out"
-                                | ".git"
-                                | "__pycache__"
-                                | "vendor"
-                                | "DerivedData"
-                                | "tmp"
-                        ) {
+
+                        // Skip hardcoded default directories
+                        if Self::SKIP_DIRECTORIES
+                            .iter()
+                            .any(|&s| s == dir_name.as_ref())
+                        {
+                            continue;
+                        }
+
+                        // Skip directories matching user-configured exclude globs
+                        let path_str = path.to_string_lossy();
+                        if exclude_globs.iter().any(|g| g.matches(&path_str) || g.matches(&*dir_name)) {
+                            tracing::info!("Skipping {:?}: matched exclude pattern", path);
                             continue;
                         }
 
                         // Recursively index subdirectories
-                        indexed_count += self.index_directory(&path).await;
+                        indexed_count +=
+                            self.index_directory_inner(&path, depth + 1, total_files.clone()).await;
                     } else if path.is_file() {
+                        // Skip files matching exclude globs
+                        let path_str = path.to_string_lossy();
+                        if exclude_globs.iter().any(|g| g.matches(&path_str)) {
+                            continue;
+                        }
+
+                        // Skip files that exceed the configurable size limit
+                        if let Ok(metadata) = fs::metadata(&path) {
+                            if metadata.len() > max_file_size {
+                                tracing::info!(
+                                    "Skipping {:?}: file size {} exceeds limit of {}",
+                                    path,
+                                    metadata.len(),
+                                    max_file_size
+                                );
+                                continue;
+                            }
+                        }
+
                         // Check if file has supported extension
                         if let Some(ext) = path.extension() {
                             let ext_str = ext.to_string_lossy();
@@ -296,6 +416,7 @@ impl CodeGraphBackend {
                                                 file_info,
                                             );
                                             indexed_count += 1;
+                                            total_files.fetch_add(1, Ordering::Relaxed);
                                         }
                                         Err(e) => {
                                             tracing::warn!("Failed to parse {:?}: {}", path, e);
@@ -675,12 +796,26 @@ impl LanguageServer for CodeGraphBackend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         tracing::info!("Initializing CodeGraph LSP server");
 
-        // Extract extension path from initialization options
-        let extension_path = params.initialization_options.and_then(|opts| {
+        // Extract extension path and config from initialization options
+        let init_opts = params.initialization_options;
+        let extension_path = init_opts.as_ref().and_then(|opts| {
             opts.get("extensionPath")
                 .and_then(|v| v.as_str())
                 .map(std::path::PathBuf::from)
         });
+
+        // Parse indexing configuration
+        if let Some(ref opts) = init_opts {
+            let config = CodeGraphConfig {
+                index_on_startup: opts.get("indexOnStartup").and_then(|v| v.as_bool()).unwrap_or(false),
+                exclude_patterns: opts.get("excludePatterns").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+                index_paths: opts.get("indexPaths").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+                max_file_size_kb: opts.get("maxFileSizeKB").and_then(|v| v.as_u64()).unwrap_or_else(default_max_file_size_kb),
+            };
+            tracing::info!("CodeGraph config: index_on_startup={}, exclude_patterns={:?}, index_paths={:?}, max_file_size_kb={}",
+                config.index_on_startup, config.exclude_patterns, config.index_paths, config.max_file_size_kb);
+            *self.config.write().await = config;
+        }
 
         if let Some(path) = extension_path {
             tracing::info!(
@@ -768,6 +903,8 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.mineGitHistory".to_string(),
                         "codegraph.mineGitHistoryForFile".to_string(),
                         "codegraph.searchGitHistory".to_string(),
+                        // On-demand indexing
+                        "codegraph.indexDirectory".to_string(),
                     ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
@@ -782,42 +919,56 @@ impl LanguageServer for CodeGraphBackend {
             .log_message(MessageType::INFO, "CodeGraph LSP server initialized")
             .await;
 
-        // Index workspace folders
+        // Index workspace folders only if configured to do so
         let folders = self.workspace_folders.read().await.clone();
+        let config = self.config.read().await.clone();
         let mut total_indexed = 0;
 
-        for folder in &folders {
-            let count = self.index_directory(folder).await;
-            total_indexed += count;
+        if config.index_on_startup {
+            // Determine which paths to index
+            let paths_to_index: Vec<std::path::PathBuf> = if config.index_paths.is_empty() {
+                folders.clone()
+            } else {
+                config.index_paths.iter().map(std::path::PathBuf::from).collect()
+            };
+
+            for folder in &paths_to_index {
+                let count = self.index_directory(folder).await;
+                total_indexed += count;
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("Indexed {} files from {}", count, folder.display()),
+                    )
+                    .await;
+            }
+
             self.client
                 .log_message(
                     MessageType::INFO,
-                    format!("Indexed {} files from {}", count, folder.display()),
+                    format!("Total files indexed: {total_indexed}"),
                 )
                 .await;
+
+            // Resolve cross-file imports after all files are indexed
+            {
+                let mut graph = self.graph.write().await;
+                GraphUpdater::resolve_cross_file_imports(&mut graph);
+            }
+            self.client
+                .log_message(MessageType::INFO, "Cross-file imports resolved")
+                .await;
+
+            // Build AI query engine indexes
+            self.query_engine.build_indexes().await;
+            self.client
+                .log_message(MessageType::INFO, "AI query engine indexes built")
+                .await;
+        } else {
+            self.client
+                .log_message(MessageType::INFO, "Skipping auto-index (indexOnStartup=false). Use 'Index Directory' command to index specific paths.")
+                .await;
         }
-
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("Total files indexed: {total_indexed}"),
-            )
-            .await;
-
-        // Resolve cross-file imports after all files are indexed
-        {
-            let mut graph = self.graph.write().await;
-            GraphUpdater::resolve_cross_file_imports(&mut graph);
-        }
-        self.client
-            .log_message(MessageType::INFO, "Cross-file imports resolved")
-            .await;
-
-        // Build AI query engine indexes
-        self.query_engine.build_indexes().await;
-        self.client
-            .log_message(MessageType::INFO, "AI query engine indexes built")
-            .await;
 
         // Initialize memory store for persistent AI context
         if let Some(first_folder) = folders.first() {
@@ -871,9 +1022,14 @@ impl LanguageServer for CodeGraphBackend {
                 .await;
         }
 
-        // Start file watcher for incremental updates
-        if !folders.is_empty() {
-            self.start_file_watcher(&folders).await;
+        // Start file watcher for incremental updates (only if we indexed something)
+        if config.index_on_startup && !folders.is_empty() {
+            let watch_paths = if config.index_paths.is_empty() {
+                folders.clone()
+            } else {
+                config.index_paths.iter().map(std::path::PathBuf::from).collect()
+            };
+            self.start_file_watcher(&watch_paths).await;
         }
 
         // Start branch watcher for git-aware re-indexing on branch switches
@@ -903,6 +1059,10 @@ impl LanguageServer for CodeGraphBackend {
 
         if let Some(parser) = self.parsers.parser_for_path(&path) {
             tracing::info!("Parser found for: {:?}", path);
+
+            // Remove old entries first to prevent duplicate nodes with stale IDs
+            self.remove_file_from_graph(&path).await;
+
             let mut graph = self.graph.write().await;
 
             match parser.parse_source(&text, &path, &mut graph) {
@@ -929,6 +1089,12 @@ impl LanguageServer for CodeGraphBackend {
                         .await;
                 }
             }
+
+            // Drop graph write lock before rebuilding query indexes
+            drop(graph);
+
+            // Rebuild AI query engine indexes so callee/caller indexes reflect new node IDs
+            self.query_engine.build_indexes().await;
         } else {
             tracing::warn!("No parser found for: {:?}", path);
         }
@@ -949,14 +1115,19 @@ impl LanguageServer for CodeGraphBackend {
                 self.remove_file_from_graph(&path).await;
 
                 // Re-parse with new content
-                let mut graph = self.graph.write().await;
-                if let Ok(file_info) = parser.parse_source(&change.text, &path, &mut graph) {
-                    // Resolve cross-file imports after parsing
-                    GraphUpdater::resolve_cross_file_imports(&mut graph);
+                {
+                    let mut graph = self.graph.write().await;
+                    if let Ok(file_info) = parser.parse_source(&change.text, &path, &mut graph) {
+                        // Resolve cross-file imports after parsing
+                        GraphUpdater::resolve_cross_file_imports(&mut graph);
 
-                    self.symbol_index.add_file(path.clone(), &file_info, &graph);
-                    self.file_cache.insert(uri, file_info);
+                        self.symbol_index.add_file(path.clone(), &file_info, &graph);
+                        self.file_cache.insert(uri, file_info);
+                    }
                 }
+
+                // Rebuild AI query engine indexes so callee/caller indexes reflect new node IDs
+                self.query_engine.build_indexes().await;
             }
         }
     }
@@ -973,14 +1144,19 @@ impl LanguageServer for CodeGraphBackend {
             if let Some(text) = params.text {
                 self.remove_file_from_graph(&path).await;
 
-                let mut graph = self.graph.write().await;
-                if let Ok(file_info) = parser.parse_source(&text, &path, &mut graph) {
-                    // Resolve cross-file imports after parsing
-                    GraphUpdater::resolve_cross_file_imports(&mut graph);
+                {
+                    let mut graph = self.graph.write().await;
+                    if let Ok(file_info) = parser.parse_source(&text, &path, &mut graph) {
+                        // Resolve cross-file imports after parsing
+                        GraphUpdater::resolve_cross_file_imports(&mut graph);
 
-                    self.symbol_index.add_file(path.clone(), &file_info, &graph);
-                    self.file_cache.insert(uri, file_info);
+                        self.symbol_index.add_file(path.clone(), &file_info, &graph);
+                        self.file_cache.insert(uri, file_info);
+                    }
                 }
+
+                // Rebuild AI query engine indexes so callee/caller indexes reflect new node IDs
+                self.query_engine.build_indexes().await;
             }
         }
     }
@@ -1421,7 +1597,11 @@ impl LanguageServer for CodeGraphBackend {
                     )
                     .await;
 
-                Ok(None)
+                Ok(Some(serde_json::json!({
+                    "status": "success",
+                    "message": format!("Workspace reindexed: {total_indexed} files"),
+                    "files_indexed": total_indexed
+                })))
             }
 
             "codegraph.getAIContext" => {

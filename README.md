@@ -124,7 +124,14 @@ AI agents can store and recall knowledge across sessions — debugging insights,
 
 | Tool | What it does |
 |------|-------------|
-| `codegraph_reindex_workspace` | Re-parse all files and rebuild the graph |
+| `codegraph_reindex_workspace` | Re-parse all configured paths and rebuild the graph (respects `excludePatterns` and `indexPaths`) |
+
+**Command palette commands** (VS Code only):
+
+| Command | What it does |
+|---------|-------------|
+| **CodeGraph: Index Directory** | Prompt to pick a directory and index it on-demand |
+| **CodeGraph: Reindex Workspace** | Rebuild graph for all configured `indexPaths` (or all workspace folders if empty) |
 
 ---
 
@@ -188,12 +195,93 @@ A single Rust binary serves both transports. The `--mcp` flag switches from LSP 
 |---------|---------|-------------|
 | `codegraph.enabled` | `true` | Enable/disable the extension |
 | `codegraph.languages` | all 14 | Languages to index |
-| `codegraph.indexOnStartup` | `true` | Index workspace on startup |
-| `codegraph.maxFileSizeKB` | `1024` | Max file size to index |
-| `codegraph.excludePatterns` | node_modules, target, ... | Glob patterns to exclude |
+| `codegraph.indexOnStartup` | `false` | Auto-index workspace on startup. Keep `false` for large workspaces — use the **Index Directory** command instead. |
+| `codegraph.indexPaths` | `[]` | Explicit list of absolute paths to index. When set, only these directories are indexed (on startup if `indexOnStartup: true`, or on reindex). Empty means all workspace folders. |
+| `codegraph.maxFileSizeKB` | `1024` | Skip files larger than this size (in KB). Protects against indexing large generated or binary files. |
+| `codegraph.excludePatterns` | see below | Glob patterns matched against full file paths. Matching files and directories are skipped. |
 | `codegraph.ai.maxContextTokens` | `4000` | Token budget for AI context |
 | `codegraph.visualization.defaultDepth` | `3` | Default graph traversal depth |
 | `codegraph.parallelParsing` | `true` | Parallel file parsing |
+
+### Default exclude patterns
+
+The following directories are always skipped regardless of settings:
+
+`node_modules`, `target`, `.git`, `dist`, `build`, `out`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.tox`, `vendor`, `.cargo`, `.rustup`, `buck-out`, `bazel-out`, `.next`, `.nuxt`, `coverage`, `.nyc_output`, `tmp`, `temp`
+
+---
+
+## Configuring Indexing & Exclusions
+
+By default, **auto-indexing on startup is disabled** (`indexOnStartup: false`). This prevents runaway memory usage in large or mixed-content workspaces (e.g. fileshares, test artifact directories, monorepos with binaries).
+
+### On-demand indexing
+
+Use the command palette to index specific directories when you need them:
+
+1. `Ctrl+Shift+P` → **CodeGraph: Index Directory**
+2. Pick the directory to index (e.g. `src/`, `server/src/`)
+3. The graph is built incrementally — subsequent saves update it automatically via file watchers
+
+### Targeting specific paths on startup
+
+To auto-index only your source directories (not the whole workspace):
+
+```jsonc
+// .vscode/settings.json
+{
+  "codegraph.indexOnStartup": true,
+  "codegraph.indexPaths": [
+    "/home/user/projects/myapp/src",
+    "/home/user/projects/myapp/server/src"
+  ]
+}
+```
+
+### Excluding directories and files
+
+Add glob patterns to skip noise from logs, test artifacts, binaries, and large data directories:
+
+```jsonc
+// .vscode/settings.json
+{
+  "codegraph.excludePatterns": [
+    "**/logs/**",
+    "**/results/**",
+    "**/binaries/**",
+    "**/*.log",
+    "**/*.vib",
+    "**/*.sva",
+    "**/DATEv3.1/**",
+    "**/DeviceStateChange_logs/**"
+  ]
+}
+```
+
+Patterns follow standard glob syntax (`**` for any path segment, `*` for any filename characters). They are matched against the full absolute path of each file and directory.
+
+### Large workspace / fileshare example
+
+For a workspace with a mounted fileshare (`/mnt/share`) alongside source code:
+
+```jsonc
+{
+  "codegraph.indexOnStartup": false,
+  "codegraph.excludePatterns": [
+    "/mnt/share/**",
+    "**/logs/**",
+    "**/test_results/**",
+    "**/*.bin",
+    "**/*.iso"
+  ]
+}
+```
+
+Then index only what you need via **CodeGraph: Index Directory**.
+
+### Reindexing
+
+After changing exclude patterns or index paths, use **CodeGraph: Reindex Workspace** (`Ctrl+Shift+P`) to rebuild the graph with the new settings. This clears the existing graph and re-parses all configured paths.
 
 ---
 

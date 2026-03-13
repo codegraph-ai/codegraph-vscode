@@ -67,6 +67,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         traceOutputChannel: vscode.window.createOutputChannel('CodeGraph Trace'),
         initializationOptions: {
             extensionPath: context.extensionPath,
+            indexOnStartup: config.get<boolean>('indexOnStartup', false),
+            excludePatterns: config.get<string[]>('excludePatterns', []),
+            indexPaths: config.get<string[]>('indexPaths', []),
+            maxFileSizeKB: config.get<number>('maxFileSizeKB', 1024),
         },
     };
 
