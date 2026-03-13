@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-11 (v0.8.2, 330 tests, 31 MCP tools, all verification bugs fixed)
+> Last updated: 2026-03-13 (v0.8.3, 330 tests, 31 MCP tools, reindex null return fixed)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) | [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md)
 
@@ -95,6 +95,7 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Fix `codegraph_reindex_workspace` null return~~ — Server returned `Ok(None)`/`Ok(Value::Null)` in both `custom_requests.rs` and `backend.rs`, causing toolManager to throw "returned null — server may be busy or restarting". Fixed both handlers to return `{ status, message, files_indexed }`. Reindex now works end-to-end; verified 512 files indexed on workspace with two source folders.
 - ~~Adopt PropertyValue::StringList for multi-valued properties (#4)~~ (a79ef71, 6521447) — All 14 language mappers now use native `StringList` instead of `.join(",")` comma-separated strings. Properties migrated: symbols, attributes, annotations, parameters, unresolved_calls, unresolved_type_refs, type_parameters, required_methods. Added `get_string_list_compat()` for backwards-compatible reading. Updated 5 consumers in codegraph-vscode server.
 - ~~Fix 4 MCP tool bugs (#25-28)~~ (17e061d) — includeReferences flag (get_symbol_info), idempotent memory_invalidate, similarity threshold (search_git_history), summary mode keys (analyze_impact).
 - ~~MCP tool verification suite~~ (890e79a) — 31 tools, 181 scenarios in `test_scenarios.md`. Results: 149/159 pass, 3 fail, 7 warn. Verification skill runs full suite with parallel agents.

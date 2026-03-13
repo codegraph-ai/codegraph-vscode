@@ -41,8 +41,13 @@ impl CodeGraphBackend {
             }
 
             "codegraph/reindexWorkspace" => {
-                self.handle_reindex_workspace().await?;
-                Ok(Value::Null)
+                let total_indexed = self.handle_reindex_workspace().await?;
+                serde_json::to_value(serde_json::json!({
+                    "status": "success",
+                    "message": format!("Workspace reindexed: {total_indexed} files"),
+                    "files_indexed": total_indexed
+                }))
+                .map_err(|_| Error::internal_error())
             }
 
             "codegraph/getAIContext" => {
@@ -151,12 +156,20 @@ impl CodeGraphBackend {
                 serde_json::to_value(response).map_err(|_| Error::internal_error())
             }
 
+            "codegraph/indexDirectory" => {
+                self.handle_index_directory(params).await
+            }
+
+            "codegraph/updateConfiguration" => {
+                self.handle_update_configuration(params).await
+            }
+
             _ => Err(Error::method_not_found()),
         }
     }
 
     /// Handle reindex workspace request
-    async fn handle_reindex_workspace(&self) -> Result<()> {
+    async fn handle_reindex_workspace(&self) -> Result<usize> {
         tracing::info!("Reindexing workspace");
 
         // Clear current graph and indexes
@@ -205,6 +218,77 @@ impl CodeGraphBackend {
             )
             .await;
 
-        Ok(())
+        Ok(total_indexed)
+    }
+
+    async fn handle_index_directory(&self, params: Value) -> Result<Value> {
+        let paths: Vec<String> = params
+            .get("paths")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if paths.is_empty() {
+            return Err(Error::invalid_params("Missing or empty 'paths' array"));
+        }
+
+        tracing::info!("Indexing directories: {:?}", paths);
+        let mut total_indexed = 0;
+
+        for path_str in &paths {
+            let path = std::path::PathBuf::from(path_str);
+            if !path.is_dir() {
+                tracing::warn!("Skipping non-directory path: {}", path_str);
+                continue;
+            }
+            let count = self.index_directory(&path).await;
+            total_indexed += count;
+            self.client
+                .log_message(
+                    tower_lsp::lsp_types::MessageType::INFO,
+                    format!("Indexed {} files from {}", count, path.display()),
+                )
+                .await;
+        }
+
+        // Resolve cross-file imports after all files are indexed
+        {
+            let mut graph = self.graph.write().await;
+            GraphUpdater::resolve_cross_file_imports(&mut graph);
+        }
+
+        // Rebuild AI query engine indexes
+        self.query_engine.build_indexes().await;
+
+        self.client
+            .log_message(
+                tower_lsp::lsp_types::MessageType::INFO,
+                format!("Index complete: {total_indexed} files from {} directories", paths.len()),
+            )
+            .await;
+
+        Ok(serde_json::json!({ "indexed": total_indexed }))
+    }
+
+    async fn handle_update_configuration(&self, params: Value) -> Result<Value> {
+        use crate::backend::CodeGraphConfig;
+
+        let new_config: CodeGraphConfig = serde_json::from_value(params)
+            .map_err(|e| Error::invalid_params(format!("Invalid configuration: {e}")))?;
+
+        tracing::info!("Updating configuration: {:?}", new_config);
+
+        {
+            let mut config = self.config.write().await;
+            *config = new_config;
+        }
+
+        self.client
+            .log_message(
+                tower_lsp::lsp_types::MessageType::INFO,
+                "Configuration updated".to_string(),
+            )
+            .await;
+
+        Ok(Value::Null)
     }
 }

@@ -4500,9 +4500,9 @@ impl McpServer {
                 let name = node.properties.get_string("name").unwrap_or_default();
 
                 // Read AST-based complexity from node properties (populated by upstream parsers)
-                let complexity = node.properties.get_int("complexity").unwrap_or(1) as u32;
+                let complexity = node.properties.get_int("cyclomatic_complexity").unwrap_or(1) as u32;
                 let nesting_depth =
-                    node.properties.get_int("complexity_nesting").unwrap_or(0) as u32;
+                    node.properties.get_int("max_nesting_depth").unwrap_or(0) as u32;
 
                 let grade = node
                     .properties
@@ -4534,12 +4534,12 @@ impl McpServer {
                     "line_start": start,
                     "line_end": end,
                     "details": {
-                        "branches": node.properties.get_int("complexity_branches").unwrap_or(0),
-                        "loops": node.properties.get_int("complexity_loops").unwrap_or(0),
-                        "logical_operators": node.properties.get_int("complexity_logical_ops").unwrap_or(0),
+                        "branches": node.properties.get_int("branches").unwrap_or(0),
+                        "loops": node.properties.get_int("loops").unwrap_or(0),
+                        "logical_operators": node.properties.get_int("logical_operators").unwrap_or(0),
                         "nesting_depth": nesting_depth,
-                        "exception_handlers": node.properties.get_int("complexity_exceptions").unwrap_or(0),
-                        "early_returns": node.properties.get_int("complexity_early_returns").unwrap_or(0),
+                        "exception_handlers": node.properties.get_int("exception_handlers").unwrap_or(0),
+                        "early_returns": node.properties.get_int("early_returns").unwrap_or(0),
                         "lines_of_code": end.saturating_sub(start) + 1,
                     }
                 }));
