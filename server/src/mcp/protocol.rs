@@ -109,6 +109,19 @@ pub struct InitializeParams {
     pub capabilities: ClientCapabilities,
     #[serde(default)]
     pub client_info: Option<ClientInfo>,
+    /// Workspace roots provided by the client (MCP 2024-11-05+).
+    #[serde(default)]
+    pub roots: Option<Vec<Root>>,
+}
+
+/// A workspace root provided by the MCP client.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Root {
+    /// Root URI (typically file:///path/to/dir)
+    pub uri: String,
+    /// Optional human-readable name
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// MCP Client capabilities

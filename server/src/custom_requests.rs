@@ -156,13 +156,9 @@ impl CodeGraphBackend {
                 serde_json::to_value(response).map_err(|_| Error::internal_error())
             }
 
-            "codegraph/indexDirectory" => {
-                self.handle_index_directory(params).await
-            }
+            "codegraph/indexDirectory" => self.handle_index_directory(params).await,
 
-            "codegraph/updateConfiguration" => {
-                self.handle_update_configuration(params).await
-            }
+            "codegraph/updateConfiguration" => self.handle_update_configuration(params).await,
 
             _ => Err(Error::method_not_found()),
         }
@@ -262,7 +258,10 @@ impl CodeGraphBackend {
         self.client
             .log_message(
                 tower_lsp::lsp_types::MessageType::INFO,
-                format!("Index complete: {total_indexed} files from {} directories", paths.len()),
+                format!(
+                    "Index complete: {total_indexed} files from {} directories",
+                    paths.len()
+                ),
             )
             .await;
 

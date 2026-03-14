@@ -355,14 +355,18 @@ impl CodeGraphBackend {
 
                         // Skip directories matching user-configured exclude globs
                         let path_str = path.to_string_lossy();
-                        if exclude_globs.iter().any(|g| g.matches(&path_str) || g.matches(&*dir_name)) {
+                        if exclude_globs
+                            .iter()
+                            .any(|g| g.matches(&path_str) || g.matches(&dir_name))
+                        {
                             tracing::info!("Skipping {:?}: matched exclude pattern", path);
                             continue;
                         }
 
                         // Recursively index subdirectories
-                        indexed_count +=
-                            self.index_directory_inner(&path, depth + 1, total_files.clone()).await;
+                        indexed_count += self
+                            .index_directory_inner(&path, depth + 1, total_files.clone())
+                            .await;
                     } else if path.is_file() {
                         // Skip files matching exclude globs
                         let path_str = path.to_string_lossy();
@@ -807,10 +811,22 @@ impl LanguageServer for CodeGraphBackend {
         // Parse indexing configuration
         if let Some(ref opts) = init_opts {
             let config = CodeGraphConfig {
-                index_on_startup: opts.get("indexOnStartup").and_then(|v| v.as_bool()).unwrap_or(false),
-                exclude_patterns: opts.get("excludePatterns").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
-                index_paths: opts.get("indexPaths").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
-                max_file_size_kb: opts.get("maxFileSizeKB").and_then(|v| v.as_u64()).unwrap_or_else(default_max_file_size_kb),
+                index_on_startup: opts
+                    .get("indexOnStartup")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                exclude_patterns: opts
+                    .get("excludePatterns")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
+                index_paths: opts
+                    .get("indexPaths")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
+                max_file_size_kb: opts
+                    .get("maxFileSizeKB")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(default_max_file_size_kb),
             };
             tracing::info!("CodeGraph config: index_on_startup={}, exclude_patterns={:?}, index_paths={:?}, max_file_size_kb={}",
                 config.index_on_startup, config.exclude_patterns, config.index_paths, config.max_file_size_kb);
@@ -929,7 +945,11 @@ impl LanguageServer for CodeGraphBackend {
             let paths_to_index: Vec<std::path::PathBuf> = if config.index_paths.is_empty() {
                 folders.clone()
             } else {
-                config.index_paths.iter().map(std::path::PathBuf::from).collect()
+                config
+                    .index_paths
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect()
             };
 
             for folder in &paths_to_index {
@@ -1027,7 +1047,11 @@ impl LanguageServer for CodeGraphBackend {
             let watch_paths = if config.index_paths.is_empty() {
                 folders.clone()
             } else {
-                config.index_paths.iter().map(std::path::PathBuf::from).collect()
+                config
+                    .index_paths
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect()
             };
             self.start_file_watcher(&watch_paths).await;
         }

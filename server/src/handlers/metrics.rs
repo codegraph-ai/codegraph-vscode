@@ -2,7 +2,7 @@
 
 use crate::backend::CodeGraphBackend;
 use crate::handlers::ai_context::LocationInfo;
-use codegraph::{Direction, EdgeType, NodeId, NodeType};
+use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tower_lsp::jsonrpc::Result;
@@ -46,15 +46,46 @@ pub struct FunctionComplexity {
 #[serde(rename_all = "camelCase")]
 pub struct ComplexityDetails {
     /// Number of if/else/switch branches
-    pub branches: u32,
+    pub complexity_branches: u32,
     /// Number of for/while/loop constructs
-    pub loops: u32,
-    /// Number of && / || conditions
-    pub conditions: u32,
+    pub complexity_loops: u32,
+    /// Number of && / || logical operators
+    pub complexity_logical_ops: u32,
     /// Maximum nesting depth
-    pub nesting_depth: u32,
+    pub complexity_nesting: u32,
+    /// Number of try/catch/except handlers
+    pub complexity_exceptions: u32,
+    /// Number of early return/break/continue statements
+    pub complexity_early_returns: u32,
     /// Lines of code in the function
     pub lines_of_code: u32,
+}
+
+// ==========================================
+// Internal complexity result (shared by LSP and MCP handlers)
+// ==========================================
+
+/// Internal complexity analysis result. Both LSP and MCP handlers
+/// call `analyze_file_complexity()` and transform this into their
+/// respective wire formats.
+pub(crate) struct FunctionComplexityEntry {
+    pub node_id: codegraph::NodeId,
+    pub name: String,
+    pub complexity: u32,
+    pub grade: char,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub details: ComplexityDetails,
+}
+
+pub(crate) struct ComplexityAnalysisResult {
+    pub functions: Vec<FunctionComplexityEntry>,
+    pub threshold: u32,
+    pub average_complexity: f64,
+    pub max_complexity: u32,
+    pub functions_above_threshold: u32,
+    pub overall_grade: char,
+    pub recommendations: Vec<String>,
 }
 
 // LocationInfo is imported from ai_context module
@@ -185,191 +216,226 @@ pub struct ArchViolation {
 }
 
 // ==========================================
-// Complexity Calculation
+// Complexity Calculation (shared by LSP and MCP)
+// ==========================================
+
+/// Calculate cyclomatic complexity grade from score.
+/// Uses same thresholds as upstream codegraph-parser-api ComplexityMetrics::grade().
+pub(crate) fn complexity_grade(complexity: u32) -> char {
+    match complexity {
+        1..=5 => 'A',   // Simple, low risk
+        6..=10 => 'B',  // Moderate complexity
+        11..=20 => 'C', // Complex, moderate risk
+        21..=50 => 'D', // Very complex, high risk
+        _ => 'F',       // Untestable, very high risk
+    }
+}
+
+/// Calculate overall file grade from average complexity.
+pub(crate) fn file_grade(avg_complexity: f64) -> char {
+    match avg_complexity as u32 {
+        0..=5 => 'A',
+        6..=10 => 'B',
+        11..=15 => 'C',
+        16..=25 => 'D',
+        _ => 'F',
+    }
+}
+
+/// Extract complexity metrics from a graph node's properties.
+pub(crate) fn get_complexity_from_node(node: &codegraph::Node) -> (u32, ComplexityDetails, char) {
+    let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
+    let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
+    let lines_of_code = end.saturating_sub(start) + 1;
+
+    if let Some(parsed_complexity) = node.properties.get_int("complexity") {
+        let complexity = parsed_complexity as u32;
+        let grade = node
+            .properties
+            .get_string("complexity_grade")
+            .and_then(|s| s.chars().next())
+            .unwrap_or_else(|| complexity_grade(complexity));
+        let details = ComplexityDetails {
+            complexity_branches: node.properties.get_int("complexity_branches").unwrap_or(0) as u32,
+            complexity_loops: node.properties.get_int("complexity_loops").unwrap_or(0) as u32,
+            complexity_logical_ops: node
+                .properties
+                .get_int("complexity_logical_ops")
+                .unwrap_or(0) as u32,
+            complexity_nesting: node.properties.get_int("complexity_nesting").unwrap_or(0) as u32,
+            complexity_exceptions: node
+                .properties
+                .get_int("complexity_exceptions")
+                .unwrap_or(0) as u32,
+            complexity_early_returns: node
+                .properties
+                .get_int("complexity_early_returns")
+                .unwrap_or(0) as u32,
+            lines_of_code,
+        };
+        (complexity, details, grade)
+    } else {
+        let details = ComplexityDetails {
+            complexity_branches: 0,
+            complexity_loops: 0,
+            complexity_logical_ops: 0,
+            complexity_nesting: 0,
+            complexity_exceptions: 0,
+            complexity_early_returns: 0,
+            lines_of_code,
+        };
+        (1, details, 'A')
+    }
+}
+
+/// Core complexity analysis — single source of truth for both LSP and MCP handlers.
+/// Takes a graph reference and pre-resolved node IDs (from symbol index or graph query).
+pub(crate) fn analyze_file_complexity(
+    graph: &CodeGraph,
+    node_ids: &[NodeId],
+    line: Option<u32>,
+    threshold: u32,
+) -> ComplexityAnalysisResult {
+    let mut functions: Vec<FunctionComplexityEntry> = Vec::new();
+
+    for &node_id in node_ids {
+        if let Ok(node) = graph.get_node(node_id) {
+            if node.node_type != NodeType::Function {
+                continue;
+            }
+
+            let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
+            let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
+
+            if let Some(target_line) = line {
+                if target_line < start || target_line > end {
+                    continue;
+                }
+            }
+
+            let name = node
+                .properties
+                .get_string("name")
+                .unwrap_or("anonymous")
+                .to_string();
+
+            let (complexity, details, grade) = get_complexity_from_node(node);
+
+            functions.push(FunctionComplexityEntry {
+                node_id,
+                name,
+                complexity,
+                grade,
+                line_start: start,
+                line_end: end,
+                details,
+            });
+        }
+    }
+
+    functions.sort_by(|a, b| b.complexity.cmp(&a.complexity));
+
+    let total: u32 = functions.iter().map(|f| f.complexity).sum();
+    let count = functions.len();
+    let average_complexity = if count > 0 {
+        total as f64 / count as f64
+    } else {
+        0.0
+    };
+    let max_complexity = functions.iter().map(|f| f.complexity).max().unwrap_or(0);
+    let functions_above_threshold = functions
+        .iter()
+        .filter(|f| f.complexity > threshold)
+        .count() as u32;
+
+    let mut recommendations = Vec::new();
+    for f in functions.iter().filter(|f| f.complexity > threshold) {
+        recommendations.push(format!(
+            "Consider refactoring '{}' (complexity: {}, grade: {}). Break into smaller functions.",
+            f.name, f.complexity, f.grade
+        ));
+    }
+    if average_complexity > 15.0 {
+        recommendations.push(
+            "File has high average complexity. Consider splitting into multiple modules."
+                .to_string(),
+        );
+    }
+    let deep_nesting = functions
+        .iter()
+        .filter(|f| f.details.complexity_nesting > 4)
+        .count();
+    if deep_nesting > 0 {
+        recommendations.push(format!(
+            "{} function(s) have deep nesting (>4 levels). Use early returns or extract methods.",
+            deep_nesting
+        ));
+    }
+
+    ComplexityAnalysisResult {
+        functions,
+        threshold,
+        average_complexity,
+        max_complexity,
+        functions_above_threshold,
+        overall_grade: file_grade(average_complexity),
+        recommendations,
+    }
+}
+
+// ==========================================
+// LSP Handlers
 // ==========================================
 
 impl CodeGraphBackend {
-    /// Calculate cyclomatic complexity grade from score
-    /// Uses same thresholds as upstream codegraph-parser-api ComplexityMetrics::grade()
-    fn complexity_grade(complexity: u32) -> char {
-        match complexity {
-            1..=5 => 'A',   // Simple, low risk
-            6..=10 => 'B',  // Moderate complexity
-            11..=20 => 'C', // Complex, moderate risk
-            21..=50 => 'D', // Very complex, high risk
-            _ => 'F',       // Untestable, very high risk
-        }
-    }
-
-    /// Calculate overall file grade from average complexity
-    fn file_grade(avg_complexity: f64) -> char {
-        match avg_complexity as u32 {
-            0..=5 => 'A',
-            6..=10 => 'B',
-            11..=15 => 'C',
-            16..=25 => 'D',
-            _ => 'F',
-        }
-    }
-
-    /// Get complexity details from a function node
-    /// Primary: Uses AST-based complexity from upstream codegraph parsers (v0.3.0+)
-    /// Fallback: Returns base complexity of 1 if no upstream data available
-    fn get_complexity_from_node(node: &codegraph::Node) -> (u32, ComplexityDetails, char) {
-        let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
-        let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
-        let lines_of_code = end.saturating_sub(start) + 1;
-
-        if let Some(parsed_complexity) = node.properties.get_int("cyclomatic_complexity") {
-            // Use upstream complexity from codegraph parsers (AST-based)
-            let complexity = parsed_complexity as u32;
-            let grade = node
-                .properties
-                .get_string("complexity_grade")
-                .and_then(|s| s.chars().next())
-                .unwrap_or_else(|| Self::complexity_grade(complexity));
-            let details = ComplexityDetails {
-                branches: node.properties.get_int("branches").unwrap_or(0) as u32,
-                loops: node.properties.get_int("loops").unwrap_or(0) as u32,
-                conditions: node
-                    .properties
-                    .get_int("logical_operators")
-                    .unwrap_or(0) as u32,
-                nesting_depth: node.properties.get_int("max_nesting_depth").unwrap_or(0) as u32,
-                lines_of_code,
-            };
-            (complexity, details, grade)
-        } else {
-            // Fallback: Base complexity of 1 (no control flow analysis available)
-            // This happens for files indexed with older parser versions
-            let details = ComplexityDetails {
-                branches: 0,
-                loops: 0,
-                conditions: 0,
-                nesting_depth: 0,
-                lines_of_code,
-            };
-            (1, details, 'A')
-        }
-    }
-
-    /// Analyze complexity for a file
+    /// LSP handler — delegates to shared `analyze_file_complexity()`.
     pub async fn handle_analyze_complexity(
         &self,
         params: ComplexityParams,
     ) -> Result<ComplexityResponse> {
-        let uri = Url::parse(&params.uri)
-            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid URI"))?;
-
-        let path = uri
-            .to_file_path()
-            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
-
         let threshold = params.threshold.unwrap_or(10);
         let graph = self.graph.read().await;
+        let file_nodes = self.get_file_node_ids(&graph, &params.uri)?;
+        let result = analyze_file_complexity(&graph, &file_nodes, params.line, threshold);
 
-        // Get all function nodes in this file
-        let file_symbols = self.symbol_index.get_file_symbols(&path);
-        let mut functions: Vec<FunctionComplexity> = Vec::new();
-
-        for node_id in file_symbols {
-            if let Ok(node) = graph.get_node(node_id) {
-                // Only analyze functions
-                if node.node_type != NodeType::Function {
-                    continue;
-                }
-
-                // If a specific line is requested, filter to that function
-                if let Some(target_line) = params.line {
-                    let start_line = node.properties.get_int("line_start").unwrap_or(0) as u32;
-                    let end_line = node.properties.get_int("line_end").unwrap_or(0) as u32;
-                    if target_line < start_line || target_line > end_line {
-                        continue;
-                    }
-                }
-
-                let name = node
-                    .properties
-                    .get_string("name")
-                    .unwrap_or("anonymous")
-                    .to_string();
-
-                // Get complexity from upstream codegraph parsers (AST-based)
-                let (complexity, details, grade) = Self::get_complexity_from_node(node);
-
-                let location = self
-                    .node_to_location(&graph, node_id)
-                    .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
-
-                functions.push(FunctionComplexity {
-                    name,
-                    complexity,
-                    grade,
-                    location: LocationInfo {
-                        uri: location.uri.to_string(),
-                        range: location.range,
-                    },
-                    details,
-                });
-            }
-        }
-
-        // Sort by complexity descending
-        functions.sort_by(|a, b| b.complexity.cmp(&a.complexity));
-
-        // Calculate summary
-        let total_functions = functions.len() as u32;
-        let total_complexity: u32 = functions.iter().map(|f| f.complexity).sum();
-        let average_complexity = if total_functions > 0 {
-            total_complexity as f64 / total_functions as f64
-        } else {
-            0.0
-        };
-        let max_complexity = functions.iter().map(|f| f.complexity).max().unwrap_or(0);
-        let functions_above_threshold = functions
-            .iter()
-            .filter(|f| f.complexity > threshold)
-            .count() as u32;
-
-        // Generate recommendations
-        let mut recommendations = Vec::new();
-
-        for func in functions.iter().filter(|f| f.complexity > threshold) {
-            recommendations.push(format!(
-                "Consider refactoring '{}' (complexity: {}, grade: {}). Break into smaller functions.",
-                func.name, func.complexity, func.grade
-            ));
-        }
-
-        if average_complexity > 15.0 {
-            recommendations.push(
-                "File has high average complexity. Consider splitting into multiple modules."
-                    .to_string(),
-            );
-        }
-
-        let high_nesting: Vec<_> = functions
-            .iter()
-            .filter(|f| f.details.nesting_depth > 4)
-            .collect();
-        if !high_nesting.is_empty() {
-            recommendations.push(format!(
-                "{} function(s) have deep nesting (>4 levels). Use early returns or extract methods.",
-                high_nesting.len()
-            ));
+        let mut functions = Vec::new();
+        for entry in &result.functions {
+            let location = self
+                .node_to_location(&graph, entry.node_id)
+                .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
+            functions.push(FunctionComplexity {
+                name: entry.name.clone(),
+                complexity: entry.complexity,
+                grade: entry.grade,
+                location: LocationInfo {
+                    uri: location.uri.to_string(),
+                    range: location.range,
+                },
+                details: entry.details.clone(),
+            });
         }
 
         Ok(ComplexityResponse {
             functions,
             file_summary: FileSummary {
-                total_functions,
-                average_complexity,
-                max_complexity,
-                functions_above_threshold,
-                overall_grade: Self::file_grade(average_complexity),
+                total_functions: result.functions.len() as u32,
+                average_complexity: result.average_complexity,
+                max_complexity: result.max_complexity,
+                functions_above_threshold: result.functions_above_threshold,
+                overall_grade: result.overall_grade,
             },
-            recommendations,
+            recommendations: result.recommendations,
         })
+    }
+
+    /// Resolve file URI to node IDs via symbol index.
+    fn get_file_node_ids(&self, _graph: &CodeGraph, uri_str: &str) -> Result<Vec<NodeId>> {
+        let uri = Url::parse(uri_str)
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid URI"))?;
+        let path = uri
+            .to_file_path()
+            .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
+        Ok(self.symbol_index.get_file_symbols(&path))
     }
 
     /// Find unused code in the codebase
@@ -844,24 +910,24 @@ mod tests {
 
     #[test]
     fn test_complexity_grade() {
-        assert_eq!(CodeGraphBackend::complexity_grade(1), 'A');
-        assert_eq!(CodeGraphBackend::complexity_grade(5), 'A');
-        assert_eq!(CodeGraphBackend::complexity_grade(6), 'B');
-        assert_eq!(CodeGraphBackend::complexity_grade(10), 'B');
-        assert_eq!(CodeGraphBackend::complexity_grade(11), 'C');
-        assert_eq!(CodeGraphBackend::complexity_grade(20), 'C');
-        assert_eq!(CodeGraphBackend::complexity_grade(21), 'D');
-        assert_eq!(CodeGraphBackend::complexity_grade(50), 'D');
-        assert_eq!(CodeGraphBackend::complexity_grade(51), 'F');
+        assert_eq!(complexity_grade(1), 'A');
+        assert_eq!(complexity_grade(5), 'A');
+        assert_eq!(complexity_grade(6), 'B');
+        assert_eq!(complexity_grade(10), 'B');
+        assert_eq!(complexity_grade(11), 'C');
+        assert_eq!(complexity_grade(20), 'C');
+        assert_eq!(complexity_grade(21), 'D');
+        assert_eq!(complexity_grade(50), 'D');
+        assert_eq!(complexity_grade(51), 'F');
     }
 
     #[test]
     fn test_file_grade() {
-        assert_eq!(CodeGraphBackend::file_grade(3.0), 'A');
-        assert_eq!(CodeGraphBackend::file_grade(8.0), 'B');
-        assert_eq!(CodeGraphBackend::file_grade(12.0), 'C');
-        assert_eq!(CodeGraphBackend::file_grade(20.0), 'D');
-        assert_eq!(CodeGraphBackend::file_grade(30.0), 'F');
+        assert_eq!(file_grade(3.0), 'A');
+        assert_eq!(file_grade(8.0), 'B');
+        assert_eq!(file_grade(12.0), 'C');
+        assert_eq!(file_grade(20.0), 'D');
+        assert_eq!(file_grade(30.0), 'F');
     }
 
     #[test]

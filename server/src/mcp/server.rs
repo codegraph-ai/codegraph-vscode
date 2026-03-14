@@ -501,12 +501,56 @@ impl McpServer {
         id: Option<Value>,
         params: Option<Value>,
     ) -> JsonRpcResponse {
-        let _params: InitializeParams = params
+        let init_params: InitializeParams = params
             .map(|p| serde_json::from_value(p).unwrap_or_default())
             .unwrap_or_default();
 
+        // If the client provides roots, use them as workspace folders.
+        // This allows a globally-configured MCP server to index the
+        // correct project without per-project .mcp.json or --workspace.
+        if let Some(roots) = &init_params.roots {
+            let root_paths: Vec<PathBuf> = roots
+                .iter()
+                .filter_map(|r| {
+                    r.uri
+                        .strip_prefix("file://")
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            // Accept bare paths too
+                            let p = PathBuf::from(&r.uri);
+                            if p.is_absolute() {
+                                Some(p)
+                            } else {
+                                None
+                            }
+                        })
+                })
+                .filter(|p| p.is_dir())
+                .collect();
+
+            if !root_paths.is_empty() {
+                tracing::info!(
+                    "Using {} workspace root(s) from client: {:?}",
+                    root_paths.len(),
+                    root_paths
+                );
+                self.backend.workspace_folders = root_paths;
+                // Recompute project slug from first root
+                self.backend.project_slug =
+                    crate::memory::project_slug(&self.backend.workspace_folders[0]);
+            }
+        }
+
+        if let Some(ref client_info) = init_params.client_info {
+            tracing::info!(
+                "Client: {} {}",
+                client_info.name,
+                client_info.version.as_deref().unwrap_or("(unknown)")
+            );
+        }
+
         // Index the workspace
-        tracing::info!("Indexing workspace...");
+        tracing::info!("Indexing workspace: {:?}", self.backend.workspace_folders);
         let indexed = self.backend.index_workspace().await;
         tracing::info!("Indexed {} files", indexed);
 
@@ -1683,24 +1727,78 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32)
                     .unwrap_or(10);
-                let summary = args
+                let summary_only = args
                     .get("summary")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let result = self.analyze_complexity(uri, line, threshold).await;
+                let url =
+                    tower_lsp::lsp_types::Url::parse(uri).map_err(|_| "Invalid URI".to_string())?;
+                let path = url
+                    .to_file_path()
+                    .map_err(|_| "Invalid file path".to_string())?;
+                let graph = self.backend.graph.read().await;
+                let path_str = path.to_string_lossy().to_string();
+                let file_nodes = graph
+                    .query()
+                    .property("path", path_str)
+                    .execute()
+                    .unwrap_or_default();
+                let result = crate::handlers::metrics::analyze_file_complexity(
+                    &graph,
+                    &file_nodes,
+                    line,
+                    threshold,
+                );
 
-                if summary {
-                    // Return just the summary stats, omit per-function details
-                    let summary_data = result
-                        .get("summary")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({}));
+                let functions: Vec<serde_json::Value> = result
+                    .functions
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "name": f.name,
+                            "complexity": f.complexity,
+                            "grade": f.grade.to_string(),
+                            "node_id": f.node_id.to_string(),
+                            "line_start": f.line_start,
+                            "line_end": f.line_end,
+                            "details": {
+                                "complexity_branches": f.details.complexity_branches,
+                                "complexity_loops": f.details.complexity_loops,
+                                "complexity_logical_ops": f.details.complexity_logical_ops,
+                                "complexity_nesting": f.details.complexity_nesting,
+                                "complexity_exceptions": f.details.complexity_exceptions,
+                                "complexity_early_returns": f.details.complexity_early_returns,
+                                "lines_of_code": f.details.lines_of_code,
+                            }
+                        })
+                    })
+                    .collect();
+
+                let summary = serde_json::json!({
+                    "total_functions": result.functions.len(),
+                    "average_complexity": result.average_complexity,
+                    "max_complexity": result.max_complexity,
+                    "above_threshold": result.functions_above_threshold,
+                    "threshold": result.threshold,
+                    "overall_grade": result.overall_grade.to_string(),
+                });
+
+                if summary_only {
+                    Ok(serde_json::json!({ "summary": summary }))
+                } else if functions.is_empty() {
                     Ok(serde_json::json!({
-                        "summary": summary_data,
+                        "functions": [],
+                        "summary": summary,
+                        "recommendations": [],
+                        "note": "No functions found in this file. This may indicate: (1) the language parser doesn't extract function-level details for this file type, (2) the file doesn't contain any functions, or (3) the workspace needs to be re-indexed."
                     }))
                 } else {
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    Ok(serde_json::json!({
+                        "functions": functions,
+                        "summary": summary,
+                        "recommendations": result.recommendations,
+                    }))
                 }
             }
 
@@ -4434,184 +4532,6 @@ impl McpServer {
     }
 
     /// Analyze complexity for a file
-    async fn analyze_complexity(
-        &self,
-        uri: &str,
-        line: Option<u32>,
-        threshold: u32,
-    ) -> serde_json::Value {
-        let url = match tower_lsp::lsp_types::Url::parse(uri) {
-            Ok(u) => u,
-            Err(_) => {
-                return serde_json::json!({
-                    "error": "Invalid URI"
-                })
-            }
-        };
-
-        let path = match url.to_file_path() {
-            Ok(p) => p,
-            Err(_) => {
-                return serde_json::json!({
-                    "error": "Invalid file path"
-                })
-            }
-        };
-
-        let graph = self.backend.graph.read().await;
-        let path_str = path.to_string_lossy().to_string();
-
-        let file_nodes = match graph.query().property("path", path_str).execute() {
-            Ok(nodes) => nodes,
-            Err(_) => {
-                return serde_json::json!({
-                    "functions": [],
-                    "summary": {}
-                })
-            }
-        };
-
-        let mut functions = Vec::new();
-        let mut total_complexity = 0u32;
-        let mut max_complexity = 0u32;
-        let mut above_threshold = 0u32;
-
-        // Track per-function data for recommendations
-        let mut func_names_above_threshold: Vec<(String, u32, char)> = Vec::new();
-        let mut deep_nesting_count = 0u32;
-
-        for node_id in file_nodes {
-            if let Ok(node) = graph.get_node(node_id) {
-                // Only analyze functions
-                if node.node_type != codegraph::NodeType::Function {
-                    continue;
-                }
-
-                let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
-                let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
-
-                // Check line filter
-                if let Some(target_line) = line {
-                    if target_line < start || target_line > end {
-                        continue;
-                    }
-                }
-
-                let name = node.properties.get_string("name").unwrap_or_default();
-
-                // Read AST-based complexity from node properties (populated by upstream parsers)
-                let complexity = node.properties.get_int("cyclomatic_complexity").unwrap_or(1) as u32;
-                let nesting_depth =
-                    node.properties.get_int("max_nesting_depth").unwrap_or(0) as u32;
-
-                let grade = node
-                    .properties
-                    .get_string("complexity_grade")
-                    .and_then(|s| s.chars().next())
-                    .unwrap_or(match complexity {
-                        0..=5 => 'A',
-                        6..=10 => 'B',
-                        11..=20 => 'C',
-                        21..=50 => 'D',
-                        _ => 'F',
-                    });
-
-                total_complexity += complexity;
-                max_complexity = max_complexity.max(complexity);
-                if complexity > threshold {
-                    above_threshold += 1;
-                    func_names_above_threshold.push((name.to_string(), complexity, grade));
-                }
-                if nesting_depth > 4 {
-                    deep_nesting_count += 1;
-                }
-
-                functions.push(serde_json::json!({
-                    "name": name,
-                    "complexity": complexity,
-                    "grade": grade.to_string(),
-                    "node_id": node_id.to_string(),
-                    "line_start": start,
-                    "line_end": end,
-                    "details": {
-                        "branches": node.properties.get_int("branches").unwrap_or(0),
-                        "loops": node.properties.get_int("loops").unwrap_or(0),
-                        "logical_operators": node.properties.get_int("logical_operators").unwrap_or(0),
-                        "nesting_depth": nesting_depth,
-                        "exception_handlers": node.properties.get_int("exception_handlers").unwrap_or(0),
-                        "early_returns": node.properties.get_int("early_returns").unwrap_or(0),
-                        "lines_of_code": end.saturating_sub(start) + 1,
-                    }
-                }));
-            }
-        }
-
-        let avg_complexity = if !functions.is_empty() {
-            total_complexity as f64 / functions.len() as f64
-        } else {
-            0.0
-        };
-
-        let overall_grade = match avg_complexity as u32 {
-            0..=5 => "A",
-            6..=10 => "B",
-            11..=20 => "C",
-            21..=50 => "D",
-            _ => "F",
-        };
-
-        // Generate recommendations (same logic as LSP handler)
-        let mut recommendations: Vec<String> = Vec::new();
-        for (name, complexity, grade) in &func_names_above_threshold {
-            recommendations.push(format!(
-                "Consider refactoring '{}' (complexity: {}, grade: {}). Break into smaller functions.",
-                name, complexity, grade
-            ));
-        }
-        if avg_complexity > 15.0 {
-            recommendations.push(
-                "File has high average complexity. Consider splitting into multiple modules."
-                    .to_string(),
-            );
-        }
-        if deep_nesting_count > 0 {
-            recommendations.push(format!(
-                "{} function(s) have deep nesting (>4 levels). Use early returns or extract methods.",
-                deep_nesting_count
-            ));
-        }
-
-        // Include diagnostic note when no functions found
-        if functions.is_empty() {
-            serde_json::json!({
-                "functions": functions,
-                "summary": {
-                    "total_functions": 0,
-                    "average_complexity": 0.0,
-                    "max_complexity": 0,
-                    "above_threshold": 0,
-                    "threshold": threshold,
-                    "overall_grade": "A",
-                },
-                "recommendations": [],
-                "note": "No functions found in this file. This may indicate: (1) the language parser doesn't extract function-level details for this file type, (2) the file doesn't contain any functions, or (3) the workspace needs to be re-indexed."
-            })
-        } else {
-            serde_json::json!({
-                "functions": functions,
-                "summary": {
-                    "total_functions": functions.len(),
-                    "average_complexity": avg_complexity,
-                    "max_complexity": max_complexity,
-                    "above_threshold": above_threshold,
-                    "threshold": threshold,
-                    "overall_grade": overall_grade,
-                },
-                "recommendations": recommendations,
-            })
-        }
-    }
-
     /// Find unused code
     async fn find_unused_code(
         &self,

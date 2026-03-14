@@ -1412,118 +1412,115 @@ function buildGraph(params: DependencyGraphParams): DependencyNode[] {
 
     /// Integration test that simulates the full server pipeline for cross-file resolution.
     ///
-    /// Scenario:
-    /// 1. Batch-index both irndrv_verbs.c and irndrv_utils.c (as happens at startup)
-    /// 2. resolve_cross_file_imports → edges created
-    /// 3. Simulate did_open(irndrv_verbs.c): remove+re-parse+resolve
+    /// Scenario (using inline C source):
+    /// 1. Batch-parse caller.c and callee.c into the graph
+    /// 2. resolve_cross_file_imports → Calls edges created
+    /// 3. Simulate did_open(caller.c): remove + re-parse + resolve
     /// 4. Verify cross-file Calls edges survive the did_open cycle
+    ///
     #[test]
-    fn test_irndrv_cross_file_resolution_after_didopen() {
-        use codegraph::NodeType;
-
-        let verbs_path = std::path::Path::new(
-            "/home/jason/projects/docs/drivers.ethernet.rdma.esxn/src/COMMON_RDMA/irndrv_verbs.c",
-        );
-        let utils_path = std::path::Path::new(
-            "/home/jason/projects/docs/drivers.ethernet.rdma.esxn/src/COMMON_RDMA/irndrv_utils.c",
-        );
-
-        if !verbs_path.exists() || !utils_path.exists() {
-            eprintln!("Skipping: RDMA source files not found");
-            return;
-        }
+    fn test_cross_file_resolution_after_didopen() {
+        let caller_source = r#"
+void main_func(void) {
+    int val = 42;
+    if (val > 0) {
+        helper_func(val);
+    }
+}
+"#;
+        let callee_source = r#"
+void helper_func(int x) {
+    int result = x * 2;
+}
+"#;
+        let caller_path = std::path::Path::new("/test/caller.c");
+        let callee_path = std::path::Path::new("/test/callee.c");
 
         let parsers = ParserRegistry::new();
+        let parser = parsers
+            .parser_for_path(caller_path)
+            .expect("No C parser found");
         let mut graph = CodeGraph::in_memory().unwrap();
 
-        // --- Phase 1: Batch-index both files (like startup) ---
-        let r = parsers.parse_file(verbs_path, &mut graph);
-        assert!(r.is_ok(), "Failed to parse verbs.c: {:?}", r.err());
-        let r = parsers.parse_file(utils_path, &mut graph);
-        assert!(r.is_ok(), "Failed to parse utils.c: {:?}", r.err());
+        // --- Phase 1: Batch-parse both files ---
+        let r = parser.parse_source(caller_source, caller_path, &mut graph);
+        assert!(r.is_ok(), "Failed to parse caller.c: {:?}", r.err());
+        let r = parser.parse_source(callee_source, callee_path, &mut graph);
+        assert!(r.is_ok(), "Failed to parse callee.c: {:?}", r.err());
 
-        // Count unresolved_calls on irndrv_RDMAOpGetPrivStats before resolution
-        let privstats_id = find_function_node(&graph, "irndrv_RDMAOpGetPrivStats");
-        assert!(privstats_id.is_some(), "irndrv_RDMAOpGetPrivStats not found after batch index");
-        let privstats_id = privstats_id.unwrap();
+        let main_id = find_function_node(&graph, "main_func");
+        assert!(main_id.is_some(), "main_func not found after batch parse");
+        let main_id = main_id.unwrap();
 
-        let report_pfc_id = find_function_node(&graph, "irdma_report_pfc_stats");
-        eprintln!("irdma_report_pfc_stats found in graph: {}", report_pfc_id.is_some());
+        let helper_id = find_function_node(&graph, "helper_func");
+        assert!(
+            helper_id.is_some(),
+            "helper_func not found after batch parse"
+        );
 
-        {
-            let node = graph.get_node(privstats_id).unwrap();
-            let unresolved = node.properties.get_string_list_compat("unresolved_calls")
-                .unwrap_or_default();
-            eprintln!("Phase 1 - irndrv_RDMAOpGetPrivStats unresolved_calls: {} items", unresolved.len());
-            eprintln!("  Contains irdma_report_pfc_stats: {}", unresolved.iter().any(|s| s == "irdma_report_pfc_stats"));
-        }
-
-        // --- Phase 2: resolve_cross_file_imports (like end of batch startup) ---
+        // --- Phase 2: resolve_cross_file_imports ---
         GraphUpdater::resolve_cross_file_imports(&mut graph);
 
-        let edge_count_after_batch = count_calls_edges_from(&graph, privstats_id);
-        eprintln!("Phase 2 (after batch+resolve): irndrv_RDMAOpGetPrivStats callees = {}", edge_count_after_batch);
+        let edge_count_after_batch = count_calls_edges_from(&graph, main_id);
+        assert!(
+            edge_count_after_batch > 0,
+            "Expected Calls edges after batch resolve, got 0"
+        );
+        assert!(
+            has_calls_edge(&graph, main_id, helper_id.unwrap()),
+            "Expected Calls edge main_func -> helper_func after batch resolve"
+        );
 
-        let report_pfc_id_after_batch = find_function_node(&graph, "irdma_report_pfc_stats");
-        if let (Some(ps), Some(rp)) = (Some(privstats_id), report_pfc_id_after_batch) {
-            let edge_exists = has_calls_edge(&graph, ps, rp);
-            eprintln!("Phase 2: Calls edge privstats -> irdma_report_pfc_stats: {}", edge_exists);
-        }
-
-        // --- Phase 3: Simulate did_open(irndrv_verbs.c) ---
-        // 3a. Remove old verbs.c nodes (mimicking remove_file_from_graph)
-        let path_str = verbs_path.to_string_lossy().to_string();
+        // --- Phase 3: Simulate did_open(caller.c) ---
+        // 3a. Remove caller.c nodes
+        let path_str = caller_path.to_string_lossy().to_string();
         if let Ok(nodes) = graph.query().property("path", path_str).execute() {
-            eprintln!("Phase 3: Removing {} verbs.c nodes", nodes.len());
             for node_id in nodes {
                 let _ = graph.delete_node(node_id);
             }
         }
+        assert!(
+            find_function_node(&graph, "main_func").is_none(),
+            "main_func should be gone after removal"
+        );
 
-        // Verify irndrv_RDMAOpGetPrivStats is gone
-        let gone = find_function_node(&graph, "irndrv_RDMAOpGetPrivStats");
-        eprintln!("Phase 3: irndrv_RDMAOpGetPrivStats after removal: {:?}", gone);
+        // 3b. Re-parse caller.c
+        let r = parser.parse_source(caller_source, caller_path, &mut graph);
+        assert!(r.is_ok(), "Failed to re-parse caller.c: {:?}", r.err());
+        let fi = r.unwrap();
+        // graph.query() doesn't see nodes added after deletion in the
+        // in-memory backend, so use FileInfo directly for the new ID.
+        assert!(
+            !fi.functions.is_empty(),
+            "Re-parse should produce at least one function"
+        );
+        let main_id_new = fi.functions[0];
 
-        // 3b. Re-parse verbs.c (from file content, like did_open with full text)
-        let r = parsers.parse_file(verbs_path, &mut graph);
-        assert!(r.is_ok(), "Failed to re-parse verbs.c: {:?}", r.err());
-
-        let privstats_id_new = find_function_node(&graph, "irndrv_RDMAOpGetPrivStats");
-        assert!(privstats_id_new.is_some(), "irndrv_RDMAOpGetPrivStats not found after re-parse");
-        let privstats_id_new = privstats_id_new.unwrap();
-
-        {
-            let node = graph.get_node(privstats_id_new).unwrap();
-            let unresolved = node.properties.get_string_list_compat("unresolved_calls")
-                .unwrap_or_default();
-            eprintln!("Phase 3 (after re-parse) - unresolved_calls: {} items", unresolved.len());
-            eprintln!("  Contains irdma_report_pfc_stats: {}", unresolved.iter().any(|s| s == "irdma_report_pfc_stats"));
-        }
-
-        // 3c. resolve_cross_file_imports after re-parse (like did_open)
+        // 3c. resolve after re-parse
         GraphUpdater::resolve_cross_file_imports(&mut graph);
 
-        let edge_count_after_didopen = count_calls_edges_from(&graph, privstats_id_new);
-        eprintln!("Phase 3 (after did_open+resolve): irndrv_RDMAOpGetPrivStats callees = {}", edge_count_after_didopen);
-
-        let report_pfc_id_final = find_function_node(&graph, "irdma_report_pfc_stats");
-        if let (Some(ps), Some(rp)) = (Some(privstats_id_new), report_pfc_id_final) {
-            let edge_exists = has_calls_edge(&graph, ps, rp);
-            eprintln!("Phase 3: Calls edge privstats -> irdma_report_pfc_stats: {}", edge_exists);
-            assert!(edge_exists,
-                "Expected Calls edge irndrv_RDMAOpGetPrivStats->irdma_report_pfc_stats after did_open cycle, got 0");
-        } else {
-            eprintln!("irdma_report_pfc_stats not found in graph after re-resolve (id={:?})", report_pfc_id_final);
-            panic!("irdma_report_pfc_stats not in graph after resolve - utils.c may not be indexed");
-        }
+        let helper_id_final = find_function_node(&graph, "helper_func");
+        assert!(
+            helper_id_final.is_some(),
+            "helper_func not found after re-resolve"
+        );
+        assert!(
+            has_calls_edge(&graph, main_id_new, helper_id_final.unwrap()),
+            "Expected Calls edge main_func -> helper_func after did_open cycle"
+        );
     }
 
     fn find_function_node(graph: &CodeGraph, name: &str) -> Option<codegraph::NodeId> {
-        graph.query().node_type(codegraph::NodeType::Function).execute()
+        graph
+            .query()
+            .node_type(codegraph::NodeType::Function)
+            .execute()
             .unwrap_or_default()
             .into_iter()
             .find(|&id| {
-                graph.get_node(id).ok()
+                graph
+                    .get_node(id)
+                    .ok()
                     .and_then(|n| n.properties.get_string("name").map(|s| s == name))
                     .unwrap_or(false)
             })
@@ -1531,21 +1528,36 @@ function buildGraph(params: DependencyGraphParams): DependencyNode[] {
 
     fn count_calls_edges_from(graph: &CodeGraph, node_id: codegraph::NodeId) -> usize {
         use codegraph::{Direction, EdgeType};
-        graph.get_neighbors(node_id, Direction::Outgoing)
+        graph
+            .get_neighbors(node_id, Direction::Outgoing)
             .unwrap_or_default()
             .iter()
             .filter(|&&nid| {
-                graph.get_edges_between(node_id, nid).unwrap_or_default()
+                graph
+                    .get_edges_between(node_id, nid)
+                    .unwrap_or_default()
                     .iter()
-                    .any(|&eid| graph.get_edge(eid).map(|e| e.edge_type == EdgeType::Calls).unwrap_or(false))
+                    .any(|&eid| {
+                        graph
+                            .get_edge(eid)
+                            .map(|e| e.edge_type == EdgeType::Calls)
+                            .unwrap_or(false)
+                    })
             })
             .count()
     }
 
     fn has_calls_edge(graph: &CodeGraph, from: codegraph::NodeId, to: codegraph::NodeId) -> bool {
         use codegraph::EdgeType;
-        graph.get_edges_between(from, to).unwrap_or_default()
+        graph
+            .get_edges_between(from, to)
+            .unwrap_or_default()
             .iter()
-            .any(|&eid| graph.get_edge(eid).map(|e| e.edge_type == EdgeType::Calls).unwrap_or(false))
+            .any(|&eid| {
+                graph
+                    .get_edge(eid)
+                    .map(|e| e.edge_type == EdgeType::Calls)
+                    .unwrap_or(false)
+            })
     }
 }
