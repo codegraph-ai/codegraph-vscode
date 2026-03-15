@@ -7,6 +7,7 @@ use super::resources::get_all_resources;
 use super::tools::get_all_tools;
 use super::transport::AsyncStdioTransport;
 use crate::ai_query::QueryEngine;
+use crate::domain::node_props;
 use crate::git_mining::{GitExecutor, GitMiner, MiningConfig};
 use crate::memory::{self, MemoryManager};
 use crate::parser_registry::ParserRegistry;
@@ -254,14 +255,14 @@ impl McpBackend {
                     continue;
                 }
 
-                let name = node.properties.get_string("name").unwrap_or("");
+                let name = node_props::name(node);
                 if !name.to_lowercase().contains(&query_lower) {
                     continue;
                 }
 
-                let file_path = node.properties.get_string("path").unwrap_or("");
-                let line_start = node.properties.get_int("line_start").unwrap_or(0);
-                let line_end = node.properties.get_int("line_end").unwrap_or(0);
+                let file_path = node_props::path(node);
+                let line_start = node_props::line_start(node);
+                let line_end = node_props::line_end(node);
                 let signature = node.properties.get_string("signature").unwrap_or("");
 
                 let mut result = serde_json::json!({
@@ -961,7 +962,7 @@ impl McpServer {
                         graph
                             .get_node(start)
                             .ok()
-                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                            .map(|n| node_props::name(n).to_string())
                             .unwrap_or_default()
                     };
 
@@ -1055,7 +1056,7 @@ impl McpServer {
                         graph
                             .get_node(start)
                             .ok()
-                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                            .map(|n| node_props::name(n).to_string())
                             .unwrap_or_default()
                     };
 
@@ -2378,95 +2379,14 @@ impl McpServer {
         let url = tower_lsp::lsp_types::Url::parse(uri).ok()?;
         let path = url.to_file_path().ok()?;
         let path_str = path.to_string_lossy().to_string();
-
         let graph = self.backend.graph.read().await;
-        let nodes = graph.query().property("path", path_str).execute().ok()?;
-
-        if nodes.is_empty() {
-            return None;
-        }
-
-        // Strategy 1: Exact match (line within symbol range)
-        for node_id in &nodes {
-            if let Ok(node) = graph.get_node(*node_id) {
-                let start_line = node
-                    .properties
-                    .get_int("line_start")
-                    .or_else(|| node.properties.get_int("start_line"))
-                    .unwrap_or(0) as u32;
-                let end_line = node
-                    .properties
-                    .get_int("line_end")
-                    .or_else(|| node.properties.get_int("end_line"))
-                    .unwrap_or(start_line as i64) as u32;
-
-                if line >= start_line && line <= end_line {
-                    return Some((*node_id, false)); // Exact match, no fallback
-                }
-            }
-        }
-
-        // Strategy 2: Find nearest symbol (no distance limit)
-        // Prefer symbols that start after cursor (looking forward)
-        let mut best_match: Option<(codegraph::NodeId, i64)> = None;
-
-        for node_id in &nodes {
-            if let Ok(node) = graph.get_node(*node_id) {
-                let start_line = node
-                    .properties
-                    .get_int("line_start")
-                    .or_else(|| node.properties.get_int("start_line"))
-                    .unwrap_or(0);
-                let end_line = node
-                    .properties
-                    .get_int("line_end")
-                    .or_else(|| node.properties.get_int("end_line"))
-                    .unwrap_or(start_line);
-
-                let target_line = line as i64;
-
-                // Calculate distance - prefer symbols after cursor
-                let distance = if start_line > target_line {
-                    // Symbol starts after cursor - prefer these
-                    start_line - target_line
-                } else {
-                    // Symbol ends before cursor - add penalty for looking backward
-                    (target_line - end_line) + 1000
-                };
-
-                if best_match.is_none() || distance < best_match.unwrap().1 {
-                    best_match = Some((*node_id, distance));
-                }
-            }
-        }
-
-        best_match.map(|(id, _)| (id, true)) // Fallback was used
+        crate::domain::node_resolution::find_nearest_node(&graph, &path_str, line)
     }
 
     /// Get source code for a symbol
     async fn get_symbol_source(&self, node_id: codegraph::NodeId) -> Option<String> {
         let graph = self.backend.graph.read().await;
-        let node = graph.get_node(node_id).ok()?;
-
-        let path = node.properties.get_string("path")?;
-        let start_line = node
-            .properties
-            .get_int("line_start")
-            .or_else(|| node.properties.get_int("start_line"))? as usize;
-        let end_line = node
-            .properties
-            .get_int("line_end")
-            .or_else(|| node.properties.get_int("end_line"))? as usize;
-
-        // Read the file and extract lines
-        let content = std::fs::read_to_string(path).ok()?;
-        let lines: Vec<&str> = content.lines().collect();
-
-        if start_line > 0 && end_line <= lines.len() {
-            Some(lines[start_line - 1..end_line].join("\n"))
-        } else {
-            None
-        }
+        crate::domain::source_code::get_symbol_source(&graph, node_id)
     }
 
     /// Get dependency graph for a file
@@ -2532,7 +2452,7 @@ impl McpServer {
         let mut nodes = Vec::new();
         for &node_id in &reachable_set {
             if let Ok(node) = graph.get_node(node_id) {
-                let name = node.properties.get_string("name").unwrap_or_default();
+                let name = node_props::name(node);
                 let node_type = format!("{:?}", node.node_type);
                 nodes.push(serde_json::json!({
                     "id": node_id.to_string(),
@@ -2611,7 +2531,7 @@ impl McpServer {
             graph
                 .get_node(start)
                 .ok()
-                .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                .map(|n| node_props::name(n).to_string())
                 .unwrap_or_default()
         };
 
@@ -2756,7 +2676,7 @@ impl McpServer {
             graph
                 .get_node(start)
                 .ok()
-                .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                .map(|n| node_props::name(n).to_string())
                 .unwrap_or_default()
         };
 
@@ -2889,11 +2809,7 @@ impl McpServer {
                 Err(_) => return serde_json::json!({ "error": "Could not load node" }),
             };
 
-            let name = node
-                .properties
-                .get_string("name")
-                .unwrap_or_default()
-                .to_string();
+            let name = node_props::name(node).to_string();
             let node_type = format!("{:?}", node.node_type).to_lowercase();
             let language = node
                 .properties
@@ -2910,21 +2826,16 @@ impl McpServer {
                         })
                         .unwrap_or_else(|| "unknown".to_string())
                 });
-            let path = node
-                .properties
-                .get_string("path")
-                .unwrap_or_default()
-                .to_string();
-            let line_start = node
-                .properties
-                .get_int("line_start")
-                .or_else(|| node.properties.get_int("start_line"))
-                .unwrap_or(0);
-            let line_end = node
-                .properties
-                .get_int("line_end")
-                .or_else(|| node.properties.get_int("end_line"))
-                .unwrap_or(line_start);
+            let path = node_props::path(node).to_string();
+            let line_start = node_props::line_start(node) as i64;
+            let line_end = {
+                let e = node_props::line_end(node) as i64;
+                if e == 0 {
+                    line_start
+                } else {
+                    e
+                }
+            };
 
             (name, node_type, language, path, line_start, line_end)
         };
@@ -3031,11 +2942,7 @@ impl McpServer {
                 Ok(n) => n,
                 Err(_) => return serde_json::json!({ "error": "Could not load node" }),
             };
-            let name = node
-                .properties
-                .get_string("name")
-                .unwrap_or_default()
-                .to_string();
+            let name = node_props::name(node).to_string();
             let node_type = format!("{:?}", node.node_type).to_lowercase();
             let language = node
                 .properties
@@ -3052,21 +2959,16 @@ impl McpServer {
                         })
                         .unwrap_or_else(|| "unknown".to_string())
                 });
-            let path = node
-                .properties
-                .get_string("path")
-                .unwrap_or_default()
-                .to_string();
-            let line_start = node
-                .properties
-                .get_int("line_start")
-                .or_else(|| node.properties.get_int("start_line"))
-                .unwrap_or(0);
-            let line_end = node
-                .properties
-                .get_int("line_end")
-                .or_else(|| node.properties.get_int("end_line"))
-                .unwrap_or(line_start);
+            let path = node_props::path(node).to_string();
+            let line_start = node_props::line_start(node) as i64;
+            let line_end = {
+                let e = node_props::line_end(node) as i64;
+                if e == 0 {
+                    line_start
+                } else {
+                    e
+                }
+            };
             (name, node_type, language, path, line_start, line_end)
         };
 
@@ -3167,8 +3069,7 @@ impl McpServer {
                             if node.node_type == codegraph::NodeType::Function
                                 && Self::is_mcp_test_node(node)
                             {
-                                let test_name =
-                                    node.properties.get_string("name").unwrap_or("").to_string();
+                                let test_name = node_props::name(node).to_string();
                                 // Don't fetch code for same-file tests (already visible)
                                 test_list.push(serde_json::json!({
                                     "name": test_name,
@@ -3434,16 +3335,8 @@ impl McpServer {
                     continue;
                 }
                 if let Ok(dep_node) = graph.get_node(*target) {
-                    let dep_name = dep_node
-                        .properties
-                        .get_string("name")
-                        .unwrap_or_default()
-                        .to_string();
-                    let dep_file = dep_node
-                        .properties
-                        .get_string("path")
-                        .unwrap_or_default()
-                        .to_string();
+                    let dep_name = node_props::name(dep_node).to_string();
+                    let dep_file = node_props::path(dep_node).to_string();
                     let dep_kind = format!("{:?}", dep_node.node_type).to_lowercase();
                     let relationship = format!("{:?}", edge_type).to_lowercase();
                     drop(graph);
@@ -3817,7 +3710,7 @@ impl McpServer {
                     }
                     if seen.insert(*source) {
                         if let Ok(n) = graph.get_node(*source) {
-                            let n_name = n.properties.get_string("name").unwrap_or("");
+                            let n_name = node_props::name(n);
                             if n_name.starts_with("test_") || n_name.ends_with("_test") {
                                 if let Some(sym) =
                                     self.make_related_symbol(graph, *source, "tests", 1.0, budget)
@@ -3912,7 +3805,7 @@ impl McpServer {
                     }
                     if seen.insert(*source) {
                         if let Ok(n) = graph.get_node(*source) {
-                            let n_name = n.properties.get_string("name").unwrap_or("");
+                            let n_name = node_props::name(n);
                             if n_name.starts_with("test_") || n_name.ends_with("_test") {
                                 if let Some(sym) = self.make_related_symbol(
                                     graph,
@@ -3961,26 +3854,17 @@ impl McpServer {
         budget: &mut usize,
     ) -> Option<serde_json::Value> {
         let node = graph.get_node(node_id).ok()?;
-        let name = node
-            .properties
-            .get_string("name")
-            .unwrap_or_default()
-            .to_string();
-        let path = node
-            .properties
-            .get_string("path")
-            .unwrap_or_default()
-            .to_string();
-        let line_start = node
-            .properties
-            .get_int("line_start")
-            .or_else(|| node.properties.get_int("start_line"))
-            .unwrap_or(0);
-        let line_end = node
-            .properties
-            .get_int("line_end")
-            .or_else(|| node.properties.get_int("end_line"))
-            .unwrap_or(line_start);
+        let name = node_props::name(node).to_string();
+        let path = node_props::path(node).to_string();
+        let line_start = node_props::line_start(node) as i64;
+        let line_end = {
+            let e = node_props::line_end(node) as i64;
+            if e == 0 {
+                line_start
+            } else {
+                e
+            }
+        };
 
         // Read source code
         let code = if !path.is_empty() && line_start > 0 {
@@ -4116,26 +4000,21 @@ impl McpServer {
                 Ok(n) => n,
                 Err(_) => continue,
             };
-            let usage_name = usage_node.properties.get_string("name").unwrap_or("");
+            let usage_name = node_props::name(usage_node);
             if usage_name.starts_with("test_") || usage_name.ends_with("_test") {
                 continue;
             }
 
-            let path = usage_node
-                .properties
-                .get_string("path")
-                .unwrap_or_default()
-                .to_string();
-            let line_start = usage_node
-                .properties
-                .get_int("line_start")
-                .or_else(|| usage_node.properties.get_int("start_line"))
-                .unwrap_or(0);
-            let line_end = usage_node
-                .properties
-                .get_int("line_end")
-                .or_else(|| usage_node.properties.get_int("end_line"))
-                .unwrap_or(line_start);
+            let path = node_props::path(usage_node).to_string();
+            let line_start = node_props::line_start(usage_node) as i64;
+            let line_end = {
+                let e = node_props::line_end(usage_node) as i64;
+                if e == 0 {
+                    line_start
+                } else {
+                    e
+                }
+            };
 
             let code = if !path.is_empty() && line_start > 0 {
                 std::fs::read_to_string(&path).ok().and_then(|content| {
@@ -4192,11 +4071,7 @@ impl McpServer {
             Err(_) => return serde_json::Value::Null,
         };
 
-        let path_str = node
-            .properties
-            .get_string("path")
-            .unwrap_or_default()
-            .to_string();
+        let path_str = node_props::path(node).to_string();
         if path_str.is_empty() {
             return serde_json::Value::Null;
         }
@@ -4405,7 +4280,7 @@ impl McpServer {
                         graph
                             .get_node(id)
                             .ok()
-                            .and_then(|n| n.properties.get_string("name").map(|s| s.to_string()))
+                            .map(|n| node_props::name(n).to_string())
                             .unwrap_or_default()
                     };
                     (Some(id), fallback, name)
@@ -4454,8 +4329,7 @@ impl McpServer {
                             continue;
                         }
                         if Self::is_mcp_test_node(node) {
-                            let test_name =
-                                node.properties.get_string("name").unwrap_or("").to_string();
+                            let test_name = node_props::name(node).to_string();
                             related_tests.push(serde_json::json!({
                                 "name": test_name,
                                 "id": node_id.to_string(),
@@ -4486,8 +4360,7 @@ impl McpServer {
                                 continue;
                             }
                             if Self::is_mcp_test_node(node) {
-                                let test_name =
-                                    node.properties.get_string("name").unwrap_or("").to_string();
+                                let test_name = node_props::name(node).to_string();
                                 related_tests.push(serde_json::json!({
                                     "name": test_name,
                                     "id": node_id.to_string(),
@@ -4577,7 +4450,7 @@ impl McpServer {
                 graph
                     .get_node(node_id)
                     .map(|node| {
-                        let path = node.properties.get_string("path").unwrap_or("");
+                        let path = node_props::path(node);
                         !Self::is_build_output_path(path)
                     })
                     .unwrap_or(true)
@@ -4612,7 +4485,7 @@ impl McpServer {
                 // Note: Type/Interface nodes are included — unused types/interfaces
                 // are real dead code. Usage is detected via Extends/Implements/References edges.
 
-                let name = node.properties.get_string("name").unwrap_or_default();
+                let name = node_props::name(node);
 
                 // Skip anonymous/synthetic names
                 if name == "arrow_function"
@@ -4710,13 +4583,7 @@ impl McpServer {
                     .unwrap_or(false);
 
                 if effective_callers == 0 && !has_usage_edge {
-                    let is_public = node
-                        .properties
-                        .get_bool("is_public")
-                        .or_else(|| node.properties.get_bool("exported"))
-                        .unwrap_or(false);
-                    let visibility = node.properties.get_string("visibility").unwrap_or_default();
-                    let is_exported = is_public || visibility == "public" || visibility == "pub";
+                    let is_exported = node_props::is_public(node);
 
                     // Confidence scoring with heuristic pattern detection
                     let item_confidence = Self::compute_unused_confidence(name, is_exported, node);
@@ -4852,8 +4719,8 @@ impl McpServer {
             return true;
         }
 
-        let name = node.properties.get_string("name").unwrap_or("");
-        let path = node.properties.get_string("path").unwrap_or("");
+        let name = node_props::name(node);
+        let path = node_props::path(node);
 
         let name_is_test = name.starts_with("test_")
             || name.ends_with("_test")
@@ -4973,10 +4840,13 @@ impl McpServer {
         node_id: codegraph::NodeId,
     ) -> bool {
         let path = match graph.get_node(node_id) {
-            Ok(n) => match n.properties.get_string("path") {
-                Some(p) => p.to_string(),
-                None => return false,
-            },
+            Ok(n) => {
+                let p = node_props::path(n).to_string();
+                if p.is_empty() {
+                    return false;
+                }
+                p
+            }
             Err(_) => return false,
         };
         // Get all function nodes in the same file
