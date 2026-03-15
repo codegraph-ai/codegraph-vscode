@@ -34,22 +34,22 @@ glob = "0.3"
 clap = { version = "4", features = ["derive"] }
 
 
-# CodeGraph ecosystem (local path deps from monorepo)
-codegraph = { path = "../codegraph-monorepo/crates/codegraph" }
-codegraph-parser-api = { path = "../codegraph-monorepo/crates/codegraph-parser-api" }
-codegraph-python = { path = "../codegraph-monorepo/crates/codegraph-python" }
-codegraph-rust = { path = "../codegraph-monorepo/crates/codegraph-rust" }
-codegraph-typescript = { path = "../codegraph-monorepo/crates/codegraph-typescript" }
-codegraph-go = { path = "../codegraph-monorepo/crates/codegraph-go" }
-codegraph-c = { path = "../codegraph-monorepo/crates/codegraph-c" }
-codegraph-java = { path = "../codegraph-monorepo/crates/codegraph-java" }
-codegraph-cpp = { path = "../codegraph-monorepo/crates/codegraph-cpp" }
-codegraph-kotlin = { path = "../codegraph-monorepo/crates/codegraph-kotlin" }
-codegraph-csharp = { path = "../codegraph-monorepo/crates/codegraph-csharp" }
-codegraph-php = { path = "../codegraph-monorepo/crates/codegraph-php" }
-codegraph-ruby = { path = "../codegraph-monorepo/crates/codegraph-ruby" }
-codegraph-swift = { path = "../codegraph-monorepo/crates/codegraph-swift" }
-codegraph-tcl = { path = "../codegraph-monorepo/crates/codegraph-tcl" }
+# CodeGraph ecosystem (absolute path deps from monorepo)
+codegraph = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph" }
+codegraph-parser-api = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-parser-api" }
+codegraph-python = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-python" }
+codegraph-rust = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-rust" }
+codegraph-typescript = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-typescript" }
+codegraph-go = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-go" }
+codegraph-c = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-c" }
+codegraph-java = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-java" }
+codegraph-cpp = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-cpp" }
+codegraph-kotlin = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-kotlin" }
+codegraph-csharp = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-csharp" }
+codegraph-php = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-php" }
+codegraph-ruby = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-ruby" }
+codegraph-swift = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-swift" }
+codegraph-tcl = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-tcl" }
 
 [profile.release]
 opt-level = 3
