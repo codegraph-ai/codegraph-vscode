@@ -5,6 +5,7 @@
 use crate::ai_query::QueryEngine;
 use crate::branch_watcher::BranchWatcher;
 use crate::cache::QueryCache;
+use crate::domain::node_props;
 use crate::error::{LspError, LspResult};
 use crate::index::SymbolIndex;
 use crate::memory::MemoryManager;
@@ -482,8 +483,8 @@ impl CodeGraphBackend {
         for node_id in file_symbols {
             if let Ok(node) = graph.get_node(node_id) {
                 // Parsers use line_start/line_end (not start_line/end_line)
-                let start_line = node.properties.get_int("line_start").unwrap_or(0);
-                let end_line = node.properties.get_int("line_end").unwrap_or(0);
+                let start_line = node_props::line_start(node) as i64;
+                let end_line = node_props::line_end(node) as i64;
                 // Column info not available from most parsers, default to full line
                 let start_col = node.properties.get_int("col_start").unwrap_or(0);
                 let end_col = node.properties.get_int("col_end").unwrap_or(i64::MAX);
@@ -491,7 +492,7 @@ impl CodeGraphBackend {
                 tracing::info!(
                     "Checking node {:?} '{}' at {}:{} to {}:{}",
                     node_id,
-                    node.properties.get_string("name").unwrap_or(""),
+                    node_props::name(node),
                     start_line,
                     start_col,
                     end_line,
@@ -545,8 +546,8 @@ impl CodeGraphBackend {
 
         for node_id in file_symbols {
             if let Ok(node) = graph.get_node(node_id) {
-                let start_line = node.properties.get_int("line_start").unwrap_or(0);
-                let end_line = node.properties.get_int("line_end").unwrap_or(0);
+                let start_line = node_props::line_start(node) as i64;
+                let end_line = node_props::line_end(node) as i64;
 
                 // Calculate distance - prefer symbols that start after cursor (looking ahead)
                 // or symbols that contain the cursor line
@@ -569,7 +570,7 @@ impl CodeGraphBackend {
 
         if let Some((node_id, _)) = best_match {
             if let Ok(node) = graph.get_node(node_id) {
-                let name = node.properties.get_string("name").unwrap_or("unknown");
+                let name = node_props::name(node);
                 tracing::info!(
                     "Fallback: found nearest symbol '{}' for position {}:{} in {:?}",
                     name,
@@ -670,7 +671,7 @@ impl CodeGraphBackend {
                 match self.symbol_index.find_file_for_node(node_id) {
                     Some(path_buf) => path_buf.to_string_lossy().to_string(),
                     None => {
-                        let node_name = node.properties.get_string("name").unwrap_or("<unnamed>");
+                        let node_name = node_props::name(node);
                         let node_type = format!("{}", node.node_type);
                         tracing::warn!(
                             "Cannot determine file path for node {}: {} '{}' (not in symbol index)",
@@ -687,21 +688,20 @@ impl CodeGraphBackend {
         };
 
         // Support both property name conventions (line_start or start_line)
-        let start_line = node
-            .properties
-            .get_int("line_start")
-            .or_else(|| node.properties.get_int("start_line"))
-            .unwrap_or(1) as u32;
+        let start_line = node_props::line_start(node);
         let start_col = node
             .properties
             .get_int("col_start")
             .or_else(|| node.properties.get_int("start_col"))
             .unwrap_or(0) as u32;
-        let end_line = node
-            .properties
-            .get_int("line_end")
-            .or_else(|| node.properties.get_int("end_line"))
-            .unwrap_or(start_line as i64) as u32;
+        let end_line = {
+            let e = node_props::line_end(node);
+            if e == 0 {
+                start_line
+            } else {
+                e
+            }
+        };
         let end_col = node
             .properties
             .get_int("col_end")
@@ -731,46 +731,26 @@ impl CodeGraphBackend {
     /// Get the source code for a node.
     pub async fn get_node_source_code(&self, node_id: NodeId) -> LspResult<Option<String>> {
         let graph = self.graph.read().await;
+
+        // Primary: use domain source code reader (handles inline source + path from node properties)
+        if let Some(source) = crate::domain::source_code::get_symbol_source(&graph, node_id) {
+            return Ok(Some(source));
+        }
+
+        // Fallback: try SymbolIndex for path resolution when node has no path property
         let node = graph
             .get_node(node_id)
             .map_err(|e| LspError::Graph(e.to_string()))?;
-
-        // Try to get source from node properties first
-        if let Some(source) = node.properties.get_string("source") {
-            return Ok(Some(source.to_string()));
-        }
-
-        // Try to get path from node properties, fallback to symbol index
-        let path = match node.properties.get_string("path") {
-            Some(p) => PathBuf::from(p),
-            None => {
-                // Fallback: look up file path from symbol index
-                match self.symbol_index.find_file_for_node(node_id) {
-                    Some(p) => p,
-                    None => return Ok(None),
-                }
-            }
-        };
-
-        // Try to read from file
-        if path.exists() {
-            // Support both property name conventions
-            let start_line = node
-                .properties
-                .get_int("line_start")
-                .or_else(|| node.properties.get_int("start_line"))
-                .unwrap_or(1) as usize;
-            let end_line = node
-                .properties
-                .get_int("line_end")
-                .or_else(|| node.properties.get_int("end_line"))
-                .unwrap_or(start_line as i64) as usize;
-
-            if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                let lines: Vec<&str> = content.lines().collect();
-                if start_line > 0 && end_line <= lines.len() {
-                    let source: String = lines[start_line - 1..end_line].join("\n");
-                    return Ok(Some(source));
+        if node.properties.get_string("path").is_none() {
+            if let Some(file_path) = self.symbol_index.find_file_for_node(node_id) {
+                let start = crate::domain::node_props::line_start_opt(node).unwrap_or(1) as usize;
+                let end =
+                    crate::domain::node_props::line_end_opt(node).unwrap_or(start as u32) as usize;
+                if let Ok(content) = tokio::fs::read_to_string(&file_path).await {
+                    let lines: Vec<&str> = content.lines().collect();
+                    if start > 0 && end <= lines.len() {
+                        return Ok(Some(lines[start - 1..end].join("\n")));
+                    }
                 }
             }
         }
@@ -1301,7 +1281,7 @@ impl LanguageServer for CodeGraphBackend {
             .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
 
         // Build hover content
-        let name = node.properties.get_string("name").unwrap_or("").to_string();
+        let name = node_props::name(node).to_string();
         let kind = format!("{}", node.node_type);
         let signature = node
             .properties
@@ -1309,7 +1289,7 @@ impl LanguageServer for CodeGraphBackend {
             .unwrap_or("")
             .to_string();
         let doc = node.properties.get_string("doc").map(|s| s.to_string());
-        let def_path = node.properties.get_string("path").unwrap_or("").to_string();
+        let def_path = node_props::path(node).to_string();
 
         // Count references
         let ref_count = self
@@ -1358,7 +1338,7 @@ impl LanguageServer for CodeGraphBackend {
 
         for node_id in node_ids {
             if let Ok(node) = graph.get_node(node_id) {
-                let name = node.properties.get_string("name").unwrap_or("").to_string();
+                let name = node_props::name(node).to_string();
                 let kind = match node.node_type {
                     NodeType::Function => SymbolKind::FUNCTION,
                     NodeType::Class => SymbolKind::CLASS,
@@ -1418,7 +1398,7 @@ impl LanguageServer for CodeGraphBackend {
             return Ok(None);
         }
 
-        let name = node.properties.get_string("name").unwrap_or("").to_string();
+        let name = node_props::name(node).to_string();
         let location = self.node_to_location(&graph, node_id)?;
 
         Ok(Some(vec![CallHierarchyItem {
@@ -1451,7 +1431,7 @@ impl LanguageServer for CodeGraphBackend {
         for (source, _, edge_type) in edges {
             if edge_type == EdgeType::Calls {
                 if let Ok(node) = graph.get_node(source) {
-                    let name = node.properties.get_string("name").unwrap_or("").to_string();
+                    let name = node_props::name(node).to_string();
 
                     if let Ok(location) = self.node_to_location(&graph, source) {
                         calls.push(CallHierarchyIncomingCall {
@@ -1497,7 +1477,7 @@ impl LanguageServer for CodeGraphBackend {
         for (_, target, edge_type) in edges {
             if edge_type == EdgeType::Calls {
                 if let Ok(node) = graph.get_node(target) {
-                    let name = node.properties.get_string("name").unwrap_or("").to_string();
+                    let name = node_props::name(node).to_string();
 
                     if let Ok(location) = self.node_to_location(&graph, target) {
                         calls.push(CallHierarchyOutgoingCall {
@@ -2955,27 +2935,8 @@ impl CodeGraphBackend {
 
     /// Read source code for a graph node by extracting its file path and line range.
     async fn get_source_for_node(&self, node_id: NodeId) -> Option<String> {
-        let (path, start_line, end_line) = {
-            let graph = self.graph.read().await;
-            let node = graph.get_node(node_id).ok()?;
-            let path = node.properties.get_string("path")?.to_string();
-            let start_line =
-                node.properties
-                    .get_int("line_start")
-                    .or_else(|| node.properties.get_int("start_line"))? as usize;
-            let end_line =
-                node.properties
-                    .get_int("line_end")
-                    .or_else(|| node.properties.get_int("end_line"))? as usize;
-            (path, start_line, end_line)
-        };
-        let content = std::fs::read_to_string(&path).ok()?;
-        let lines: Vec<&str> = content.lines().collect();
-        if start_line > 0 && end_line <= lines.len() {
-            Some(lines[start_line - 1..end_line].join("\n"))
-        } else {
-            None
-        }
+        let graph = self.graph.read().await;
+        crate::domain::source_code::get_symbol_source(&graph, node_id)
     }
 
     /// Handle get_edit_context LSP request by forwarding to MCP-style composition.
@@ -3014,59 +2975,10 @@ impl CodeGraphBackend {
         // Find symbol at line
         let (target, name, node_type, language, line_start, line_end) = {
             let graph = self.graph.read().await;
-            let nodes = graph
-                .query()
-                .property("path", path_str.clone())
-                .execute()
-                .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
 
-            // Exact match first, then nearest
-            let mut found = None;
-            for &nid in &nodes {
-                if let Ok(node) = graph.get_node(nid) {
-                    let start = node
-                        .properties
-                        .get_int("line_start")
-                        .or_else(|| node.properties.get_int("start_line"))
-                        .unwrap_or(0) as u32;
-                    let end = node
-                        .properties
-                        .get_int("line_end")
-                        .or_else(|| node.properties.get_int("end_line"))
-                        .unwrap_or(start as i64) as u32;
-                    if line >= start && line <= end {
-                        found = Some(nid);
-                        break;
-                    }
-                }
-            }
-            // Fallback: nearest
-            if found.is_none() {
-                let mut best: Option<(NodeId, i64)> = None;
-                for &nid in &nodes {
-                    if let Ok(node) = graph.get_node(nid) {
-                        let start = node
-                            .properties
-                            .get_int("line_start")
-                            .or_else(|| node.properties.get_int("start_line"))
-                            .unwrap_or(0);
-                        let end = node
-                            .properties
-                            .get_int("line_end")
-                            .or_else(|| node.properties.get_int("end_line"))
-                            .unwrap_or(start);
-                        let dist = if start > line as i64 {
-                            start - line as i64
-                        } else {
-                            (line as i64 - end) + 1000
-                        };
-                        if best.is_none() || dist < best.unwrap().1 {
-                            best = Some((nid, dist));
-                        }
-                    }
-                }
-                found = best.map(|(id, _)| id);
-            }
+            // Use domain node resolution for exact match + nearest
+            let found = crate::domain::node_resolution::find_nearest_node(&graph, &path_str, line)
+                .map(|(id, _)| id);
 
             let target = found.ok_or_else(|| {
                 tower_lsp::jsonrpc::Error::invalid_params("No symbols found at this location")
@@ -3075,11 +2987,7 @@ impl CodeGraphBackend {
             let node = graph
                 .get_node(target)
                 .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
-            let name = node
-                .properties
-                .get_string("name")
-                .unwrap_or_default()
-                .to_string();
+            let name = node_props::name(node).to_string();
             let node_type = format!("{:?}", node.node_type).to_lowercase();
             let language = node
                 .properties
@@ -3092,16 +3000,15 @@ impl CodeGraphBackend {
                         .map(|e| e.to_string())
                         .unwrap_or_else(|| "unknown".to_string())
                 });
-            let line_start = node
-                .properties
-                .get_int("line_start")
-                .or_else(|| node.properties.get_int("start_line"))
-                .unwrap_or(0);
-            let line_end = node
-                .properties
-                .get_int("line_end")
-                .or_else(|| node.properties.get_int("end_line"))
-                .unwrap_or(line_start);
+            let line_start = node_props::line_start(node) as i64;
+            let line_end = {
+                let e = node_props::line_end(node) as i64;
+                if e == 0 {
+                    line_start
+                } else {
+                    e
+                }
+            };
             (target, name, node_type, language, line_start, line_end)
         };
 
