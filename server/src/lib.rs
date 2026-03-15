@@ -14,6 +14,7 @@ pub mod backend;
 pub mod branch_watcher;
 pub mod cache;
 pub mod custom_requests;
+pub mod domain;
 pub mod error;
 pub mod git_mining;
 pub mod handlers;
