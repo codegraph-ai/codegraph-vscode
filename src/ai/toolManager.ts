@@ -682,7 +682,7 @@ export class CodeGraphToolManager {
                         limit?: number;
                         includePrivate?: boolean;
                     };
-                    const { query, symbolTypes, limit = 20, includePrivate = false } = input;
+                    const { query, symbolTypes, limit = 20, includePrivate = true } = input;
 
                     try {
                         const response = await this.sendRequestWithRetry<SymbolSearchResponse>(
