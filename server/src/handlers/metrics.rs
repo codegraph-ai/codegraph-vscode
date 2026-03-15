@@ -1,7 +1,6 @@
 //! Code Metrics Handler - Complexity and quality analysis for AI assistants.
 
 use crate::backend::CodeGraphBackend;
-use crate::domain::node_props;
 use crate::handlers::ai_context::LocationInfo;
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use serde::{Deserialize, Serialize};
@@ -229,14 +228,37 @@ impl CodeGraphBackend {
         Ok(self.symbol_index.get_file_symbols(&path))
     }
 
-    /// Find unused code in the codebase
+    /// Find unused code in the codebase — delegates to shared domain::unused_code.
     pub async fn handle_find_unused_code(
         &self,
         params: UnusedCodeParams,
     ) -> Result<UnusedCodeResponse> {
-        let graph = self.graph.read().await;
         let min_confidence = params.confidence.unwrap_or(0.7);
         let include_tests = params.include_tests.unwrap_or(false);
+
+        // Resolve URI to file path if provided
+        let path = if let Some(uri) = &params.uri {
+            let uri_parsed = Url::parse(uri)
+                .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid URI"))?;
+            let file_path = uri_parsed
+                .to_file_path()
+                .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
+            Some(file_path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        let domain_params = crate::domain::unused_code::FindUnusedCodeParams {
+            path,
+            scope: params.scope.clone(),
+            include_tests,
+            confidence: min_confidence,
+        };
+
+        let graph = self.graph.read().await;
+        let result =
+            crate::domain::unused_code::find_unused_code(&graph, &self.query_engine, domain_params)
+                .await;
 
         let mut unused_items: Vec<UnusedItem> = Vec::new();
         let mut functions_count = 0u32;
@@ -245,148 +267,43 @@ impl CodeGraphBackend {
         let variables_count = 0u32;
         let mut total_lines = 0u32;
 
-        // Get nodes based on scope
-        let node_ids: Vec<NodeId> = if let Some(uri) = &params.uri {
-            let uri_parsed = Url::parse(uri)
-                .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid URI"))?;
-            let path = uri_parsed
-                .to_file_path()
-                .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
-            self.symbol_index.get_file_symbols(&path)
-        } else {
-            // Workspace scope - get all function nodes
-            graph
-                .query()
-                .node_type(NodeType::Function)
-                .execute()
-                .unwrap_or_default()
-        };
+        for candidate in &result.candidates {
+            let lines = candidate.line_end.saturating_sub(candidate.line_start) + 1;
 
-        for node_id in node_ids {
-            if let Ok(node) = graph.get_node(node_id) {
-                // Skip non-function/class nodes for now
-                if node.node_type != NodeType::Function && node.node_type != NodeType::Class {
-                    continue;
-                }
+            let item_type = match candidate.node_type {
+                NodeType::Function => "function",
+                NodeType::Class => "class",
+                NodeType::Variable => "variable",
+                _ => "type",
+            };
 
-                let name = node_props::name(node).to_string();
+            let reason = if candidate.is_public {
+                "Exported but no internal callers or importers found"
+            } else {
+                "No callers or importers found in codebase"
+            };
 
-                // Skip anonymous arrow functions — they're callbacks/arguments, not standalone symbols
-                if name == "arrow_function"
-                    || name.is_empty()
-                    || name == "anonymous"
-                    || name == "constructor"
-                    || name == "new"
-                {
-                    continue;
-                }
-
-                // Skip test functions unless requested
-                if !include_tests
-                    && (name.starts_with("test_")
-                        || name.ends_with("_test")
-                        || name.contains("Test")
-                        || name.starts_with("it_")
-                        || name == "it"
-                        || name == "describe"
-                        || name == "beforeEach"
-                        || name == "afterEach")
-                {
-                    continue;
-                }
-
-                // Check if node has any usage edges (calls, imports, references, etc.)
-                // Structural edges like Contains and Defines are NOT usage signals.
-                let incoming = self.get_connected_edges(&graph, node_id, Direction::Incoming);
-                let has_callers = incoming
-                    .iter()
-                    .any(|(_, _, edge_type)| *edge_type == EdgeType::Calls);
-                let has_usage_edge = incoming.iter().any(|(_, _, edge_type)| {
-                    matches!(
-                        edge_type,
-                        EdgeType::Imports
-                            | EdgeType::ImportsFrom
-                            | EdgeType::References
-                            | EdgeType::Uses
-                            | EdgeType::Invokes
-                            | EdgeType::Instantiates
-                    )
+            if let Ok(location) = self.node_to_location(&graph, candidate.node_id) {
+                unused_items.push(UnusedItem {
+                    item_type: item_type.to_string(),
+                    name: candidate.name.clone(),
+                    location: LocationInfo {
+                        uri: location.uri.to_string(),
+                        range: location.range,
+                    },
+                    confidence: candidate.confidence,
+                    reason: reason.to_string(),
+                    safe_to_remove: !candidate.is_public && candidate.confidence > 0.8,
                 });
 
-                let is_used = has_callers || has_usage_edge;
+                match candidate.node_type {
+                    NodeType::Function => functions_count += 1,
+                    NodeType::Class => classes_count += 1,
+                    _ => {}
+                }
 
-                if !is_used {
-                    // Determine if this might be exported or an entry point
-                    let is_exported = node_props::is_public(node);
-
-                    let is_entry = Self::is_entry_point(&name);
-                    let is_vscode_entry = Self::is_vscode_entry_point(&name);
-                    let is_trait_method = Self::is_trait_or_protocol_method(&name);
-                    let is_handler = name.contains("handle")
-                        || name.contains("Handler")
-                        || name.starts_with("on");
-                    let is_lifecycle = ["init", "setup", "teardown", "cleanup", "main", "run"]
-                        .iter()
-                        .any(|k| name.to_lowercase().contains(k));
-
-                    // Skip VS Code entry points and trait implementations entirely
-                    // These are called by the runtime/framework, not by user code
-                    if is_vscode_entry || is_trait_method {
-                        continue;
-                    }
-
-                    // Calculate confidence
-                    let confidence = if is_exported {
-                        0.4 // Low confidence - might be used externally
-                    } else if is_entry || is_handler || is_lifecycle {
-                        0.3 // Very low - likely an entry point
-                    } else {
-                        0.9 // High confidence - truly unused
-                    };
-
-                    if confidence >= min_confidence {
-                        let item_type = match node.node_type {
-                            NodeType::Function => "function",
-                            NodeType::Class => "class",
-                            _ => "unknown",
-                        };
-
-                        let reason = if is_exported {
-                            "Exported but no internal callers or importers found"
-                        } else if is_entry {
-                            "Possible entry point with no callers or importers"
-                        } else {
-                            "No callers or importers found in codebase"
-                        };
-
-                        let start_line = node_props::line_start(node);
-                        let end_line = node_props::line_end(node);
-                        let lines = end_line.saturating_sub(start_line) + 1;
-
-                        if let Ok(location) = self.node_to_location(&graph, node_id) {
-                            unused_items.push(UnusedItem {
-                                item_type: item_type.to_string(),
-                                name: name.clone(),
-                                location: LocationInfo {
-                                    uri: location.uri.to_string(),
-                                    range: location.range,
-                                },
-                                confidence,
-                                reason: reason.to_string(),
-                                safe_to_remove: !is_exported && !is_entry && confidence > 0.8,
-                            });
-
-                            match node.node_type {
-                                NodeType::Function => functions_count += 1,
-                                NodeType::Class => classes_count += 1,
-                                _ => {}
-                            }
-
-                            if confidence > 0.8 {
-                                total_lines += lines;
-                            }
-                        }
-                    }
+                if candidate.confidence > 0.8 {
+                    total_lines += lines;
                 }
             }
         }
@@ -414,127 +331,6 @@ impl CodeGraphBackend {
                 estimated_lines_removable: total_lines,
             },
         })
-    }
-
-    /// Check if a function name suggests it's an entry point
-    fn is_entry_point(name: &str) -> bool {
-        let lower = name.to_lowercase();
-        lower == "main"
-            || lower == "run"
-            || lower == "start"
-            || lower == "init"
-            || lower == "setup"
-            || lower.starts_with("export")
-            || lower.ends_with("handler")
-            || lower.ends_with("listener")
-            || lower.ends_with("callback")
-    }
-
-    /// Check if a function is a VS Code extension entry point or API callback
-    fn is_vscode_entry_point(name: &str) -> bool {
-        matches!(
-            name,
-            "activate"
-                | "deactivate"
-                // TreeDataProvider
-                | "getTreeItem"
-                | "getChildren"
-                | "getParent"
-                | "resolveTreeItem"
-                // FollowupProvider / ChatParticipant
-                | "provideFollowups"
-                // CodeActionProvider / CodeLensProvider
-                | "provideCodeActions"
-                | "provideCodeLenses"
-                | "resolveCodeLens"
-                // CompletionItemProvider
-                | "provideCompletionItems"
-                | "resolveCompletionItem"
-                // LanguageModelTool
-                | "invoke"
-                | "prepareInvocation"
-                // Common VS Code lifecycle
-                | "getIcon"
-                | "setup"
-                | "dispose"
-        )
-    }
-
-    /// Check if a function is likely a trait implementation or protocol method
-    fn is_trait_or_protocol_method(name: &str) -> bool {
-        // LSP protocol methods (tower-lsp trait implementations)
-        let lsp_methods = [
-            "initialize",
-            "initialized",
-            "shutdown",
-            "did_open",
-            "did_change",
-            "did_save",
-            "did_close",
-            "completion",
-            "hover",
-            "goto_definition",
-            "references",
-            "document_symbol",
-            "formatting",
-            "rename",
-            "code_action",
-            "code_lens",
-            "folding_range",
-            "semantic_tokens_full",
-            "inlay_hint",
-            "signature_help",
-            "document_highlight",
-            "will_save",
-            "will_save_wait_until",
-            "goto_declaration",
-            "goto_type_definition",
-            "goto_implementation",
-            "prepare_rename",
-            "workspace_symbol",
-            "execute_command",
-        ];
-
-        // Common Rust trait method names
-        let trait_methods = [
-            "new",
-            "default",
-            "clone",
-            "fmt",
-            "from",
-            "into",
-            "try_from",
-            "try_into",
-            "as_ref",
-            "as_mut",
-            "deref",
-            "deref_mut",
-            "drop",
-            "eq",
-            "ne",
-            "partial_cmp",
-            "cmp",
-            "hash",
-            "index",
-            "index_mut",
-            "add",
-            "sub",
-            "mul",
-            "div",
-            "neg",
-            "not",
-            "borrow",
-            "borrow_mut",
-            "serialize",
-            "deserialize",
-            "next",
-            "size_hint",
-            "poll",
-            "call",
-        ];
-
-        let lower = name.to_lowercase();
-        lsp_methods.contains(&lower.as_str()) || trait_methods.contains(&lower.as_str())
     }
 
     /// Analyze module coupling and cohesion
@@ -717,18 +513,6 @@ mod tests {
         assert_eq!(file_grade(30.0), 'F');
     }
 
-    #[test]
-    fn test_is_entry_point() {
-        assert!(CodeGraphBackend::is_entry_point("main"));
-        assert!(CodeGraphBackend::is_entry_point("Main"));
-        assert!(CodeGraphBackend::is_entry_point("clickHandler"));
-        assert!(CodeGraphBackend::is_entry_point("submitHandler"));
-        assert!(CodeGraphBackend::is_entry_point("eventListener"));
-        assert!(CodeGraphBackend::is_entry_point("onClickCallback"));
-        assert!(!CodeGraphBackend::is_entry_point("calculateSum"));
-        assert!(!CodeGraphBackend::is_entry_point("processData"));
-    }
-
     // ==========================================
     // Unused Code Detection Tests
     // ==========================================
@@ -792,6 +576,9 @@ mod tests {
             };
 
             let backend = create_test_backend_with_graph(graph.clone());
+
+            // Build indexes so get_callers() works in the domain function
+            backend.query_engine.build_indexes().await;
 
             // Add the called function to the symbol index
             backend.symbol_index.add_node_for_test(

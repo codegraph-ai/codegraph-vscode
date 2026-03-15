@@ -7,4 +7,6 @@
 pub(crate) mod complexity;
 pub(crate) mod node_props;
 pub(crate) mod node_resolution;
+pub(crate) mod related_tests;
 pub(crate) mod source_code;
+pub(crate) mod unused_code;
