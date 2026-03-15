@@ -1,5 +1,6 @@
 //! Symbol indexing for fast lookups.
 
+use crate::domain::node_props;
 use codegraph::{CodeGraph, NodeId, PropertyMap};
 use codegraph_parser_api::FileInfo;
 use dashmap::DashMap;
@@ -311,22 +312,10 @@ pub struct IndexStats {
 /// Extract range from node properties.
 /// Note: codegraph parsers use line_start/line_end, not start_line/end_line
 fn extract_range(properties: &PropertyMap) -> Option<IndexRange> {
-    // Try both property name conventions for compatibility
-    let start_line = properties
-        .get_int("line_start")
-        .or_else(|| properties.get_int("start_line"))? as u32;
-    let end_line = properties
-        .get_int("line_end")
-        .or_else(|| properties.get_int("end_line"))? as u32;
-    // Columns usually not provided by parsers, default to full line
-    let start_col = properties
-        .get_int("col_start")
-        .or_else(|| properties.get_int("start_col"))
-        .unwrap_or(0) as u32;
-    let end_col = properties
-        .get_int("col_end")
-        .or_else(|| properties.get_int("end_col"))
-        .unwrap_or(10000) as u32; // Large default for end col
+    let start_line = node_props::line_start_opt_from_props(properties)?;
+    let end_line = node_props::line_end_opt_from_props(properties)?;
+    let start_col = node_props::col_start_from_props(properties);
+    let end_col = node_props::col_end_from_props(properties);
 
     Some(IndexRange {
         start_line,

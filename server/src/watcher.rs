@@ -543,6 +543,7 @@ impl BatchUpdateResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::node_props;
 
     // Helper to create a mock FileInfo using GraphUpdater
     async fn create_file_info_via_update(
@@ -792,7 +793,7 @@ mod tests {
         let my_class_id = class_nodes.iter().find(|&id| {
             graph_guard
                 .get_node(*id)
-                .map(|n| n.properties.get_string("name") == Some("MyClass"))
+                .map(|n| node_props::name(n) == "MyClass")
                 .unwrap_or(false)
         });
 
@@ -861,7 +862,7 @@ fn standalone() {}
             .find(|&&id| {
                 graph
                     .get_node(id)
-                    .map(|n| n.properties.get_string("name") == Some("caller"))
+                    .map(|n| node_props::name(n) == "caller")
                     .unwrap_or(false)
             })
             .expect("Should find 'caller' function");
@@ -973,7 +974,7 @@ fn standalone() {}
             .find(|&&id| {
                 graph
                     .get_node(id)
-                    .map(|n| n.properties.get_string("name") == Some("new"))
+                    .map(|n| node_props::name(n) == "new")
                     .unwrap_or(false)
             })
             .expect("Should find 'new' function");
@@ -1092,7 +1093,7 @@ export class ToolManager {
             .find(|&&id| {
                 graph
                     .get_node(id)
-                    .map(|n| n.properties.get_string("name") == Some("handleTool"))
+                    .map(|n| node_props::name(n) == "handleTool")
                     .unwrap_or(false)
             })
             .expect("Should find 'handleTool' function");
@@ -1139,7 +1140,7 @@ export class ToolManager {
             .find(|&&id| {
                 graph
                     .get_node(id)
-                    .map(|n| n.properties.get_string("name") == Some("formatCallGraph"))
+                    .map(|n| node_props::name(n) == "formatCallGraph")
                     .unwrap_or(false)
             })
             .expect("Should find 'formatCallGraph' function");
@@ -1213,7 +1214,7 @@ function buildGraph(params: DependencyGraphParams): DependencyNode[] {
             .find(|&&id| {
                 graph
                     .get_node(id)
-                    .map(|n| n.properties.get_string("name") == Some("buildGraph"))
+                    .map(|n| node_props::name(n) == "buildGraph")
                     .unwrap_or(false)
             })
             .expect("Should find 'buildGraph'");
@@ -1267,7 +1268,7 @@ function buildGraph(params: DependencyGraphParams): DependencyNode[] {
             .find(|&&id| {
                 graph
                     .get_node(id)
-                    .map(|n| n.properties.get_string("name") == Some("DependencyGraphParams"))
+                    .map(|n| node_props::name(n) == "DependencyGraphParams")
                     .unwrap_or(false)
             })
             .expect("Should find DependencyGraphParams");
@@ -1521,7 +1522,7 @@ void helper_func(int x) {
                 graph
                     .get_node(id)
                     .ok()
-                    .and_then(|n| n.properties.get_string("name").map(|s| s == name))
+                    .map(|n| node_props::name(n) == name)
                     .unwrap_or(false)
             })
     }

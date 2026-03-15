@@ -1,45 +1,12 @@
 //! Custom LSP request handlers for graph-based features.
 
 use crate::backend::CodeGraphBackend;
+use crate::domain::node_props;
 use codegraph::{CodeGraph, Direction, EdgeType, Node, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{Position, Range, Url};
-
-/// Helper to get line position from node properties.
-/// Supports both property name conventions (line_start or start_line).
-fn get_line_start(node: &Node) -> u32 {
-    node.properties
-        .get_int("line_start")
-        .or_else(|| node.properties.get_int("start_line"))
-        .map(|v| v as u32)
-        .unwrap_or(1)
-}
-
-fn get_line_end(node: &Node, default: u32) -> u32 {
-    node.properties
-        .get_int("line_end")
-        .or_else(|| node.properties.get_int("end_line"))
-        .map(|v| v as u32)
-        .unwrap_or(default)
-}
-
-fn get_col_start(node: &Node) -> u32 {
-    node.properties
-        .get_int("col_start")
-        .or_else(|| node.properties.get_int("start_col"))
-        .map(|v| v as u32)
-        .unwrap_or(0)
-}
-
-fn get_col_end(node: &Node) -> u32 {
-    node.properties
-        .get_int("col_end")
-        .or_else(|| node.properties.get_int("end_col"))
-        .map(|v| v as u32)
-        .unwrap_or(0)
-}
 
 // ==========================================
 // Dependency Graph Request
@@ -180,13 +147,16 @@ impl CodeGraphBackend {
                     continue;
                 }
 
-                let name = node.properties.get_string("name").unwrap_or("").to_string();
+                let name = node_props::name(node).to_string();
                 let node_type = format!("{:?}", node.node_type).to_lowercase();
-                let language = node
-                    .properties
-                    .get_string("language")
-                    .unwrap_or("unknown")
-                    .to_string();
+                let language = {
+                    let l = node_props::language(node);
+                    if l.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        l.to_string()
+                    }
+                };
 
                 let node_path = node
                     .properties
@@ -283,7 +253,7 @@ impl CodeGraphBackend {
 
                         tests.push(RelatedTest {
                             uri: node_path,
-                            test_name: node.properties.get_string("name").unwrap_or("").to_string(),
+                            test_name: node_props::name(node).to_string(),
                             relationship: match edge_type {
                                 EdgeType::Calls => "calls_target".to_string(),
                                 EdgeType::References => "references_target".to_string(),
@@ -327,11 +297,7 @@ impl CodeGraphBackend {
 
                             tests.push(RelatedTest {
                                 uri: node_path,
-                                test_name: node
-                                    .properties
-                                    .get_string("name")
-                                    .unwrap_or("")
-                                    .to_string(),
+                                test_name: node_props::name(node).to_string(),
                                 relationship: "same_file".to_string(),
                                 range,
                             });
@@ -368,11 +334,7 @@ impl CodeGraphBackend {
                             if let Some(range) = Self::node_to_range(node) {
                                 tests.push(RelatedTest {
                                     uri: test_path.clone(),
-                                    test_name: node
-                                        .properties
-                                        .get_string("name")
-                                        .unwrap_or("")
-                                        .to_string(),
+                                    test_name: node_props::name(node).to_string(),
                                     relationship: "adjacent_file".to_string(),
                                     range,
                                 });
@@ -430,8 +392,8 @@ impl CodeGraphBackend {
             return true;
         }
 
-        let name = node.properties.get_string("name").unwrap_or("");
-        let path = node.properties.get_string("path").unwrap_or("");
+        let name = node_props::name(node);
+        let path = node_props::path(node);
 
         let name_is_test = name.starts_with("test_")
             || name.ends_with("_test")
@@ -450,17 +412,17 @@ impl CodeGraphBackend {
     }
 
     fn node_to_range(node: &Node) -> Option<Range> {
-        let start_line = get_line_start(node).saturating_sub(1);
-        let end_line = get_line_end(node, start_line + 2).saturating_sub(1);
+        let start_line = node_props::line_start(node).saturating_sub(1);
+        let end_line = node_props::line_end(node).saturating_sub(1);
 
         Some(Range {
             start: Position {
                 line: start_line,
-                character: get_col_start(node),
+                character: node_props::col_start_from_props(&node.properties),
             },
             end: Position {
                 line: end_line,
-                character: get_col_end(node),
+                character: node_props::col_end_from_props(&node.properties),
             },
         })
     }
@@ -613,38 +575,41 @@ impl CodeGraphBackend {
             }
 
             if let Ok(node) = graph.get_node(current_id) {
-                let name = node.properties.get_string("name").unwrap_or("").to_string();
+                let name = node_props::name(node).to_string();
                 let signature = node
                     .properties
                     .get_string("signature")
                     .unwrap_or("")
                     .to_string();
-                let language = node
-                    .properties
-                    .get_string("language")
-                    .unwrap_or("unknown")
-                    .to_string();
+                let language = {
+                    let l = node_props::language(node);
+                    if l.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        l.to_string()
+                    }
+                };
 
                 // For the root node, use the original URI from params
                 // For other nodes, try to get path from properties or symbol index
                 let node_path = if current_id == node_id {
                     params.uri.clone()
                 } else {
-                    node.properties
-                        .get_string("path")
-                        .map(|s| s.to_string())
-                        .or_else(|| {
-                            self.symbol_index
-                                .find_file_for_node(current_id)
-                                .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                        })
-                        .unwrap_or_default()
+                    let p = node_props::path(node);
+                    if !p.is_empty() {
+                        p.to_string()
+                    } else {
+                        self.symbol_index
+                            .find_file_for_node(current_id)
+                            .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
+                            .unwrap_or_default()
+                    }
                 };
 
-                let start_line = get_line_start(node).saturating_sub(1);
-                let start_col = get_col_start(node);
-                let end_line = get_line_end(node, start_line + 2).saturating_sub(1);
-                let end_col = get_col_end(node);
+                let start_line = node_props::line_start(node).saturating_sub(1);
+                let start_col = node_props::col_start_from_props(&node.properties);
+                let end_line = node_props::line_end(node).saturating_sub(1);
+                let end_col = node_props::col_end_from_props(&node.properties);
 
                 let func_node = FunctionNode {
                     id: current_id.to_string(),
@@ -813,18 +778,14 @@ impl CodeGraphBackend {
                             .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
                     })
                     .unwrap_or_default();
-                let ref_name = ref_node
-                    .properties
-                    .get_string("name")
-                    .unwrap_or("")
-                    .to_string();
+                let ref_name = node_props::name(ref_node).to_string();
 
                 affected_files.insert(ref_path.clone());
 
-                let start_line = get_line_start(ref_node).saturating_sub(1);
-                let start_col = get_col_start(ref_node);
-                let end_line = get_line_end(ref_node, start_line + 2).saturating_sub(1);
-                let end_col = get_col_end(ref_node);
+                let start_line = node_props::line_start(ref_node).saturating_sub(1);
+                let start_col = node_props::col_start_from_props(&ref_node.properties);
+                let end_line = node_props::line_end(ref_node).saturating_sub(1);
+                let end_col = node_props::col_end_from_props(&ref_node.properties);
 
                 let impact_type = match edge_type {
                     EdgeType::Calls => "caller",
@@ -1191,81 +1152,6 @@ mod tests {
         add_node_to_index(&backend, path, func2_id, "helper", "Function", 15, 25);
 
         (backend, func1_id, func2_id)
-    }
-
-    // ==========================================
-    // Helper function tests
-    // ==========================================
-
-    #[test]
-    fn test_get_line_start() {
-        let mut props = PropertyMap::new();
-        props.insert("line_start".to_string(), PropertyValue::Int(42));
-        let node = Node {
-            id: 1,
-            node_type: NodeType::Function,
-            properties: props,
-        };
-        assert_eq!(get_line_start(&node), 42);
-    }
-
-    #[test]
-    fn test_get_line_start_fallback() {
-        let mut props = PropertyMap::new();
-        props.insert("start_line".to_string(), PropertyValue::Int(42));
-        let node = Node {
-            id: 1,
-            node_type: NodeType::Function,
-            properties: props,
-        };
-        assert_eq!(get_line_start(&node), 42);
-    }
-
-    #[test]
-    fn test_get_line_start_default() {
-        let props = PropertyMap::new();
-        let node = Node {
-            id: 1,
-            node_type: NodeType::Function,
-            properties: props,
-        };
-        assert_eq!(get_line_start(&node), 1);
-    }
-
-    #[test]
-    fn test_get_line_end() {
-        let mut props = PropertyMap::new();
-        props.insert("line_end".to_string(), PropertyValue::Int(100));
-        let node = Node {
-            id: 1,
-            node_type: NodeType::Function,
-            properties: props,
-        };
-        assert_eq!(get_line_end(&node, 50), 100);
-    }
-
-    #[test]
-    fn test_get_col_start() {
-        let mut props = PropertyMap::new();
-        props.insert("col_start".to_string(), PropertyValue::Int(5));
-        let node = Node {
-            id: 1,
-            node_type: NodeType::Function,
-            properties: props,
-        };
-        assert_eq!(get_col_start(&node), 5);
-    }
-
-    #[test]
-    fn test_get_col_end() {
-        let mut props = PropertyMap::new();
-        props.insert("col_end".to_string(), PropertyValue::Int(80));
-        let node = Node {
-            id: 1,
-            node_type: NodeType::Function,
-            properties: props,
-        };
-        assert_eq!(get_col_end(&node), 80);
     }
 
     #[test]

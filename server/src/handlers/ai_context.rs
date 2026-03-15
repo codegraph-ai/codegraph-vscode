@@ -1,6 +1,7 @@
 //! AI Context Provider - Smart context selection for AI assistants.
 
 use crate::backend::CodeGraphBackend;
+use crate::domain::node_props;
 use codegraph::{Direction, EdgeType, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -195,18 +196,19 @@ impl CodeGraphBackend {
             .unwrap_or(None)
             .unwrap_or_else(|| "<source not available>".to_string());
 
-        let name = node.properties.get_string("name").unwrap_or("").to_string();
+        let name = node_props::name(node).to_string();
         let node_type = format!("{}", node.node_type).to_lowercase();
-        let language = node
-            .properties
-            .get_string("language")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
+        let language = {
+            let l = node_props::language(node);
+            if l.is_empty() {
                 self.parsers
                     .language_for_path(&path)
                     .unwrap_or("unknown")
                     .to_string()
-            });
+            } else {
+                l.to_string()
+            }
+        };
 
         let location = self.node_to_location_info(&graph, node_id)?;
 
@@ -377,7 +379,7 @@ impl CodeGraphBackend {
             }
 
             if let Ok(caller_node) = graph.get_node(*source) {
-                let name = caller_node.properties.get_string("name").unwrap_or("");
+                let name = node_props::name(caller_node);
                 if name.starts_with("test_") || name.ends_with("_test") {
                     if let Some(symbol) = self
                         .create_related_symbol(graph, *source, caller_node, "tests", 1.0, budget)
@@ -400,7 +402,7 @@ impl CodeGraphBackend {
             }
 
             if let Ok(caller_node) = graph.get_node(*source) {
-                let name = caller_node.properties.get_string("name").unwrap_or("");
+                let name = node_props::name(caller_node);
                 if !name.starts_with("test_") && !name.ends_with("_test") {
                     if let Some(symbol) = self
                         .create_related_symbol(
@@ -514,7 +516,7 @@ impl CodeGraphBackend {
             }
 
             if let Ok(caller_node) = graph.get_node(*source) {
-                let name = caller_node.properties.get_string("name").unwrap_or("");
+                let name = node_props::name(caller_node);
                 if name.starts_with("test_") || name.ends_with("_test") {
                     if let Some(symbol) = self
                         .create_related_symbol(
@@ -577,7 +579,7 @@ impl CodeGraphBackend {
             return None;
         }
 
-        let name = node.properties.get_string("name").unwrap_or("").to_string();
+        let name = node_props::name(node).to_string();
         let location = self.node_to_location_info(graph, node_id).ok()?;
 
         Some(RelatedSymbol {
@@ -618,7 +620,7 @@ impl CodeGraphBackend {
 
             if let Ok(usage_node) = graph.get_node(*source) {
                 // Skip if this is a test (tests are covered elsewhere)
-                let usage_name = usage_node.properties.get_string("name").unwrap_or("");
+                let usage_name = node_props::name(usage_node);
                 if usage_name.starts_with("test_") || usage_name.ends_with("_test") {
                     continue;
                 }
@@ -698,11 +700,7 @@ impl CodeGraphBackend {
             .take(10)
         {
             if let Ok(dep_node) = graph.get_node(*target) {
-                let name = dep_node
-                    .properties
-                    .get_string("name")
-                    .unwrap_or("")
-                    .to_string();
+                let name = node_props::name(dep_node).to_string();
                 deps.push(DependencyInfo {
                     name,
                     dep_type: "import".to_string(),

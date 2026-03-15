@@ -3,10 +3,6 @@
 //! These functions eliminate scattered get_int/get_string fallback chains
 //! by providing a single canonical accessor for each property.
 //!
-//! NOTE: dead_code allowed here — these accessors are scaffolding for Builder 2
-//! (property replacement pass) and will all be used once that pass completes.
-#![allow(dead_code)]
-
 use codegraph::{Node, PropertyMap};
 
 // Line accessors (from Node)
@@ -22,11 +18,13 @@ pub(crate) fn line_end(node: &Node) -> u32 {
 }
 
 /// Optional variant — returns None when neither key is present.
+#[allow(dead_code)]
 pub(crate) fn line_start_opt(node: &Node) -> Option<u32> {
     line_start_opt_from_props(&node.properties)
 }
 
 /// Optional variant — returns None when neither key is present.
+#[allow(dead_code)]
 pub(crate) fn line_end_opt(node: &Node) -> Option<u32> {
     line_end_opt_from_props(&node.properties)
 }
@@ -88,6 +86,7 @@ pub(crate) fn path(node: &Node) -> &str {
 }
 
 /// Get the node visibility string. Returns "public" when absent.
+#[allow(dead_code)]
 pub(crate) fn visibility(node: &Node) -> &str {
     node.properties.get_string("visibility").unwrap_or("public")
 }

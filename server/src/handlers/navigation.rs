@@ -1,6 +1,7 @@
 //! Navigation-related helper functions.
 
 use crate::backend::CodeGraphBackend;
+use crate::domain::node_props;
 use codegraph::NodeId;
 use serde::{Deserialize, Serialize};
 use tower_lsp::jsonrpc::Result;
@@ -44,31 +45,13 @@ impl CodeGraphBackend {
             None => return Ok(None),
         };
 
-        let start_line: u32 = node
-            .properties
-            .get_int("start_line")
-            .map(|v| v as u32)
-            .unwrap_or(1)
-            .saturating_sub(1);
+        let start_line: u32 = node_props::line_start(node).saturating_sub(1);
 
-        let start_col: u32 = node
-            .properties
-            .get_int("start_col")
-            .map(|v| v as u32)
-            .unwrap_or(0);
+        let start_col: u32 = node_props::col_start_from_props(&node.properties);
 
-        let end_line: u32 = node
-            .properties
-            .get_int("end_line")
-            .map(|v| v as u32)
-            .unwrap_or(start_line + 1)
-            .saturating_sub(1);
+        let end_line: u32 = node_props::line_end(node).saturating_sub(1);
 
-        let end_col: u32 = node
-            .properties
-            .get_int("end_col")
-            .map(|v| v as u32)
-            .unwrap_or(0);
+        let end_col: u32 = node_props::col_end_from_props(&node.properties);
 
         let uri = Url::from_file_path(path)
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid path"))?;
@@ -144,40 +127,25 @@ impl CodeGraphBackend {
 
         for node_id in node_ids {
             if let Ok(node) = graph.get_node(node_id) {
-                let name = node.properties.get_string("name").unwrap_or("").to_string();
+                let name = node_props::name(node).to_string();
                 let kind = format!("{:?}", node.node_type);
-                let language = node
-                    .properties
-                    .get_string("language")
-                    .unwrap_or("unknown")
-                    .to_string();
-                let path = node.properties.get_string("path").unwrap_or("").to_string();
+                let language = {
+                    let l = node_props::language(node);
+                    if l.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        l.to_string()
+                    }
+                };
+                let path = node_props::path(node).to_string();
 
-                let start_line: u32 = node
-                    .properties
-                    .get_int("start_line")
-                    .map(|v| v as u32)
-                    .unwrap_or(1)
-                    .saturating_sub(1);
+                let start_line: u32 = node_props::line_start(node).saturating_sub(1);
 
-                let start_col: u32 = node
-                    .properties
-                    .get_int("start_col")
-                    .map(|v| v as u32)
-                    .unwrap_or(0);
+                let start_col: u32 = node_props::col_start_from_props(&node.properties);
 
-                let end_line: u32 = node
-                    .properties
-                    .get_int("end_line")
-                    .map(|v| v as u32)
-                    .unwrap_or(start_line + 1)
-                    .saturating_sub(1);
+                let end_line: u32 = node_props::line_end(node).saturating_sub(1);
 
-                let end_col: u32 = node
-                    .properties
-                    .get_int("end_col")
-                    .map(|v| v as u32)
-                    .unwrap_or(0);
+                let end_col: u32 = node_props::col_end_from_props(&node.properties);
 
                 let uri = if !path.is_empty() {
                     Url::from_file_path(&path)

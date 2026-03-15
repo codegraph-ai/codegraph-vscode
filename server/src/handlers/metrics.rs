@@ -1,6 +1,7 @@
 //! Code Metrics Handler - Complexity and quality analysis for AI assistants.
 
 use crate::backend::CodeGraphBackend;
+use crate::domain::node_props;
 use crate::handlers::ai_context::LocationInfo;
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use serde::{Deserialize, Serialize};
@@ -268,7 +269,7 @@ impl CodeGraphBackend {
                     continue;
                 }
 
-                let name = node.properties.get_string("name").unwrap_or("").to_string();
+                let name = node_props::name(node).to_string();
 
                 // Skip anonymous arrow functions — they're callbacks/arguments, not standalone symbols
                 if name == "arrow_function"
@@ -316,12 +317,7 @@ impl CodeGraphBackend {
 
                 if !is_used {
                     // Determine if this might be exported or an entry point
-                    let is_exported = node.properties.get_bool("exported").unwrap_or(false)
-                        || node
-                            .properties
-                            .get_string("visibility")
-                            .map(|v| v == "public")
-                            .unwrap_or(false);
+                    let is_exported = node_props::is_public(node);
 
                     let is_entry = Self::is_entry_point(&name);
                     let is_vscode_entry = Self::is_vscode_entry_point(&name);
@@ -363,8 +359,8 @@ impl CodeGraphBackend {
                             "No callers or importers found in codebase"
                         };
 
-                        let start_line = node.properties.get_int("line_start").unwrap_or(0) as u32;
-                        let end_line = node.properties.get_int("line_end").unwrap_or(0) as u32;
+                        let start_line = node_props::line_start(node);
+                        let end_line = node_props::line_end(node);
                         let lines = end_line.saturating_sub(start_line) + 1;
 
                         if let Ok(location) = self.node_to_location(&graph, node_id) {

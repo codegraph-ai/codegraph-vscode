@@ -10,6 +10,7 @@ use super::primitives::{
     MAX_SIGNATURE_LENGTH,
 };
 use super::text_index::{TextIndex, TextIndexBuilder};
+use crate::domain::node_props;
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use codegraph_memory::VectorEngine;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -70,7 +71,7 @@ impl QueryEngine {
 
         // Iterate over all nodes using iter_nodes()
         for (node_id, node) in graph.iter_nodes() {
-            let name = node.properties.get_string("name").unwrap_or("").to_string();
+            let name = node_props::name(node).to_string();
             let docstring = node.properties.get_string("doc").map(|s| s.to_string());
 
             // Add to text index
@@ -86,11 +87,8 @@ impl QueryEngine {
                                     EdgeType::Imports => {
                                         // Get the imported module name
                                         if let Ok(target_node) = graph.get_node(neighbor_id) {
-                                            let module_name = target_node
-                                                .properties
-                                                .get_string("name")
-                                                .unwrap_or("")
-                                                .to_string();
+                                            let module_name =
+                                                node_props::name(target_node).to_string();
                                             if !module_name.is_empty() {
                                                 import_map
                                                     .entry(module_name)
@@ -159,7 +157,7 @@ impl QueryEngine {
                 continue;
             }
 
-            let name = node.properties.get_string("name").unwrap_or("");
+            let name = node_props::name(node);
             if name.is_empty() || name == "arrow_function" || name == "anonymous" {
                 continue;
             }
@@ -602,22 +600,13 @@ impl QueryEngine {
 
         // Get lines of code
         let lines_of_code = {
-            let start_line = node.properties.get_int("line_start").unwrap_or(0);
-            let end_line = node.properties.get_int("line_end").unwrap_or(start_line);
-            (end_line - start_line + 1) as usize
+            let start_line = node_props::line_start(node) as i64;
+            let end_line = node_props::line_end(node) as i64;
+            (end_line - start_line + 1).max(1) as usize
         };
 
         // Check if public — fall back to visibility string when booleans are absent
-        let is_public = node
-            .properties
-            .get_bool("is_public")
-            .or_else(|| node.properties.get_bool("exported"))
-            .unwrap_or_else(|| {
-                node.properties
-                    .get_string("visibility")
-                    .map(|v| matches!(v, "public" | "pub"))
-                    .unwrap_or(true)
-            });
+        let is_public = node_props::is_public(node);
 
         // Check if deprecated
         let is_deprecated = node.properties.get_bool("deprecated").unwrap_or(false);
@@ -634,11 +623,7 @@ impl QueryEngine {
                     });
                     if is_import {
                         if let Ok(target) = graph.get_node(neighbor_id) {
-                            let name = target
-                                .properties
-                                .get_string("name")
-                                .unwrap_or("")
-                                .to_string();
+                            let name = node_props::name(target).to_string();
                             if !name.is_empty() && !dependencies.contains(&name) {
                                 dependencies.push(name);
                             }
@@ -660,11 +645,7 @@ impl QueryEngine {
                     });
                     if is_import {
                         if let Ok(source) = graph.get_node(neighbor_id) {
-                            let name = source
-                                .properties
-                                .get_string("name")
-                                .unwrap_or("")
-                                .to_string();
+                            let name = node_props::name(source).to_string();
                             if !name.is_empty() && !dependents.contains(&name) {
                                 dependents.push(name);
                             }
@@ -677,8 +658,8 @@ impl QueryEngine {
         // Detect test associations by checking if any caller is a test node
         let has_tests = callers.iter().any(|caller| {
             graph.get_node(caller.node_id).is_ok_and(|n| {
-                let name = n.properties.get_string("name").unwrap_or("");
-                let path = n.properties.get_string("path").unwrap_or("");
+                let name = node_props::name(n);
+                let path = node_props::path(n);
                 name.starts_with("test_")
                     || name.ends_with("_test")
                     || name.contains("test ")
@@ -724,7 +705,7 @@ impl QueryEngine {
                 continue;
             }
 
-            let name = node.properties.get_string("name").unwrap_or("");
+            let name = node_props::name(node);
 
             // Check name pattern
             if let Some(ref regex) = name_regex {
@@ -1084,7 +1065,7 @@ impl QueryEngine {
                 continue;
             }
 
-            let name = node.properties.get_string("name").unwrap_or("");
+            let name = node_props::name(node);
 
             // Detect entry type
             let entry_type = self.detect_entry_type(node, name);
@@ -1149,29 +1130,20 @@ impl QueryEngine {
         let name = node.properties.get_string("name")?.to_string();
         let kind = format!("{}", node.node_type);
 
-        // Support both property name conventions
-        let line = node
-            .properties
-            .get_int("line_start")
-            .or_else(|| node.properties.get_int("start_line"))
-            .unwrap_or(1) as u32;
-        let column = node
-            .properties
-            .get_int("col_start")
-            .or_else(|| node.properties.get_int("start_col"))
-            .unwrap_or(0) as u32;
-        let end_line = node
-            .properties
-            .get_int("line_end")
-            .or_else(|| node.properties.get_int("end_line"))
-            .unwrap_or(line as i64) as u32;
-        let end_column = node
-            .properties
-            .get_int("col_end")
-            .or_else(|| node.properties.get_int("end_col"))
-            .unwrap_or(0) as u32;
+        // Use canonical property accessors (with fallback for old-style keys)
+        let line = node_props::line_start(node).max(1);
+        let column = node_props::col_start_from_props(&node.properties);
+        let end_line = {
+            let e = node_props::line_end(node);
+            if e == 0 {
+                line
+            } else {
+                e
+            }
+        };
+        let end_column = node_props::col_end_from_props(&node.properties);
 
-        let file = node.properties.get_string("path").unwrap_or("").to_string();
+        let file = node_props::path(node).to_string();
 
         let location = SymbolLocation {
             file,
@@ -1197,20 +1169,11 @@ impl QueryEngine {
             (sig, doc)
         };
 
-        let visibility_str = node.properties.get_string("visibility");
+        let is_public = node_props::is_public(node);
 
-        let is_public = node
+        let visibility = node
             .properties
-            .get_bool("is_public")
-            .or_else(|| node.properties.get_bool("exported"))
-            .unwrap_or_else(|| {
-                // Fall back to visibility string property
-                visibility_str
-                    .map(|v| matches!(v, "public" | "pub"))
-                    .unwrap_or(true)
-            });
-
-        let visibility = visibility_str
+            .get_string("visibility")
             .unwrap_or(if is_public { "public" } else { "private" })
             .to_string();
 
@@ -1296,7 +1259,7 @@ impl QueryEngine {
             return Some(EntryType::TestEntry);
         }
         // Check if function lives in a test file (path-based detection)
-        let path = node.properties.get_string("path").unwrap_or("");
+        let path = node_props::path(node);
         if path.contains("/test/")
             || path.contains("/tests/")
             || path.contains("/__tests__/")
@@ -1325,9 +1288,7 @@ impl QueryEngine {
         }
 
         // Check for public API (exported functions)
-        if node.properties.get_bool("exported").unwrap_or(false)
-            || node.properties.get_bool("is_public").unwrap_or(false)
-        {
+        if node_props::is_public(node) {
             return Some(EntryType::PublicApi);
         }
 
