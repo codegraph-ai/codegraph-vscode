@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-13 (v0.8.3, 330 tests, 31 MCP tools, reindex null return fixed)
+> Last updated: 2026-03-14 (v0.8.4, 330 tests, 31 MCP tools)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) | [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md)
 
@@ -77,7 +77,16 @@ Fork Lapce v0.4.6 (Apache-2.0) and integrate CodeGraph as a core subsystem with 
 ## Future / On Demand
 
 ### 6. Publish to VS Code Marketplace + npm
-v0.8.2 VSIX built (`codegraph-0.8.2.vsix`, 70MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
+v0.8.4 VSIX built (`codegraph-0.8.4.vsix`, 76MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
+
+### 29. VS Code LM tools — 14 of 30 disabled
+14 of 30 registered `vscode.lm` language model tools show as disabled/not available. All tool declarations have identical structure. Suspected per-extension tool limit (exactly 16 enabled). Needs investigation — may require splitting into multiple extensions or finding the VS Code limit documentation.
+
+### 30. File watcher not started for on-demand indexed directories
+When `index_on_startup=false`, the file watcher is not started. If the user indexes a directory via the `codegraph.indexDirectory` command, subsequent file changes won't trigger incremental re-indexing. The `handle_index_directory()` handler should start a watcher for newly indexed paths.
+
+### 31. Remove `log.md` from repo and VSIX
+4829-line log file committed in e37b5b0 and included in VSIX (1.25 MB). Should be in `.gitignore`. Also `server/codegraph-lsp` binary (59 MB) is duplicated in VSIX — add to `.vscodeignore`.
 
 ### 23. Linux binary requires glibc 2.39+ (Ubuntu 24.04+)
 Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Won't work on Ubuntu 22.04 (glibc 2.35). zigbuild can't cross-compile ONNX Runtime C++ code (`std::filesystem` symbols). Accepted tradeoff — Ubuntu 22.04 is EOL April 2027.
@@ -95,6 +104,8 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 
 ## Completed
 
+- ~~Consolidate complexity analysis — single source of truth~~ (dd96a8b, 1d6afba) — Deleted ~130 lines of duplicated `analyze_complexity()` from mcp/server.rs. Extracted shared `analyze_file_complexity()` free function. MCP handler is now a thin JSON adapter. Fixed `QueryBuilder` bug: iterated `0..node_count()` which missed nodes added after deletions (caused cross-file resolution to fail after did_open). Added `nodes_iter()` to CodeGraph. Aligned all complexity property keys to `complexity_` prefix convention across all 14 parsers and server consumers. MCP `initialize` now accepts client `roots` for workspace discovery (global MCP config without per-project `--workspace`). Added ICE driver integration test (84 C files, 3690 functions, 100% parse rate).
+- ~~On-demand Index Directory command~~ (e37b5b0) — Added `CodeGraphConfig` with `index_on_startup` (default false), `codegraph.indexDirectory` VS Code command with folder picker, `handle_index_directory()` and `handle_update_configuration()` LSP handlers, safety limits (MAX_INDEX_DEPTH=20, MAX_INDEXED_FILES=5000), exclude glob patterns, file size limits. `did_open` now removes old entries before re-parse and rebuilds query indexes.
 - ~~Fix `codegraph_reindex_workspace` null return~~ — Server returned `Ok(None)`/`Ok(Value::Null)` in both `custom_requests.rs` and `backend.rs`, causing toolManager to throw "returned null — server may be busy or restarting". Fixed both handlers to return `{ status, message, files_indexed }`. Reindex now works end-to-end; verified 512 files indexed on workspace with two source folders.
 - ~~Adopt PropertyValue::StringList for multi-valued properties (#4)~~ (a79ef71, 6521447) — All 14 language mappers now use native `StringList` instead of `.join(",")` comma-separated strings. Properties migrated: symbols, attributes, annotations, parameters, unresolved_calls, unresolved_type_refs, type_parameters, required_methods. Added `get_string_list_compat()` for backwards-compatible reading. Updated 5 consumers in codegraph-vscode server.
 - ~~Fix 4 MCP tool bugs (#25-28)~~ (17e061d) — includeReferences flag (get_symbol_info), idempotent memory_invalidate, similarity threshold (search_git_history), summary mode keys (analyze_impact).

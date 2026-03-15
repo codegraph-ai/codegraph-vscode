@@ -307,10 +307,12 @@ export interface ComplexityParams {
 }
 
 export interface ComplexityDetails {
-    branches: number;
-    loops: number;
-    conditions: number;
-    nestingDepth: number;
+    complexityBranches: number;
+    complexityLoops: number;
+    complexityLogicalOps: number;
+    complexityNesting: number;
+    complexityExceptions: number;
+    complexityEarlyReturns: number;
     linesOfCode: number;
 }
 

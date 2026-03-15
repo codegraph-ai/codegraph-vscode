@@ -2,7 +2,7 @@
     "name": "codegraph",
     "displayName": "CodeGraph",
     "description": "Cross-language code intelligence powered by graph analysis",
-    "version": "0.8.3",
+    "version": "0.8.5",
     "publisher": "aStudioPlus",
     "license": "Apache-2.0",
     "repository": {

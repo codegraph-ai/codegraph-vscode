@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "codegraph-lsp"
-version = "0.8.3"
+version = "0.8.5"
 dependencies = [
  "clap",
  "codegraph",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "codegraph-memory"
-version = "0.8.3"
+version = "0.8.5"
 dependencies = [
  "anyhow",
  "bincode",

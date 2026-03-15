@@ -1876,8 +1876,8 @@ export class CodeGraphToolManager {
                 output += `### ${i + 1}. ${func.name} ${gradeEmoji}\n`;
                 output += `- **Complexity**: ${func.complexity} (Grade: ${func.grade})\n`;
                 output += `- Location: ${func.location.uri}:${func.location.range.start.line + 1}\n`;
-                output += `- Branches: ${func.details.branches}, Loops: ${func.details.loops}, Conditions: ${func.details.conditions}\n`;
-                output += `- Nesting Depth: ${func.details.nestingDepth}, Lines: ${func.details.linesOfCode}\n\n`;
+                output += `- Branches: ${func.details.complexityBranches}, Loops: ${func.details.complexityLoops}, Conditions: ${func.details.complexityLogicalOps}\n`;
+                output += `- Nesting Depth: ${func.details.complexityNesting}, Lines: ${func.details.linesOfCode}\n\n`;
             });
 
             if (functions.length > functionLimit) {
