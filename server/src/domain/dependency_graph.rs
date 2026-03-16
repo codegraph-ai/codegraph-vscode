@@ -4,8 +4,37 @@
 
 use crate::domain::node_props;
 use codegraph::{CodeGraph, Direction, NodeId};
-use serde_json::Value;
+use serde::Serialize;
 use std::collections::HashSet;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// A node in the dependency graph.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct GraphNode {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+}
+
+/// An edge in the dependency graph.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct GraphEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub edge_type: String,
+}
+
+/// Result of `get_dependency_graph`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DependencyGraphResult {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
 
 // ============================================================
 // Domain Function
@@ -15,21 +44,21 @@ use std::collections::HashSet;
 ///
 /// `direction` is one of: "imports" | "importedBy" | "both"
 ///
-/// Returns JSON `{"nodes": [...], "edges": [...]}` or an error shape.
+/// Returns `DependencyGraphResult` with nodes and edges, or empty arrays on error.
 pub(crate) fn get_dependency_graph(
     graph: &CodeGraph,
     file_path: &str,
     depth: usize,
     direction: &str,
-) -> Value {
+) -> DependencyGraphResult {
     // Find the file node
     let start_node = match codegraph::helpers::find_file_by_path(graph, file_path) {
         Ok(Some(id)) => id,
         _ => {
-            return serde_json::json!({
-                "nodes": [],
-                "edges": []
-            })
+            return DependencyGraphResult {
+                nodes: vec![],
+                edges: vec![],
+            }
         }
     };
 
@@ -49,13 +78,13 @@ pub(crate) fn get_dependency_graph(
     let mut nodes = Vec::new();
     for &node_id in &reachable_set {
         if let Ok(node) = graph.get_node(node_id) {
-            let name = node_props::name(node);
+            let name = node_props::name(node).to_string();
             let node_type = format!("{:?}", node.node_type);
-            nodes.push(serde_json::json!({
-                "id": node_id.to_string(),
-                "name": name,
-                "type": node_type,
-            }));
+            nodes.push(GraphNode {
+                id: node_id.to_string(),
+                name,
+                node_type,
+            });
         }
     }
 
@@ -82,19 +111,16 @@ pub(crate) fn get_dependency_graph(
                         Direction::Both => (node_id, neighbor_id),
                     };
                     if seen_edges.insert((from, to)) {
-                        edges.push(serde_json::json!({
-                            "from": from.to_string(),
-                            "to": to.to_string(),
-                            "type": "depends_on",
-                        }));
+                        edges.push(GraphEdge {
+                            from: from.to_string(),
+                            to: to.to_string(),
+                            edge_type: "depends_on".to_string(),
+                        });
                     }
                 }
             }
         }
     }
 
-    serde_json::json!({
-        "nodes": nodes,
-        "edges": edges
-    })
+    DependencyGraphResult { nodes, edges }
 }

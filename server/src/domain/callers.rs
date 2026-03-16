@@ -2,11 +2,51 @@
 //!
 //! Extracts the shared pattern from MCP get_callers/get_callees handlers.
 
-use crate::ai_query::QueryEngine;
+use crate::ai_query::{CallInfo, QueryEngine};
 use crate::domain::node_props;
 use codegraph::{CodeGraph, NodeId};
-use serde_json::Value;
+use serde::Serialize;
 use tokio::sync::RwLock;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// Diagnostic info emitted when no callers/callees are found.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticInfo {
+    pub node_found: bool,
+    pub node_id: String,
+    pub symbol_name: String,
+    pub total_edges_in_graph: usize,
+    pub note: String,
+}
+
+/// Result of `get_callers`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CallersResult {
+    pub callers: Vec<CallInfo>,
+    pub symbol_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<DiagnosticInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
+
+/// Result of `get_callees`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CalleesResult {
+    pub callees: Vec<CallInfo>,
+    pub symbol_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<DiagnosticInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
 
 // ============================================================
 // Domain Functions
@@ -14,7 +54,7 @@ use tokio::sync::RwLock;
 
 /// Get all callers of a symbol at the given depth.
 ///
-/// Returns JSON matching the MCP codegraph_get_callers response shape.
+/// Returns `CallersResult` matching the MCP codegraph_get_callers response shape.
 pub(crate) async fn get_callers(
     graph: &RwLock<CodeGraph>,
     query_engine: &QueryEngine,
@@ -22,7 +62,7 @@ pub(crate) async fn get_callers(
     depth: u32,
     used_fallback: bool,
     requested_line: Option<u32>,
-) -> Value {
+) -> CallersResult {
     let symbol_name = {
         let g = graph.read().await;
         g.get_node(node_id)
@@ -33,39 +73,40 @@ pub(crate) async fn get_callers(
 
     let result = query_engine.get_callers(node_id, depth).await;
 
-    if result.is_empty() {
+    let diagnostic = if result.is_empty() {
         let edge_count = {
             let g = graph.read().await;
             g.edge_count()
         };
-        let mut response = serde_json::json!({
-            "callers": [],
-            "diagnostic": {
-                "node_found": true,
-                "node_id": node_id,
-                "symbol_name": symbol_name,
-                "total_edges_in_graph": edge_count,
-                "note": "No callers found. This may indicate: (1) the function is not called \
-                         anywhere, (2) the language parser doesn't extract call relationships, \
-                         or (3) indexes need to be rebuilt."
-            }
-        });
-        add_fallback_fields(&mut response, used_fallback, requested_line, &symbol_name);
-        response
+        Some(DiagnosticInfo {
+            node_found: true,
+            node_id: node_id.to_string(),
+            symbol_name: symbol_name.clone(),
+            total_edges_in_graph: edge_count,
+            note: "No callers found. This may indicate: (1) the function is not called \
+                   anywhere, (2) the language parser doesn't extract call relationships, \
+                   or (3) indexes need to be rebuilt."
+                .to_string(),
+        })
     } else {
-        let callers_json = serde_json::to_value(&result).unwrap_or(Value::Array(vec![]));
-        let mut obj = serde_json::Map::new();
-        obj.insert("callers".to_string(), callers_json);
-        obj.insert("symbol_name".to_string(), serde_json::json!(symbol_name));
-        let mut response = Value::Object(obj);
-        add_fallback_fields(&mut response, used_fallback, requested_line, &symbol_name);
-        response
+        None
+    };
+
+    let (used_fallback_field, fallback_message) =
+        build_fallback(used_fallback, requested_line, &symbol_name);
+
+    CallersResult {
+        callers: result,
+        symbol_name,
+        diagnostic,
+        used_fallback: used_fallback_field,
+        fallback_message,
     }
 }
 
 /// Get all callees of a symbol at the given depth.
 ///
-/// Returns JSON matching the MCP codegraph_get_callees response shape.
+/// Returns `CalleesResult` matching the MCP codegraph_get_callees response shape.
 pub(crate) async fn get_callees(
     graph: &RwLock<CodeGraph>,
     query_engine: &QueryEngine,
@@ -73,7 +114,7 @@ pub(crate) async fn get_callees(
     depth: u32,
     used_fallback: bool,
     requested_line: Option<u32>,
-) -> Value {
+) -> CalleesResult {
     let symbol_name = {
         let g = graph.read().await;
         g.get_node(node_id)
@@ -84,33 +125,34 @@ pub(crate) async fn get_callees(
 
     let result = query_engine.get_callees(node_id, depth).await;
 
-    if result.is_empty() {
+    let diagnostic = if result.is_empty() {
         let edge_count = {
             let g = graph.read().await;
             g.edge_count()
         };
-        let mut response = serde_json::json!({
-            "callees": [],
-            "diagnostic": {
-                "node_found": true,
-                "node_id": node_id,
-                "symbol_name": symbol_name,
-                "total_edges_in_graph": edge_count,
-                "note": "No callees found. This may indicate: (1) the function doesn't call \
-                         other functions, (2) the language parser doesn't extract call \
-                         relationships, or (3) indexes need to be rebuilt."
-            }
-        });
-        add_fallback_fields(&mut response, used_fallback, requested_line, &symbol_name);
-        response
+        Some(DiagnosticInfo {
+            node_found: true,
+            node_id: node_id.to_string(),
+            symbol_name: symbol_name.clone(),
+            total_edges_in_graph: edge_count,
+            note: "No callees found. This may indicate: (1) the function doesn't call \
+                   other functions, (2) the language parser doesn't extract call \
+                   relationships, or (3) indexes need to be rebuilt."
+                .to_string(),
+        })
     } else {
-        let callees_json = serde_json::to_value(&result).unwrap_or(Value::Array(vec![]));
-        let mut obj = serde_json::Map::new();
-        obj.insert("callees".to_string(), callees_json);
-        obj.insert("symbol_name".to_string(), serde_json::json!(symbol_name));
-        let mut response = Value::Object(obj);
-        add_fallback_fields(&mut response, used_fallback, requested_line, &symbol_name);
-        response
+        None
+    };
+
+    let (used_fallback_field, fallback_message) =
+        build_fallback(used_fallback, requested_line, &symbol_name);
+
+    CalleesResult {
+        callees: result,
+        symbol_name,
+        diagnostic,
+        used_fallback: used_fallback_field,
+        fallback_message,
     }
 }
 
@@ -118,23 +160,21 @@ pub(crate) async fn get_callees(
 // Private Helpers
 // ============================================================
 
-fn add_fallback_fields(
-    response: &mut Value,
+fn build_fallback(
     used_fallback: bool,
     requested_line: Option<u32>,
     symbol_name: &str,
-) {
+) -> (Option<bool>, Option<String>) {
     if used_fallback {
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-            obj.insert(
-                "fallback_message".to_string(),
-                serde_json::json!(format!(
-                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                    requested_line.unwrap_or(0),
-                    symbol_name
-                )),
-            );
-        }
+        (
+            Some(true),
+            Some(format!(
+                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                requested_line.unwrap_or(0),
+                symbol_name
+            )),
+        )
+    } else {
+        (None, None)
     }
 }

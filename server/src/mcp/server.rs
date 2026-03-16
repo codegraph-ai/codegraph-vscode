@@ -963,7 +963,7 @@ impl McpServer {
                         line,
                     )
                     .await;
-                    Ok(result)
+                    Ok(serde_json::to_value(&result).unwrap_or_default())
                 } else {
                     Ok(serde_json::json!({
                         "callers": [],
@@ -1007,7 +1007,7 @@ impl McpServer {
                         line,
                     )
                     .await;
-                    Ok(result)
+                    Ok(serde_json::to_value(&result).unwrap_or_default())
                 } else {
                     Ok(serde_json::json!({
                         "callees": [],
@@ -1192,7 +1192,7 @@ impl McpServer {
                     )
                     .await
                     {
-                        Some(response) => Ok(response),
+                        Some(response) => Ok(serde_json::to_value(&response).unwrap_or_default()),
                         None => Ok(serde_json::json!({
                             "error": "Symbol not found"
                         })),
@@ -1240,7 +1240,7 @@ impl McpServer {
                 };
 
                 if let Some(node_id) = target_node {
-                    Ok(crate::domain::symbol_info::get_detailed_symbol(
+                    let result = crate::domain::symbol_info::get_detailed_symbol(
                         &self.backend.graph,
                         &self.backend.query_engine,
                         node_id,
@@ -1250,7 +1250,8 @@ impl McpServer {
                         used_fallback,
                         line,
                     )
-                    .await)
+                    .await;
+                    Ok(serde_json::to_value(&result).unwrap_or_default())
                 } else {
                     Ok(serde_json::json!({
                         "error": "Could not find symbol. Provide either nodeId or uri+line."
@@ -1283,7 +1284,7 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let result = {
+                let typed_result = {
                     let url = tower_lsp::lsp_types::Url::parse(uri)
                         .map_err(|_| "Invalid URI".to_string())?;
                     let path = url
@@ -1297,16 +1298,8 @@ impl McpServer {
                 };
 
                 if summary {
-                    let node_count = result
-                        .get("nodes")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
-                    let edge_count = result
-                        .get("edges")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
+                    let node_count = typed_result.nodes.len();
+                    let edge_count = typed_result.edges.len();
                     Ok(serde_json::json!({
                         "summary": {
                             "node_count": node_count,
@@ -1316,7 +1309,7 @@ impl McpServer {
                         }
                     }))
                 } else {
-                    Ok(result)
+                    Ok(serde_json::to_value(&typed_result).unwrap_or_default())
                 }
             }
 
@@ -1352,7 +1345,7 @@ impl McpServer {
 
                 let result = match start_node {
                     Some(start) => {
-                        crate::domain::call_graph::get_call_graph(
+                        let typed = crate::domain::call_graph::get_call_graph(
                             &self.backend.graph,
                             &self.backend.query_engine,
                             start,
@@ -1361,7 +1354,8 @@ impl McpServer {
                             used_fallback,
                             Some(line),
                         )
-                        .await
+                        .await;
+                        serde_json::to_value(&typed).unwrap_or_default()
                     }
                     None => serde_json::json!({
                         "nodes": [],
@@ -1427,7 +1421,7 @@ impl McpServer {
 
                 let result = match start_node {
                     Some(start) => {
-                        crate::domain::impact::analyze_impact(
+                        let typed = crate::domain::impact::analyze_impact(
                             &self.backend.graph,
                             &self.backend.query_engine,
                             start,
@@ -1435,7 +1429,8 @@ impl McpServer {
                             used_fallback,
                             Some(line),
                         )
-                        .await
+                        .await;
+                        serde_json::to_value(&typed).unwrap_or_default()
                     }
                     None => serde_json::json!({
                         "impacted": [],
@@ -1503,7 +1498,9 @@ impl McpServer {
                         .map_err(|_| "Invalid file path".to_string())?;
                     let path_str = path.to_string_lossy().to_string();
                     let graph = self.backend.graph.read().await;
-                    crate::domain::coupling::analyze_coupling(&graph, &path_str, uri, depth)
+                    let typed =
+                        crate::domain::coupling::analyze_coupling(&graph, &path_str, uri, depth);
+                    serde_json::to_value(&typed).unwrap_or_default()
                 };
 
                 if summary {
@@ -1595,7 +1592,10 @@ impl McpServer {
                     max_tokens,
                 )
                 .await;
-                Ok(result)
+                Ok(match result {
+                    Ok(ctx) => serde_json::to_value(&ctx).unwrap_or_default(),
+                    Err(e) => serde_json::to_value(&e).unwrap_or_default(),
+                })
             }
 
             "codegraph_get_curated_context" => {
@@ -1633,7 +1633,10 @@ impl McpServer {
                     max_symbols,
                 )
                 .await;
-                Ok(result)
+                Ok(match result {
+                    Ok(ctx) => serde_json::to_value(&ctx).unwrap_or_default(),
+                    Err(e) => serde_json::to_value(&e).unwrap_or_default(),
+                })
             }
 
             "codegraph_find_related_tests" => {
@@ -2773,7 +2776,7 @@ impl McpServer {
         }
     }
 
-/// Parse `kinds` filter from MCP args into MemoryKindFilter vec
+    /// Parse `kinds` filter from MCP args into MemoryKindFilter vec
     fn parse_kinds_filter(args: &serde_json::Value) -> Vec<crate::memory::MemoryKindFilter> {
         args.get("kinds")
             .and_then(|v| v.as_array())

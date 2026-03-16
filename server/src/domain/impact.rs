@@ -5,8 +5,37 @@
 use crate::ai_query::QueryEngine;
 use crate::domain::node_props;
 use codegraph::{CodeGraph, NodeId};
-use serde_json::Value;
+use serde::Serialize;
 use tokio::sync::RwLock;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// A symbol impacted by a change.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ImpactedSymbol {
+    pub node_id: String,
+    pub name: String,
+    pub depth: u32,
+    pub impact_type: String,
+}
+
+/// Result of `analyze_impact`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ImpactResult {
+    pub symbol_id: String,
+    pub symbol_name: String,
+    pub change_type: String,
+    pub impacted: Vec<ImpactedSymbol>,
+    pub total_impacted: usize,
+    pub direct_impacted: usize,
+    pub risk_level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
 
 // ============================================================
 // Domain Function
@@ -16,7 +45,7 @@ use tokio::sync::RwLock;
 ///
 /// `change_type` is one of: "modify" | "delete" | "rename"
 ///
-/// Returns JSON with impacted symbols, risk level, and optional fallback metadata.
+/// Returns `ImpactResult` with impacted symbols, risk level, and optional fallback metadata.
 pub(crate) async fn analyze_impact(
     graph: &RwLock<CodeGraph>,
     query_engine: &QueryEngine,
@@ -24,7 +53,7 @@ pub(crate) async fn analyze_impact(
     change_type: &str,
     used_fallback: bool,
     requested_line: Option<u32>,
-) -> Value {
+) -> ImpactResult {
     let symbol_name = {
         let g = graph.read().await;
         g.get_node(start_node)
@@ -36,15 +65,17 @@ pub(crate) async fn analyze_impact(
     // Get all callers (things that depend on this symbol)
     let callers = query_engine.get_callers(start_node, 3).await;
 
-    let impacted: Vec<Value> = callers
+    let impacted: Vec<ImpactedSymbol> = callers
         .iter()
-        .map(|c| {
-            serde_json::json!({
-                "node_id": c.node_id.to_string(),
-                "name": c.symbol.name,
-                "depth": c.depth,
-                "impact_type": if c.depth == 1 { "direct" } else { "indirect" },
-            })
+        .map(|c| ImpactedSymbol {
+            node_id: c.node_id.to_string(),
+            name: c.symbol.name.clone(),
+            depth: c.depth,
+            impact_type: if c.depth == 1 {
+                "direct".to_string()
+            } else {
+                "indirect".to_string()
+            },
         })
         .collect();
 
@@ -58,29 +89,31 @@ pub(crate) async fn analyze_impact(
         _ => "low",
     };
 
-    let mut response = serde_json::json!({
-        "symbol_id": start_node.to_string(),
-        "symbol_name": symbol_name,
-        "change_type": change_type,
-        "impacted": impacted,
-        "total_impacted": callers.len(),
-        "direct_impacted": callers.iter().filter(|c| c.depth == 1).count(),
-        "risk_level": risk_level,
-    });
+    let direct_impacted = callers.iter().filter(|c| c.depth == 1).count();
+    let total_impacted = callers.len();
 
-    if used_fallback {
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-            obj.insert(
-                "fallback_message".to_string(),
-                serde_json::json!(format!(
-                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                    requested_line.unwrap_or(0),
-                    symbol_name
-                )),
-            );
-        }
+    let (used_fallback_field, fallback_message) = if used_fallback {
+        (
+            Some(true),
+            Some(format!(
+                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                requested_line.unwrap_or(0),
+                symbol_name
+            )),
+        )
+    } else {
+        (None, None)
+    };
+
+    ImpactResult {
+        symbol_id: start_node.to_string(),
+        symbol_name,
+        change_type: change_type.to_string(),
+        impacted,
+        total_impacted,
+        direct_impacted,
+        risk_level: risk_level.to_string(),
+        used_fallback: used_fallback_field,
+        fallback_message,
     }
-
-    response
 }

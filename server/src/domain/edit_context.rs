@@ -8,9 +8,131 @@ use crate::domain::{node_props, source_code};
 use crate::git_mining::GitExecutor;
 use crate::memory::MemoryManager;
 use codegraph::{CodeGraph, NodeId, NodeType};
-use serde_json::Value;
+use serde::Serialize;
 use std::path::PathBuf;
 use tokio::sync::RwLock;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// A position within a file (line + character).
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextPosition {
+    pub line: i64,
+    pub character: i64,
+}
+
+/// A range within a file.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextRange {
+    pub start: EditContextPosition,
+    pub end: EditContextPosition,
+}
+
+/// Location of the target symbol.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextLocation {
+    pub uri: String,
+    pub range: EditContextRange,
+}
+
+/// The primary symbol section of the edit context.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextSymbol {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub symbol_type: String,
+    pub code: String,
+    pub language: String,
+    pub location: EditContextLocation,
+}
+
+/// A caller entry.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextCaller {
+    pub name: String,
+    pub code: Option<String>,
+    pub file: String,
+    pub line: u32,
+}
+
+/// A related test entry.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextTest {
+    pub name: String,
+    pub relationship: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// A memory entry.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextMemory {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub kind: String,
+    pub score: f32,
+}
+
+/// A recent git change entry.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextGitChange {
+    pub hash: String,
+    pub subject: String,
+    pub author: String,
+    pub date: String,
+}
+
+/// Section presence flags in metadata.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextSections {
+    pub symbol: bool,
+    pub callers: bool,
+    pub tests: bool,
+    pub memories: bool,
+    #[serde(rename = "recentChanges")]
+    pub recent_changes: bool,
+}
+
+/// Metadata about the edit context response.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextMetadata {
+    #[serde(rename = "totalTokens")]
+    pub total_tokens: usize,
+    #[serde(rename = "maxTokens")]
+    pub max_tokens: usize,
+    #[serde(rename = "queryTime")]
+    pub query_time: u64,
+    pub sections: EditContextSections,
+    #[serde(rename = "usedFallback", skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(rename = "fallbackMessage", skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
+
+/// Successful edit context result.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextResult {
+    pub symbol: EditContextSymbol,
+    pub callers: Vec<EditContextCaller>,
+    pub tests: Vec<EditContextTest>,
+    pub memories: Vec<EditContextMemory>,
+    #[serde(rename = "recentChanges")]
+    pub recent_changes: Vec<EditContextGitChange>,
+    pub metadata: EditContextMetadata,
+}
+
+/// Error result for edit context (symbol not found, etc.).
+#[derive(Debug, Serialize)]
+pub(crate) struct EditContextError {
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
 
 // ============================================================
 // Domain Function
@@ -33,7 +155,7 @@ pub(crate) async fn get_edit_context(
     uri: &str,
     line: u32,
     max_tokens: usize,
-) -> Value {
+) -> Result<EditContextResult, EditContextError> {
     use crate::domain::node_resolution;
 
     let start_time = std::time::Instant::now();
@@ -44,10 +166,11 @@ pub(crate) async fn get_edit_context(
         match node_resolution::find_nearest_node(&g, file_path, line) {
             Some(result) => result,
             None => {
-                return serde_json::json!({
-                    "error": "No symbols found at this location. Try indexing the workspace first.",
-                    "uri": uri,
-                    "line": line
+                return Err(EditContextError {
+                    error: "No symbols found at this location. Try indexing the workspace first."
+                        .to_string(),
+                    uri: Some(uri.to_string()),
+                    line: Some(line),
                 });
             }
         }
@@ -58,7 +181,13 @@ pub(crate) async fn get_edit_context(
         let g = graph.read().await;
         let node = match g.get_node(target) {
             Ok(n) => n,
-            Err(_) => return serde_json::json!({ "error": "Could not load node" }),
+            Err(_) => {
+                return Err(EditContextError {
+                    error: "Could not load node".to_string(),
+                    uri: None,
+                    line: None,
+                });
+            }
         };
         let name = node_props::name(node).to_string();
         let node_type = format!("{:?}", node.node_type).to_lowercase();
@@ -99,23 +228,29 @@ pub(crate) async fn get_edit_context(
     let source_tokens = source_code_str.len() / 4;
     let mut budget_remaining = max_tokens.saturating_sub(source_tokens);
 
-    let symbol = serde_json::json!({
-        "name": name,
-        "type": node_type,
-        "code": source_code_str,
-        "language": language,
-        "location": {
-            "uri": uri,
-            "range": {
-                "start": { "line": line_start, "character": 0 },
-                "end": { "line": line_end, "character": 0 },
-            }
-        }
-    });
+    let symbol = EditContextSymbol {
+        name: name.clone(),
+        symbol_type: node_type,
+        code: source_code_str.clone(),
+        language,
+        location: EditContextLocation {
+            uri: uri.to_string(),
+            range: EditContextRange {
+                start: EditContextPosition {
+                    line: line_start,
+                    character: 0,
+                },
+                end: EditContextPosition {
+                    line: line_end,
+                    character: 0,
+                },
+            },
+        },
+    };
 
     // --- Section 2: Callers (budget: up to 25% of original) ---
     let caller_budget = max_tokens / 4;
-    let callers_json = {
+    let callers: Vec<EditContextCaller> = {
         let callers = query_engine.get_callers(target, 1).await;
         let mut caller_tokens_used = 0usize;
         let mut caller_list = Vec::new();
@@ -131,12 +266,12 @@ pub(crate) async fn get_edit_context(
             let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
             caller_tokens_used += code_tokens;
 
-            caller_list.push(serde_json::json!({
-                "name": caller.symbol.name,
-                "code": code,
-                "file": caller.symbol.location.file,
-                "line": caller.symbol.location.line,
-            }));
+            caller_list.push(EditContextCaller {
+                name: caller.symbol.name.clone(),
+                code,
+                file: caller.symbol.location.file.clone(),
+                line: caller.symbol.location.line,
+            });
         }
         budget_remaining = budget_remaining.saturating_sub(caller_tokens_used);
         caller_list
@@ -144,7 +279,7 @@ pub(crate) async fn get_edit_context(
 
     // --- Section 3: Related tests (budget: up to 20% of original) ---
     let test_budget = max_tokens / 5;
-    let tests_json = {
+    let tests: Vec<EditContextTest> = {
         let mut test_list = Vec::new();
         let mut test_tokens_used = 0usize;
         let mut seen_ids = std::collections::HashSet::<NodeId>::new();
@@ -167,11 +302,11 @@ pub(crate) async fn get_edit_context(
                 let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
                 test_tokens_used += code_tokens;
 
-                test_list.push(serde_json::json!({
-                    "name": test.symbol.name,
-                    "relationship": "calls_target",
-                    "code": code,
-                }));
+                test_list.push(EditContextTest {
+                    name: test.symbol.name.clone(),
+                    relationship: "calls_target".to_string(),
+                    code,
+                });
             }
         }
 
@@ -191,10 +326,11 @@ pub(crate) async fn get_edit_context(
                             && crate::domain::unused_code::is_test_node(node)
                         {
                             let test_name = node_props::name(node).to_string();
-                            test_list.push(serde_json::json!({
-                                "name": test_name,
-                                "relationship": "same_file",
-                            }));
+                            test_list.push(EditContextTest {
+                                name: test_name,
+                                relationship: "same_file".to_string(),
+                                code: None,
+                            });
                         }
                     }
                 }
@@ -206,7 +342,7 @@ pub(crate) async fn get_edit_context(
     };
 
     // --- Section 4: Memories (budget: up to 15% of original) ---
-    let memories_json = {
+    let memories: Vec<EditContextMemory> = {
         let search_query = if sym_path.is_empty() {
             name.clone()
         } else {
@@ -236,13 +372,13 @@ pub(crate) async fn get_edit_context(
                     let content_tokens = r.memory.content.len() / 4;
                     mem_tokens_used += content_tokens;
 
-                    mem_list.push(serde_json::json!({
-                        "id": r.memory.id,
-                        "title": r.memory.title,
-                        "content": r.memory.content,
-                        "kind": r.memory.kind.discriminant_name(),
-                        "score": r.score,
-                    }));
+                    mem_list.push(EditContextMemory {
+                        id: r.memory.id.to_string(),
+                        title: r.memory.title.clone(),
+                        content: r.memory.content.clone(),
+                        kind: r.memory.kind.discriminant_name().to_string(),
+                        score: r.score,
+                    });
                 }
 
                 budget_remaining = budget_remaining.saturating_sub(mem_tokens_used);
@@ -253,7 +389,7 @@ pub(crate) async fn get_edit_context(
     };
 
     // --- Section 5: Recent git changes (budget: up to 10% of original) ---
-    let git_json = {
+    let recent_changes: Vec<EditContextGitChange> = {
         match workspace_folders.first().cloned() {
             Some(ws) => {
                 let file_path_clone = sym_path.clone();
@@ -267,19 +403,19 @@ pub(crate) async fn get_edit_context(
                         )
                         .ok()?;
 
-                    let commits: Vec<Value> = log_output
+                    let commits: Vec<EditContextGitChange> = log_output
                         .lines()
                         .filter(|l| !l.is_empty())
                         .take(5)
                         .filter_map(|line| {
                             let parts: Vec<&str> = line.split('\0').collect();
                             if parts.len() >= 4 {
-                                Some(serde_json::json!({
-                                    "hash": &parts[0][..8.min(parts[0].len())],
-                                    "subject": parts[1],
-                                    "author": parts[2],
-                                    "date": parts[3],
-                                }))
+                                Some(EditContextGitChange {
+                                    hash: parts[0][..8.min(parts[0].len())].to_string(),
+                                    subject: parts[1].to_string(),
+                                    author: parts[2].to_string(),
+                                    date: parts[3].to_string(),
+                                })
                             } else {
                                 None
                             }
@@ -300,38 +436,44 @@ pub(crate) async fn get_edit_context(
     let query_time = start_time.elapsed().as_millis() as u64;
     let total_tokens = max_tokens.saturating_sub(budget_remaining);
 
-    let mut response = serde_json::json!({
-        "symbol": symbol,
-        "callers": callers_json,
-        "tests": tests_json,
-        "memories": memories_json,
-        "recentChanges": git_json,
-        "metadata": {
-            "totalTokens": total_tokens,
-            "maxTokens": max_tokens,
-            "queryTime": query_time,
-            "sections": {
-                "symbol": !source_code_str.is_empty(),
-                "callers": !callers_json.is_empty(),
-                "tests": !tests_json.is_empty(),
-                "memories": !memories_json.is_empty(),
-                "recentChanges": !git_json.is_empty(),
-            }
-        }
-    });
+    let (fallback_used, fallback_message) = if used_fallback {
+        (
+            Some(true),
+            Some(format!(
+                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                line, name
+            )),
+        )
+    } else {
+        (None, None)
+    };
 
-    if used_fallback {
-        if let Some(obj) = response.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-            obj.insert("usedFallback".to_string(), serde_json::json!(true));
-            obj.insert(
-                "fallbackMessage".to_string(),
-                serde_json::json!(format!(
-                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                    line, name
-                )),
-            );
-        }
-    }
+    // Capture section presence booleans before moving the Vecs.
+    let has_symbol = !source_code_str.is_empty();
+    let has_callers = !callers.is_empty();
+    let has_tests = !tests.is_empty();
+    let has_memories = !memories.is_empty();
+    let has_recent_changes = !recent_changes.is_empty();
 
-    response
+    Ok(EditContextResult {
+        symbol,
+        callers,
+        tests,
+        memories,
+        recent_changes,
+        metadata: EditContextMetadata {
+            total_tokens,
+            max_tokens,
+            query_time,
+            sections: EditContextSections {
+                symbol: has_symbol,
+                callers: has_callers,
+                tests: has_tests,
+                memories: has_memories,
+                recent_changes: has_recent_changes,
+            },
+            used_fallback: fallback_used,
+            fallback_message,
+        },
+    })
 }

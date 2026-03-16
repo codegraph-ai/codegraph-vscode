@@ -5,8 +5,54 @@
 use crate::ai_query::QueryEngine;
 use crate::domain::node_props;
 use codegraph::{CodeGraph, NodeId};
-use serde_json::Value;
+use serde::Serialize;
 use tokio::sync::RwLock;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// A node in the call graph.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CallGraphNode {
+    pub id: String,
+    pub name: String,
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+}
+
+/// An edge in the call graph.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CallGraphEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub edge_type: String,
+}
+
+/// Diagnostic information when no call relationships are found.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CallGraphDiagnostic {
+    pub node_found: bool,
+    pub total_edges_in_graph: usize,
+    pub note: String,
+}
+
+/// Result of `get_call_graph`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CallGraphResult {
+    pub root: String,
+    pub symbol_name: String,
+    pub nodes: Vec<CallGraphNode>,
+    pub edges: Vec<CallGraphEdge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<CallGraphDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
 
 // ============================================================
 // Domain Function
@@ -25,7 +71,7 @@ pub(crate) async fn get_call_graph(
     direction: &str,
     used_fallback: bool,
     requested_line: Option<u32>,
-) -> Value {
+) -> CallGraphResult {
     // Get symbol name for response/fallback
     let symbol_name = {
         let g = graph.read().await;
@@ -45,16 +91,17 @@ pub(crate) async fn get_call_graph(
             let callers = query_engine.get_callers(start_node, depth).await;
             for caller in callers {
                 if seen.insert(caller.node_id) {
-                    nodes.push(serde_json::json!({
-                        "id": caller.node_id.to_string(),
-                        "name": caller.symbol.name,
-                        "depth": caller.depth,
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": caller.node_id.to_string(),
-                        "to": start_node.to_string(),
-                        "type": "calls",
-                    }));
+                    nodes.push(CallGraphNode {
+                        id: caller.node_id.to_string(),
+                        name: caller.symbol.name,
+                        depth: caller.depth,
+                        direction: None,
+                    });
+                    edges.push(CallGraphEdge {
+                        from: caller.node_id.to_string(),
+                        to: start_node.to_string(),
+                        edge_type: "calls".to_string(),
+                    });
                 }
             }
         }
@@ -62,16 +109,17 @@ pub(crate) async fn get_call_graph(
             let callees = query_engine.get_callees(start_node, depth).await;
             for callee in callees {
                 if seen.insert(callee.node_id) {
-                    nodes.push(serde_json::json!({
-                        "id": callee.node_id.to_string(),
-                        "name": callee.symbol.name,
-                        "depth": callee.depth,
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": start_node.to_string(),
-                        "to": callee.node_id.to_string(),
-                        "type": "calls",
-                    }));
+                    nodes.push(CallGraphNode {
+                        id: callee.node_id.to_string(),
+                        name: callee.symbol.name,
+                        depth: callee.depth,
+                        direction: None,
+                    });
+                    edges.push(CallGraphEdge {
+                        from: start_node.to_string(),
+                        to: callee.node_id.to_string(),
+                        edge_type: "calls".to_string(),
+                    });
                 }
             }
         }
@@ -82,78 +130,75 @@ pub(crate) async fn get_call_graph(
 
             for caller in callers {
                 if seen.insert(caller.node_id) {
-                    nodes.push(serde_json::json!({
-                        "id": caller.node_id.to_string(),
-                        "name": caller.symbol.name,
-                        "depth": caller.depth,
-                        "direction": "caller",
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": caller.node_id.to_string(),
-                        "to": start_node.to_string(),
-                        "type": "calls",
-                    }));
+                    nodes.push(CallGraphNode {
+                        id: caller.node_id.to_string(),
+                        name: caller.symbol.name,
+                        depth: caller.depth,
+                        direction: Some("caller".to_string()),
+                    });
+                    edges.push(CallGraphEdge {
+                        from: caller.node_id.to_string(),
+                        to: start_node.to_string(),
+                        edge_type: "calls".to_string(),
+                    });
                 }
             }
 
             for callee in callees {
                 if seen.insert(callee.node_id) {
-                    nodes.push(serde_json::json!({
-                        "id": callee.node_id.to_string(),
-                        "name": callee.symbol.name,
-                        "depth": callee.depth,
-                        "direction": "callee",
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": start_node.to_string(),
-                        "to": callee.node_id.to_string(),
-                        "type": "calls",
-                    }));
+                    nodes.push(CallGraphNode {
+                        id: callee.node_id.to_string(),
+                        name: callee.symbol.name,
+                        depth: callee.depth,
+                        direction: Some("callee".to_string()),
+                    });
+                    edges.push(CallGraphEdge {
+                        from: start_node.to_string(),
+                        to: callee.node_id.to_string(),
+                        edge_type: "calls".to_string(),
+                    });
                 }
             }
         }
     }
 
-    let mut response = if nodes.is_empty() {
+    let diagnostic = if nodes.is_empty() {
         let edge_count = {
             let g = graph.read().await;
             g.edge_count()
         };
-        serde_json::json!({
-            "root": start_node.to_string(),
-            "symbol_name": symbol_name,
-            "nodes": nodes,
-            "edges": edges,
-            "diagnostic": {
-                "node_found": true,
-                "total_edges_in_graph": edge_count,
-                "note": "No call relationships found. Call graph analysis depends on language \
-                         parser support for extracting call edges. Some parsers may have \
-                         limited call extraction capabilities."
-            }
+        Some(CallGraphDiagnostic {
+            node_found: true,
+            total_edges_in_graph: edge_count,
+            note: "No call relationships found. Call graph analysis depends on language \
+                   parser support for extracting call edges. Some parsers may have \
+                   limited call extraction capabilities."
+                .to_string(),
         })
     } else {
-        serde_json::json!({
-            "root": start_node.to_string(),
-            "symbol_name": symbol_name,
-            "nodes": nodes,
-            "edges": edges
-        })
+        None
     };
 
-    if used_fallback {
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-            obj.insert(
-                "fallback_message".to_string(),
-                serde_json::json!(format!(
-                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                    requested_line.unwrap_or(0),
-                    symbol_name
-                )),
-            );
-        }
-    }
+    let (used_fallback_field, fallback_message) = if used_fallback {
+        (
+            Some(true),
+            Some(format!(
+                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                requested_line.unwrap_or(0),
+                symbol_name
+            )),
+        )
+    } else {
+        (None, None)
+    };
 
-    response
+    CallGraphResult {
+        root: start_node.to_string(),
+        symbol_name,
+        nodes,
+        edges,
+        diagnostic,
+        used_fallback: used_fallback_field,
+        fallback_message,
+    }
 }

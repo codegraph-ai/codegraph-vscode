@@ -2,11 +2,60 @@
 //!
 //! Extracts get_symbol_info / get_detailed_symbol from MCP server.
 
-use crate::ai_query::QueryEngine;
+use crate::ai_query::{CallInfo, DetailedSymbolInfo, QueryEngine, SymbolInfo};
 use crate::domain::source_code;
 use codegraph::{CodeGraph, NodeId};
-use serde_json::Value;
+use serde::Serialize;
 use tokio::sync::RwLock;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// Result of `get_symbol_info`.
+///
+/// Mirrors the fields of `DetailedSymbolInfo` but ref fields are optional so
+/// they can be suppressed when `include_refs = false`.
+#[derive(Debug, Serialize)]
+pub(crate) struct SymbolInfoResult {
+    pub symbol: SymbolInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callers: Option<Vec<CallInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callees: Option<Vec<CallInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependents: Option<Vec<String>>,
+    pub complexity: Option<u32>,
+    pub lines_of_code: usize,
+    pub has_tests: bool,
+    pub is_public: bool,
+    pub is_deprecated: bool,
+    pub reference_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
+
+/// Result of `get_detailed_symbol`.
+#[derive(Debug, Serialize)]
+pub(crate) struct DetailedSymbolResult {
+    /// Full symbol info (serializes as a nested object matching `DetailedSymbolInfo` shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<DetailedSymbolInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callers: Option<Vec<CallInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callees: Option<Vec<CallInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
 
 // ============================================================
 // Domain Functions
@@ -23,41 +72,54 @@ pub(crate) async fn get_symbol_info(
     include_refs: bool,
     used_fallback: bool,
     requested_line: Option<u32>,
-) -> Option<Value> {
+) -> Option<SymbolInfoResult> {
     let info = query_engine.get_symbol_info(node_id).await?;
 
-    let mut response = serde_json::to_value(&info).ok()?;
-
-    if used_fallback {
+    let (used_fallback_field, fallback_message) = if used_fallback {
         let name = &info.symbol.name;
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-            obj.insert(
-                "fallback_message".to_string(),
-                serde_json::json!(format!(
-                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                    requested_line.unwrap_or(0),
-                    name
-                )),
-            );
-        }
-    }
+        (
+            Some(true),
+            Some(format!(
+                "No symbol at line {}. Using nearest symbol '{}' instead.",
+                requested_line.unwrap_or(0),
+                name
+            )),
+        )
+    } else {
+        (None, None)
+    };
 
-    if !include_refs {
-        if let Some(obj) = response.as_object_mut() {
-            obj.remove("callers");
-            obj.remove("callees");
-            obj.remove("dependencies");
-            obj.remove("dependents");
-        }
-    }
+    let (callers, callees, dependencies, dependents) = if include_refs {
+        (
+            Some(info.callers),
+            Some(info.callees),
+            Some(info.dependencies),
+            Some(info.dependents),
+        )
+    } else {
+        (None, None, None, None)
+    };
 
-    Some(response)
+    Some(SymbolInfoResult {
+        symbol: info.symbol,
+        callers,
+        callees,
+        dependencies,
+        dependents,
+        complexity: info.complexity,
+        lines_of_code: info.lines_of_code,
+        has_tests: info.has_tests,
+        is_public: info.is_public,
+        is_deprecated: info.is_deprecated,
+        reference_count: info.reference_count,
+        used_fallback: used_fallback_field,
+        fallback_message,
+    })
 }
 
 /// Get detailed symbol info: basic info + optional source + callers + callees.
 ///
-/// Returns ad-hoc JSON. Shape matches the MCP codegraph_get_detailed_symbol response.
+/// Returns `DetailedSymbolResult`. Shape matches the MCP codegraph_get_detailed_symbol response.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn get_detailed_symbol(
     graph: &RwLock<CodeGraph>,
@@ -68,59 +130,56 @@ pub(crate) async fn get_detailed_symbol(
     include_callees: bool,
     used_fallback: bool,
     requested_line: Option<u32>,
-) -> Value {
-    let mut result = serde_json::Map::new();
-
+) -> DetailedSymbolResult {
     // Get basic symbol info
-    let symbol_name = if let Some(info) = query_engine.get_symbol_info(node_id).await {
+    let (symbol, symbol_name) = if let Some(info) = query_engine.get_symbol_info(node_id).await {
         let name = info.symbol.name.clone();
-        result.insert(
-            "symbol".to_string(),
-            serde_json::to_value(&info).unwrap_or(Value::Null),
-        );
-        name
+        (Some(info), name)
     } else {
-        String::new()
+        (None, String::new())
     };
 
-    // Add fallback metadata if used
-    if used_fallback {
-        result.insert("used_fallback".to_string(), serde_json::json!(true));
-        result.insert(
-            "fallback_message".to_string(),
-            serde_json::json!(format!(
+    let (used_fallback_field, fallback_message) = if used_fallback {
+        (
+            Some(true),
+            Some(format!(
                 "No symbol at line {}. Using nearest symbol '{}' instead.",
                 requested_line.unwrap_or(0),
                 symbol_name
             )),
-        );
-    }
+        )
+    } else {
+        (None, None)
+    };
 
     // Get source code if requested
-    if include_source {
+    let source = if include_source {
         let g = graph.read().await;
-        if let Some(src) = source_code::get_symbol_source(&g, node_id) {
-            result.insert("source".to_string(), Value::String(src));
-        }
-    }
+        source_code::get_symbol_source(&g, node_id)
+    } else {
+        None
+    };
 
     // Get callers if requested
-    if include_callers {
-        let callers = query_engine.get_callers(node_id, 1).await;
-        result.insert(
-            "callers".to_string(),
-            serde_json::to_value(&callers).unwrap_or(Value::Array(vec![])),
-        );
-    }
+    let callers = if include_callers {
+        Some(query_engine.get_callers(node_id, 1).await)
+    } else {
+        None
+    };
 
     // Get callees if requested
-    if include_callees {
-        let callees = query_engine.get_callees(node_id, 1).await;
-        result.insert(
-            "callees".to_string(),
-            serde_json::to_value(&callees).unwrap_or(Value::Array(vec![])),
-        );
-    }
+    let callees = if include_callees {
+        Some(query_engine.get_callees(node_id, 1).await)
+    } else {
+        None
+    };
 
-    Value::Object(result)
+    DetailedSymbolResult {
+        symbol,
+        source,
+        callers,
+        callees,
+        used_fallback: used_fallback_field,
+        fallback_message,
+    }
 }

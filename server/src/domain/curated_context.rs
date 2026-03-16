@@ -7,9 +7,84 @@ use crate::ai_query::{QueryEngine, SearchOptions};
 use crate::domain::{node_props, source_code};
 use crate::memory::MemoryManager;
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId};
-use serde_json::Value;
+use serde::Serialize;
 use std::collections::HashSet;
 use tokio::sync::RwLock;
+
+// ============================================================
+// Response Types
+// ============================================================
+
+/// A primary symbol match in the curated context.
+#[derive(Debug, Serialize)]
+pub(crate) struct CuratedSymbol {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub line: u32,
+    pub score: f32,
+    #[serde(rename = "matchReason")]
+    pub match_reason: String,
+    pub code: Option<String>,
+}
+
+/// A dependency of a primary symbol.
+#[derive(Debug, Serialize)]
+pub(crate) struct CuratedDependency {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub relationship: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// A memory entry in the curated context.
+#[derive(Debug, Serialize)]
+pub(crate) struct CuratedMemory {
+    pub title: String,
+    pub content: String,
+    pub kind: String,
+    #[serde(rename = "relatedFile")]
+    pub related_file: String,
+}
+
+/// Metadata about the curated context response.
+#[derive(Debug, Serialize)]
+pub(crate) struct CuratedContextMetadata {
+    #[serde(rename = "totalTokens")]
+    pub total_tokens: usize,
+    #[serde(rename = "maxTokens")]
+    pub max_tokens: usize,
+    #[serde(rename = "queryTime")]
+    pub query_time: u64,
+    #[serde(rename = "symbolsFound")]
+    pub symbols_found: usize,
+    #[serde(rename = "symbolsIncluded")]
+    pub symbols_included: usize,
+    #[serde(rename = "dependenciesIncluded")]
+    pub dependencies_included: usize,
+    #[serde(rename = "memoriesIncluded")]
+    pub memories_included: usize,
+}
+
+/// Successful curated context result.
+#[derive(Debug, Serialize)]
+pub(crate) struct CuratedContextResult {
+    pub query: String,
+    pub symbols: Vec<CuratedSymbol>,
+    pub dependencies: Vec<CuratedDependency>,
+    pub memories: Vec<CuratedMemory>,
+    pub metadata: CuratedContextMetadata,
+}
+
+/// Error result when no symbols are found.
+#[derive(Debug, Serialize)]
+pub(crate) struct CuratedContextError {
+    pub error: String,
+    pub query: String,
+    pub suggestion: String,
+}
 
 // ============================================================
 // Domain Function
@@ -27,7 +102,7 @@ pub(crate) async fn get_curated_context(
     anchor_path: Option<&str>,
     max_tokens: usize,
     max_symbols: usize,
-) -> Value {
+) -> Result<CuratedContextResult, CuratedContextError> {
     let start_time = std::time::Instant::now();
     let mut budget_remaining = max_tokens;
 
@@ -52,16 +127,16 @@ pub(crate) async fn get_curated_context(
     let top_matches: Vec<_> = matches.into_iter().take(max_symbols).collect();
 
     if top_matches.is_empty() {
-        return serde_json::json!({
-            "error": format!("No symbols found matching '{}'", query),
-            "query": query,
-            "suggestion": "Try a different query or ensure the workspace is indexed."
+        return Err(CuratedContextError {
+            error: format!("No symbols found matching '{}'", query),
+            query: query.to_string(),
+            suggestion: "Try a different query or ensure the workspace is indexed.".to_string(),
         });
     }
 
     // --- Step 2: Resolve full source for top matches ---
     let symbol_budget = max_tokens * 40 / 100;
-    let mut symbols_json = Vec::new();
+    let mut symbols = Vec::new();
     let mut primary_node_ids = Vec::new();
     let mut primary_files = HashSet::new();
     let mut symbols_tokens = 0usize;
@@ -79,21 +154,21 @@ pub(crate) async fn get_curated_context(
         primary_node_ids.push(m.node_id);
         primary_files.insert(m.symbol.location.file.clone());
 
-        symbols_json.push(serde_json::json!({
-            "name": m.symbol.name,
-            "kind": m.symbol.kind,
-            "file": m.symbol.location.file,
-            "line": m.symbol.location.line,
-            "score": m.score,
-            "matchReason": m.match_reason,
-            "code": code,
-        }));
+        symbols.push(CuratedSymbol {
+            name: m.symbol.name.clone(),
+            kind: m.symbol.kind.clone(),
+            file: m.symbol.location.file.clone(),
+            line: m.symbol.location.line,
+            score: m.score,
+            match_reason: m.match_reason.clone(),
+            code,
+        });
     }
     budget_remaining = budget_remaining.saturating_sub(symbols_tokens);
 
     // --- Step 3: Expand — walk dependencies from primary symbols ---
     let dep_budget = max_tokens * 25 / 100;
-    let mut dependencies_json = Vec::new();
+    let mut dependencies = Vec::new();
     let mut dep_tokens = 0usize;
     let mut seen_dep_ids: HashSet<NodeId> = HashSet::new();
     for &nid in &primary_node_ids {
@@ -138,21 +213,22 @@ pub(crate) async fn get_curated_context(
             };
             let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
             if code_tokens > dep_budget / 3 {
-                dependencies_json.push(serde_json::json!({
-                    "name": dep_name,
-                    "kind": dep_kind,
-                    "file": dep_file,
-                    "relationship": relationship,
-                }));
+                dependencies.push(CuratedDependency {
+                    name: dep_name,
+                    kind: dep_kind,
+                    file: dep_file,
+                    relationship,
+                    code: None,
+                });
             } else {
                 dep_tokens += code_tokens;
-                dependencies_json.push(serde_json::json!({
-                    "name": dep_name,
-                    "kind": dep_kind,
-                    "file": dep_file,
-                    "relationship": relationship,
-                    "code": code,
-                }));
+                dependencies.push(CuratedDependency {
+                    name: dep_name,
+                    kind: dep_kind,
+                    file: dep_file,
+                    relationship,
+                    code,
+                });
             }
             // Process one dep per primary symbol per iteration (matches original behavior)
             break;
@@ -162,7 +238,7 @@ pub(crate) async fn get_curated_context(
 
     // --- Step 4: Enrich — memories related to primary files ---
     let memory_budget = max_tokens * 15 / 100;
-    let mut memories_json = Vec::new();
+    let mut memories = Vec::new();
     let mut mem_tokens = 0usize;
     let mut seen_mem_titles = HashSet::new();
 
@@ -185,12 +261,12 @@ pub(crate) async fn get_curated_context(
                 }
                 let content_tokens = r.memory.content.len() / 4;
                 mem_tokens += content_tokens;
-                memories_json.push(serde_json::json!({
-                    "title": r.memory.title,
-                    "content": r.memory.content,
-                    "kind": r.memory.kind.discriminant_name(),
-                    "relatedFile": file,
-                }));
+                memories.push(CuratedMemory {
+                    title: r.memory.title.clone(),
+                    content: r.memory.content.clone(),
+                    kind: r.memory.kind.discriminant_name().to_string(),
+                    related_file: file.clone(),
+                });
             }
         }
     }
@@ -199,21 +275,25 @@ pub(crate) async fn get_curated_context(
     // --- Step 5: Curate — assemble response ---
     let query_time = start_time.elapsed().as_millis() as u64;
     let total_tokens = max_tokens.saturating_sub(budget_remaining);
+    let symbols_found = search_result.total_matches;
+    let symbols_included = symbols.len();
+    let dependencies_included = dependencies.len();
+    let memories_included = memories.len();
 
-    serde_json::json!({
-        "query": query,
-        "symbols": symbols_json,
-        "dependencies": dependencies_json,
-        "memories": memories_json,
-        "metadata": {
-            "totalTokens": total_tokens,
-            "maxTokens": max_tokens,
-            "queryTime": query_time,
-            "symbolsFound": search_result.total_matches,
-            "symbolsIncluded": symbols_json.len(),
-            "dependenciesIncluded": dependencies_json.len(),
-            "memoriesIncluded": memories_json.len(),
-        }
+    Ok(CuratedContextResult {
+        query: query.to_string(),
+        symbols,
+        dependencies,
+        memories,
+        metadata: CuratedContextMetadata {
+            total_tokens,
+            max_tokens,
+            query_time,
+            symbols_found,
+            symbols_included,
+            dependencies_included,
+            memories_included,
+        },
     })
 }
 
