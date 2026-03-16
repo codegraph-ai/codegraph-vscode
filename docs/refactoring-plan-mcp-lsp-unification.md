@@ -161,33 +161,40 @@ Unify the helper functions that are duplicated:
 
 ## Migration Plan
 
-### Phase 0: Preparatory (no behavior change)
+### Phase 0: Property Key Standardization + Domain Module Bootstrap
 
-**Goal**: Create the domain/ module structure without changing any behavior.
+**Goal**: Standardize property keys and create domain/ module with the first real migration (complexity, already partially done).
 
-1. Create server/src/domain/mod.rs with DomainContext struct
-2. Move analyze_file_complexity() from handlers/metrics.rs to domain/complexity.rs (it is already shared — this just gives it a proper home)
-3. Move complexity helper functions (complexity_grade, file_grade, get_complexity_from_node) alongside it
-4. Re-export from handlers/metrics.rs so existing code does not break
-5. Move detect_layer() from handlers/ai_context.rs to domain/ai_context.rs
+**Why property keys first**: Every domain function reads node properties. If `line_start`/`start_line` inconsistency isn't resolved first, every domain function needs fallback chains. Fix once, use everywhere.
 
-**Files modified**: server/src/lib.rs, new server/src/domain/*.rs, server/src/handlers/metrics.rs (thin wrapper)
+1. **Standardize property keys**: Audit all property key reads across both paths. Canonical keys are the ones the parsers write (`line_start`, `line_end`, `complexity`, `complexity_branches`, etc.). Remove any fallback chains for alternate names. Create `domain/node_props.rs` with typed accessors:
+   ```rust
+   pub fn line_start(node: &Node) -> u32 { ... }
+   pub fn line_end(node: &Node) -> u32 { ... }
+   pub fn name(node: &Node) -> &str { ... }
+   ```
+2. **Create domain/ module**: `server/src/domain/mod.rs` — NO `DomainContext` wrapper struct. Domain functions take individual references (`&CodeGraph`, `&QueryEngine`, etc.) to avoid coupling to a container type.
+3. **Move complexity**: `analyze_file_complexity()`, `complexity_grade()`, `file_grade()`, `get_complexity_from_node()` from `handlers/metrics.rs` → `domain/complexity.rs`. Re-export from metrics.rs for backwards compat.
+
+**Files modified**: server/src/lib.rs, new server/src/domain/{mod,node_props,complexity}.rs, server/src/handlers/metrics.rs
 
 **Tests**: All existing tests pass unchanged.
 
-### Phase 1: Node Resolution Unification
+### Phase 1: Node Resolution + Source Code Unification
 
-**Goal**: One find_nearest_node() implementation used by both paths.
+**Goal**: One `find_nearest_node()` and one `get_symbol_source()` used by both paths.
 
-1. Create domain/node_resolution.rs with a unified function that:
-   - Accepts either a NodeId directly or (uri, line) pair
-   - Queries the graph for file nodes (like MCP does)
-   - Falls back to symbol_index if available (like LSP does)
-   - Returns (NodeId, bool /* used_fallback */)
-   - Handles both line_start/start_line property conventions
-2. Update McpServer::find_nearest_node_with_fallback() to delegate
-3. Update CodeGraphBackend::find_nearest_node() to delegate
-4. Standardize property key reading: create domain::node_props::get_line_start(node) helpers (similar to what handlers/custom.rs already has at line 12-42) and use them everywhere
+**Design note**: The domain functions must work WITHOUT `SymbolIndex` (MCP has none). Use `graph.nodes_iter()` (fixed in v0.8.5) as the primary lookup. `SymbolIndex` can be an optional accelerator.
+
+1. Create `domain/node_resolution.rs` with a unified function that:
+   - Accepts (graph, uri, line) — no SymbolIndex dependency
+   - Queries nodes via `nodes_iter()` filtering by path + line range
+   - Returns `Option<NodeId>`
+2. Create `domain/source_code.rs` with `get_symbol_source(graph, node_id) -> Option<String>`
+   - Reads path/line_start/line_end from node properties via `node_props` accessors
+   - Reads source from disk
+3. Update both `McpServer::find_nearest_node_with_fallback()` and `CodeGraphBackend::find_nearest_node()` to delegate
+4. Update both `McpServer::get_symbol_source()` and `CodeGraphBackend::get_node_source_code()` to delegate
 
 **Files modified**: new domain/node_resolution.rs, mcp/server.rs, backend.rs, handlers/custom.rs
 
@@ -226,29 +233,139 @@ The MCP find_unused_code() is strictly better than the LSP version — it handle
 
 **Behavioral change**: LSP path gains the richer detection (improvement, not regression).
 
-### Phase 4: AI Context Unification
+### Phase 4: AI Context Unification + Quality Improvements
 
-**Goal**: One AI context assembly used by both paths.
+**Goal**: One AI context assembly used by both paths, with improvements informed by real AI agent usage.
 
-This is the most complex phase because the two implementations differ significantly:
+#### Current state
+
+Both implementations are **functionally identical** despite different structure:
 
 | Feature | LSP (ai_context.rs) | MCP (server.rs) |
 |---------|---------------------|-----------------|
 | Token budgeting | TokenBudget struct | Inline arithmetic |
-| Intent routing | 4 async methods (explain/modify/debug/test) | get_intent_related_symbols() synchronous |
-| Source code | Via get_node_source_code() | Via get_symbol_source() |
+| Intent routing | 4 async methods (explain/modify/debug/test) | get_intent_related_symbols() match block |
+| Source code | Via domain::source_code | Via domain::source_code |
 | Architecture | get_architecture_info() with detect_layer() | get_node_architecture() |
 | Response | Typed AIContextResponse | Ad-hoc serde_json::Value |
 
-Strategy:
-1. Create domain/ai_context.rs with:
-   - TokenBudget (promote from LSP)
-   - Unified intent-based context assembly (keep LSP richer 4-method approach)
-   - AiContextResult struct (transport-neutral, with serde derives)
-2. The LSP handler converts AIContextParams to domain params, calls domain, returns typed result
-3. The MCP handler extracts args from JSON, calls domain, serializes result
+The 4 intent methods in LSP do exactly the same graph traversal as the MCP match block. The LSP version has 450 extra lines of typed struct boilerplate, not richer logic.
 
-**Files modified**: new domain/ai_context.rs, handlers/ai_context.rs (slim down), mcp/server.rs (remove inline implementation)
+#### Context quality gaps (neither implementation addresses these)
+
+From the perspective of an AI agent consuming this context:
+
+1. **No signature-only mode**: Related symbols include full source or nothing. When budget is tight, 10 function signatures are far more useful than 2 full function bodies. A compact representation (signature + doc comment, ~50 tokens) vs full source (~500 tokens) gives 10x more coverage.
+
+2. **No file-level imports**: The agent can't see what modules are available in the file. When modifying code, this determines whether a new import is needed.
+
+3. **No sibling functions**: When explaining a method, other methods in the same class/struct provide pattern context (naming conventions, error handling style, etc.).
+
+4. **No control flow shape for debug intent**: The complexity details (branches, exception handlers, early returns) tell the agent about the function's control flow shape — essential for debugging. This data exists in node properties but isn't included.
+
+5. **Hardcoded relevance_score**: 1.0 for "uses", 0.8 for "called_by" — cosmetic, not computed. Remove or make meaningful.
+
+#### Implementation strategy
+
+Create `domain/ai_context.rs` with the improved context assembly. Use the TokenBudget pattern from LSP but add the new context sections.
+
+```rust
+// domain/ai_context.rs
+
+/// How much detail to include for related symbols.
+pub(crate) enum SymbolDetail {
+    /// Full source code (default when budget allows)
+    Full,
+    /// Signature + doc comment only (~50 tokens vs ~500)
+    SignatureOnly,
+}
+
+pub(crate) struct AiContextParams {
+    pub file_path: String,
+    pub line: u32,
+    pub intent: Intent,
+    pub max_tokens: usize,
+}
+
+pub(crate) enum Intent {
+    Explain,
+    Modify,
+    Debug,
+    Test,
+}
+
+pub(crate) struct AiContextResult {
+    pub primary: PrimaryContext,
+    pub related_symbols: Vec<RelatedSymbol>,
+    pub dependencies: Vec<DependencyInfo>,
+    pub imports: Vec<String>,              // NEW: file-level imports
+    pub sibling_functions: Vec<SiblingInfo>, // NEW: same-class/file functions
+    pub usage_examples: Vec<UsageExample>,
+    pub architecture: Option<ArchitectureInfo>,
+    pub debug_hints: Option<DebugHints>,   // NEW: control flow shape
+    pub metadata: ContextMetadata,
+}
+
+/// Control flow shape hints for debug intent.
+pub(crate) struct DebugHints {
+    pub complexity: u32,
+    pub branches: u32,
+    pub exception_handlers: u32,
+    pub early_returns: u32,
+    pub nesting_depth: u32,
+    pub error_paths: Vec<String>,  // names of functions called in error/catch blocks
+}
+
+/// Compact sibling info (signature only, no full source).
+pub(crate) struct SiblingInfo {
+    pub name: String,
+    pub signature: String,
+    pub visibility: String,
+    pub line_start: u32,
+}
+```
+
+**Token budget allocation by intent**:
+
+| Section | Explain | Modify | Debug | Test |
+|---------|---------|--------|-------|------|
+| Primary source | 40% | 30% | 30% | 30% |
+| Related (full) | 30% | 20% | 25% | 15% |
+| Related (signature-only) | 10% | 10% | 10% | 10% |
+| Imports | 5% | 5% | 5% | 5% |
+| Siblings (signature-only) | 10% | 5% | 5% | 5% |
+| Tests | — | 20% | 5% | 25% |
+| Debug hints | — | — | 15% | — |
+| Usage examples | 5% | 5% | 5% | 5% |
+| Architecture | — | 5% | — | 5% |
+
+The key insight: **fill high-priority sections with full detail first, then use remaining budget for signature-only symbols**. This maximizes information density.
+
+**Implementation steps**:
+
+1. Create `domain/ai_context.rs` with:
+   - `TokenBudget` struct (from LSP)
+   - `estimate_tokens()` helper
+   - `Intent` enum
+   - `SymbolDetail` enum
+   - Result types (all with `#[derive(Serialize)]` for direct use by both adapters)
+   - `pub(crate) async fn get_ai_context(graph, query_engine, params) -> Result<AiContextResult>`
+   - Private helpers: `get_related_by_intent()`, `get_file_imports()`, `get_sibling_functions()`, `get_debug_hints()`
+
+2. For `get_file_imports()`: find the file's Module/CodeFile node, get its Imports edges, collect target names. This data is already in the graph.
+
+3. For `get_sibling_functions()`: find other Function nodes with the same `path` property (or same parent class via Contains edges). Include signature + visibility only, not source.
+
+4. For `get_debug_hints()`: read complexity properties from the target node (already there from parsers). For error_paths, look at callees that have "error", "err", "panic", "throw" in their name.
+
+5. For signature-only mode: read the `signature` property from the node (already stored by all parsers). If empty, construct from name + parameters + return_type properties.
+
+6. The LSP adapter converts `AiContextResult` → `AIContextResponse` (existing typed struct, camelCase)
+7. The MCP adapter serializes `AiContextResult` → `serde_json::Value` (snake_case JSON)
+
+**Files modified**: new domain/ai_context.rs, handlers/ai_context.rs (thin adapter), mcp/server.rs (thin adapter, delete ~280 lines)
+
+**Note**: Memory tools (8 tools) already delegate to MemoryManager — they don't need domain migration. Git mining tools delegate to GitMiner. These are already thin adapters.
 
 ### Phase 5: Callers/Callees/Symbol Info Adapters
 
