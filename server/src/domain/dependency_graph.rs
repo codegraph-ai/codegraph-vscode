@@ -81,8 +81,7 @@ pub(crate) fn get_dependency_graph(
         }
     }
     if direction != "imports" {
-        if let Ok(deps) =
-            codegraph::helpers::transitive_dependents(graph, start_node, Some(depth))
+        if let Ok(deps) = codegraph::helpers::transitive_dependents(graph, start_node, Some(depth))
         {
             reachable_set.extend(deps);
         }

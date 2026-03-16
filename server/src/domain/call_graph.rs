@@ -93,9 +93,10 @@ pub(crate) async fn get_call_graph(
             .ok()
             .map(|n| node_props::name(n).to_string())
             .unwrap_or_default();
-        let root = g.get_node(start_node).ok().map(|n| {
-            build_call_graph_node(start_node, n, 0, None)
-        });
+        let root = g
+            .get_node(start_node)
+            .ok()
+            .map(|n| build_call_graph_node(start_node, n, 0, None));
         (name, root)
     };
 
@@ -110,21 +111,23 @@ pub(crate) async fn get_call_graph(
             let g = graph.read().await;
             for caller in callers {
                 if seen.insert(caller.node_id) {
-                    let node = g.get_node(caller.node_id).ok().map(|n| {
-                        build_call_graph_node(caller.node_id, n, caller.depth, None)
-                    }).unwrap_or_else(|| CallGraphNode {
-                        id: caller.node_id.to_string(),
-                        name: caller.symbol.name,
-                        depth: caller.depth,
-                        direction: None,
-                        path: String::new(),
-                        signature: String::new(),
-                        line_start: 0,
-                        line_end: 0,
-                        col_start: 0,
-                        col_end: 0,
-                        language: String::new(),
-                    });
+                    let node = g
+                        .get_node(caller.node_id)
+                        .ok()
+                        .map(|n| build_call_graph_node(caller.node_id, n, caller.depth, None))
+                        .unwrap_or_else(|| CallGraphNode {
+                            id: caller.node_id.to_string(),
+                            name: caller.symbol.name,
+                            depth: caller.depth,
+                            direction: None,
+                            path: String::new(),
+                            signature: String::new(),
+                            line_start: 0,
+                            line_end: 0,
+                            col_start: 0,
+                            col_end: 0,
+                            language: String::new(),
+                        });
                     nodes.push(node);
                     edges.push(CallGraphEdge {
                         from: caller.node_id.to_string(),
@@ -139,21 +142,23 @@ pub(crate) async fn get_call_graph(
             let g = graph.read().await;
             for callee in callees {
                 if seen.insert(callee.node_id) {
-                    let node = g.get_node(callee.node_id).ok().map(|n| {
-                        build_call_graph_node(callee.node_id, n, callee.depth, None)
-                    }).unwrap_or_else(|| CallGraphNode {
-                        id: callee.node_id.to_string(),
-                        name: callee.symbol.name,
-                        depth: callee.depth,
-                        direction: None,
-                        path: String::new(),
-                        signature: String::new(),
-                        line_start: 0,
-                        line_end: 0,
-                        col_start: 0,
-                        col_end: 0,
-                        language: String::new(),
-                    });
+                    let node = g
+                        .get_node(callee.node_id)
+                        .ok()
+                        .map(|n| build_call_graph_node(callee.node_id, n, callee.depth, None))
+                        .unwrap_or_else(|| CallGraphNode {
+                            id: callee.node_id.to_string(),
+                            name: callee.symbol.name,
+                            depth: callee.depth,
+                            direction: None,
+                            path: String::new(),
+                            signature: String::new(),
+                            line_start: 0,
+                            line_end: 0,
+                            col_start: 0,
+                            col_end: 0,
+                            language: String::new(),
+                        });
                     nodes.push(node);
                     edges.push(CallGraphEdge {
                         from: start_node.to_string(),
@@ -171,21 +176,30 @@ pub(crate) async fn get_call_graph(
 
             for caller in callers {
                 if seen.insert(caller.node_id) {
-                    let mut node = g.get_node(caller.node_id).ok().map(|n| {
-                        build_call_graph_node(caller.node_id, n, caller.depth, Some("caller".to_string()))
-                    }).unwrap_or_else(|| CallGraphNode {
-                        id: caller.node_id.to_string(),
-                        name: caller.symbol.name,
-                        depth: caller.depth,
-                        direction: Some("caller".to_string()),
-                        path: String::new(),
-                        signature: String::new(),
-                        line_start: 0,
-                        line_end: 0,
-                        col_start: 0,
-                        col_end: 0,
-                        language: String::new(),
-                    });
+                    let mut node = g
+                        .get_node(caller.node_id)
+                        .ok()
+                        .map(|n| {
+                            build_call_graph_node(
+                                caller.node_id,
+                                n,
+                                caller.depth,
+                                Some("caller".to_string()),
+                            )
+                        })
+                        .unwrap_or_else(|| CallGraphNode {
+                            id: caller.node_id.to_string(),
+                            name: caller.symbol.name,
+                            depth: caller.depth,
+                            direction: Some("caller".to_string()),
+                            path: String::new(),
+                            signature: String::new(),
+                            line_start: 0,
+                            line_end: 0,
+                            col_start: 0,
+                            col_end: 0,
+                            language: String::new(),
+                        });
                     node.direction = Some("caller".to_string());
                     nodes.push(node);
                     edges.push(CallGraphEdge {
@@ -198,21 +212,30 @@ pub(crate) async fn get_call_graph(
 
             for callee in callees {
                 if seen.insert(callee.node_id) {
-                    let mut node = g.get_node(callee.node_id).ok().map(|n| {
-                        build_call_graph_node(callee.node_id, n, callee.depth, Some("callee".to_string()))
-                    }).unwrap_or_else(|| CallGraphNode {
-                        id: callee.node_id.to_string(),
-                        name: callee.symbol.name,
-                        depth: callee.depth,
-                        direction: Some("callee".to_string()),
-                        path: String::new(),
-                        signature: String::new(),
-                        line_start: 0,
-                        line_end: 0,
-                        col_start: 0,
-                        col_end: 0,
-                        language: String::new(),
-                    });
+                    let mut node = g
+                        .get_node(callee.node_id)
+                        .ok()
+                        .map(|n| {
+                            build_call_graph_node(
+                                callee.node_id,
+                                n,
+                                callee.depth,
+                                Some("callee".to_string()),
+                            )
+                        })
+                        .unwrap_or_else(|| CallGraphNode {
+                            id: callee.node_id.to_string(),
+                            name: callee.symbol.name,
+                            depth: callee.depth,
+                            direction: Some("callee".to_string()),
+                            path: String::new(),
+                            signature: String::new(),
+                            line_start: 0,
+                            line_end: 0,
+                            col_start: 0,
+                            col_end: 0,
+                            language: String::new(),
+                        });
                     node.direction = Some("callee".to_string());
                     nodes.push(node);
                     edges.push(CallGraphEdge {
@@ -280,7 +303,11 @@ fn build_call_graph_node(
 ) -> CallGraphNode {
     let name = node_props::name(node).to_string();
     let path = node_props::path(node).to_string();
-    let signature = node.properties.get_string("signature").unwrap_or("").to_string();
+    let signature = node
+        .properties
+        .get_string("signature")
+        .unwrap_or("")
+        .to_string();
     let line_start = node_props::line_start(node);
     let line_end = node_props::line_end(node);
     let col_start = node_props::col_start_from_props(&node.properties);

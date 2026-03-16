@@ -109,9 +109,7 @@ impl CodeGraphBackend {
                 // Use path from domain; fall back to symbol_index for nodes without a path.
                 let uri = if n.path.is_empty() {
                     self.symbol_index
-                        .find_file_for_node(
-                            n.id.parse().unwrap_or_default(),
-                        )
+                        .find_file_for_node(n.id.parse().unwrap_or_default())
                         .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
                         .unwrap_or_default()
                 } else {
@@ -222,7 +220,6 @@ impl CodeGraphBackend {
             },
         })
     }
-
 }
 
 // ==========================================
@@ -1245,5 +1242,4 @@ mod tests {
         let response = result.unwrap();
         assert!(response.metrics.is_empty());
     }
-
 }

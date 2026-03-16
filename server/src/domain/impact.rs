@@ -127,10 +127,8 @@ pub(crate) async fn analyze_impact(
                                 let line_end = node_props::line_end(ref_node);
                                 let col_start =
                                     node_props::col_start_from_props(&ref_node.properties);
-                                let col_end =
-                                    node_props::col_end_from_props(&ref_node.properties);
-                                let is_test =
-                                    crate::domain::unused_code::is_test_node(ref_node);
+                                let col_end = node_props::col_end_from_props(&ref_node.properties);
+                                let is_test = crate::domain::unused_code::is_test_node(ref_node);
                                 let edge_type_str = format!("{:?}", edge.edge_type);
                                 affected_files.insert(path.clone());
                                 direct_impacts.push((
@@ -191,17 +189,13 @@ pub(crate) async fn analyze_impact(
         }
     }
 
-    let impacted: Vec<ImpactedSymbol> =
-        direct_impacts.into_iter().map(|(_, sym)| sym).collect();
+    let impacted: Vec<ImpactedSymbol> = direct_impacts.into_iter().map(|(_, sym)| sym).collect();
 
     let direct_impacted = impacted.len();
     let total_impacted = direct_impacted + indirect_impacted.len();
-    let breaking_changes = impacted
-        .iter()
-        .filter(|i| i.severity == "breaking")
-        .count();
-    let warnings = impacted.iter().filter(|i| i.severity == "warning").count()
-        + indirect_impacted.len();
+    let breaking_changes = impacted.iter().filter(|i| i.severity == "breaking").count();
+    let warnings =
+        impacted.iter().filter(|i| i.severity == "warning").count() + indirect_impacted.len();
 
     // Use all_callers (depth 3) for risk_level to account for transitive call exposure
     let risk_level = match (change_type, all_callers.len()) {

@@ -78,6 +78,16 @@ cd codegraph-vscode
 
 The extension registers 30 tools as VS Code Language Model Tools, so Copilot and other VS Code AI features can use them directly.
 
+To steer Copilot toward using CodeGraph tools, add this to your `.vscode/settings.json`:
+
+```jsonc
+{
+  "github.copilot.chat.codeGeneration.instructions": [
+    "When analyzing code structure, callers, callees, dependencies, or complexity, prefer codegraph_* tools over file search. CodeGraph has a pre-built semantic graph that returns structured results instantly."
+  ]
+}
+```
+
 ---
 
 ## Tools
