@@ -2,9 +2,8 @@
 
 use crate::backend::CodeGraphBackend;
 use crate::domain::node_props;
-use codegraph::{CodeGraph, Direction, EdgeType, Node, NodeId};
+use codegraph::Node;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{Position, Range, Url};
 
@@ -89,118 +88,54 @@ impl CodeGraphBackend {
             .to_file_path()
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
 
-        let graph = self.graph.read().await;
         let depth = params.depth.unwrap_or(3);
         let include_external = params.include_external.unwrap_or(false);
-
-        // Find the file node
         let path_str = path.to_string_lossy().to_string();
+        let dir_param = params.direction.as_deref().unwrap_or("both");
 
-        let start_node = match codegraph::helpers::find_file_by_path(&graph, &path_str)
-            .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?
-        {
-            Some(id) => id,
-            None => {
-                return Ok(DependencyGraphResponse {
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                });
-            }
+        let result = {
+            let graph = self.graph.read().await;
+            crate::domain::dependency_graph::get_dependency_graph(
+                &graph, &path_str, depth, dir_param,
+            )
         };
 
-        // Use built-in import-aware graph traversal
-        let dir_param = params.direction.as_deref().unwrap_or("both");
-        let mut reachable_set: HashSet<NodeId> = HashSet::new();
-        reachable_set.insert(start_node);
-
-        if dir_param != "importedBy" {
-            // "imports" or "both": follow outgoing import edges
-            if let Ok(deps) =
-                codegraph::helpers::transitive_dependencies(&graph, start_node, Some(depth))
-            {
-                reachable_set.extend(deps);
-            }
-        }
-        if dir_param != "imports" {
-            // "importedBy" or "both": follow incoming import edges
-            if let Ok(deps) =
-                codegraph::helpers::transitive_dependents(&graph, start_node, Some(depth))
-            {
-                reachable_set.extend(deps);
-            }
-        }
-
-        // Build response nodes
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
-
-        for &node_id in &reachable_set {
-            if let Ok(node) = graph.get_node(node_id) {
-                // Skip external if not requested
-                let is_external = node
-                    .properties
-                    .get_string("external")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-
-                if is_external && !include_external {
-                    continue;
-                }
-
-                let name = node_props::name(node).to_string();
-                let node_type = format!("{:?}", node.node_type).to_lowercase();
-                let language = {
-                    let l = node_props::language(node);
-                    if l.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        l.to_string()
-                    }
+        // Convert domain nodes → LSP DependencyNode, applying include_external filter
+        let nodes = result
+            .nodes
+            .into_iter()
+            .filter(|n| include_external || !n.is_external)
+            .map(|n| {
+                // Use path from domain; fall back to symbol_index for nodes without a path.
+                let uri = if n.path.is_empty() {
+                    self.symbol_index
+                        .find_file_for_node(
+                            n.id.parse().unwrap_or_default(),
+                        )
+                        .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
+                        .unwrap_or_default()
+                } else {
+                    n.path
                 };
-
-                let node_path = node
-                    .properties
-                    .get_string("path")
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        self.symbol_index
-                            .find_file_for_node(node_id)
-                            .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                    })
-                    .unwrap_or_default();
-
-                nodes.push(DependencyNode {
-                    id: node_id.to_string(),
-                    label: name,
-                    node_type,
-                    language,
-                    uri: node_path,
-                });
-            }
-        }
-
-        // Collect import edges between reachable nodes
-        for &node_id in &reachable_set {
-            if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Outgoing) {
-                for neighbor_id in neighbors {
-                    if reachable_set.contains(&neighbor_id) {
-                        if let Ok(edge_ids) = graph.get_edges_between(node_id, neighbor_id) {
-                            for edge_id in edge_ids {
-                                if let Ok(edge) = graph.get_edge(edge_id) {
-                                    if edge.edge_type == EdgeType::Imports {
-                                        edges.push(DependencyEdge {
-                                            from: node_id.to_string(),
-                                            to: neighbor_id.to_string(),
-                                            edge_type: "import".to_string(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
+                DependencyNode {
+                    id: n.id,
+                    label: n.name,
+                    node_type: n.node_type,
+                    language: n.language,
+                    uri,
                 }
-            }
-        }
+            })
+            .collect();
+
+        let edges = result
+            .edges
+            .into_iter()
+            .map(|e| DependencyEdge {
+                from: e.from,
+                to: e.to,
+                edge_type: e.edge_type,
+            })
+            .collect();
 
         Ok(DependencyGraphResponse { nodes, edges })
     }
@@ -288,65 +223,6 @@ impl CodeGraphBackend {
         })
     }
 
-    /// Helper function to collect edges based on direction parameter.
-    fn collect_edges_for_direction(
-        graph: &CodeGraph,
-        node_id: NodeId,
-        direction: &str,
-        skip_outgoing: &str,
-        skip_incoming: &str,
-    ) -> Vec<(NodeId, NodeId, EdgeType)> {
-        let mut edges = Vec::new();
-
-        // Get outgoing edges if not skipped
-        if direction != skip_outgoing {
-            if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Outgoing) {
-                for neighbor_id in neighbors {
-                    if let Ok(edge_ids) = graph.get_edges_between(node_id, neighbor_id) {
-                        for edge_id in edge_ids {
-                            if let Ok(edge) = graph.get_edge(edge_id) {
-                                edges.push((edge.source_id, edge.target_id, edge.edge_type));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Get incoming edges if not skipped
-        if direction != skip_incoming {
-            if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Incoming) {
-                for neighbor_id in neighbors {
-                    if let Ok(edge_ids) = graph.get_edges_between(neighbor_id, node_id) {
-                        for edge_id in edge_ids {
-                            if let Ok(edge) = graph.get_edge(edge_id) {
-                                edges.push((edge.source_id, edge.target_id, edge.edge_type));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        edges
-    }
-
-    /// Helper function to get incoming edges for a node.
-    fn get_incoming_edges(graph: &CodeGraph, node_id: NodeId) -> Vec<(NodeId, NodeId, EdgeType)> {
-        let mut edges = Vec::new();
-        if let Ok(neighbors) = graph.get_neighbors(node_id, Direction::Incoming) {
-            for neighbor_id in neighbors {
-                if let Ok(edge_ids) = graph.get_edges_between(neighbor_id, node_id) {
-                    for edge_id in edge_ids {
-                        if let Ok(edge) = graph.get_edge(edge_id) {
-                            edges.push((edge.source_id, edge.target_id, edge.edge_type));
-                        }
-                    }
-                }
-            }
-        }
-        edges
-    }
 }
 
 // ==========================================
@@ -403,134 +279,101 @@ impl CodeGraphBackend {
             .to_file_path()
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
 
-        let graph = self.graph.read().await;
-        let depth = params.depth.unwrap_or(3);
-        let position = params.position;
+        let depth = params.depth.unwrap_or(3) as u32;
+        let dir_param = params.direction.as_deref().unwrap_or("both");
 
-        // Find node at position
-        let node_id = match self.find_node_at_position(&graph, &path, position)? {
-            Some(id) => id,
-            None => {
-                return Ok(CallGraphResponse {
-                    root: None,
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                })
+        let node_id = {
+            let graph = self.graph.read().await;
+            match self.find_node_at_position(&graph, &path, params.position)? {
+                Some(id) => id,
+                None => {
+                    return Ok(CallGraphResponse {
+                        root: None,
+                        nodes: Vec::new(),
+                        edges: Vec::new(),
+                    })
+                }
             }
         };
 
-        // BFS to collect call graph
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
+        let result = crate::domain::call_graph::get_call_graph(
+            &self.graph,
+            &self.query_engine,
+            node_id,
+            depth,
+            dir_param,
+            false,
+            None,
+        )
+        .await;
 
-        queue.push_back((node_id, 0));
-        visited.insert(node_id);
+        // Convert domain root_node → LSP FunctionNode (use params.uri for root path)
+        let root = result.root_node.as_ref().map(|rn| {
+            let uri = if rn.path.is_empty() {
+                params.uri.clone()
+            } else {
+                rn.path.clone()
+            };
+            domain_node_to_function_node(rn, uri)
+        });
 
-        let mut root: Option<FunctionNode> = None;
-
-        while let Some((current_id, current_depth)) = queue.pop_front() {
-            if current_depth > depth {
-                continue;
-            }
-
-            if let Ok(node) = graph.get_node(current_id) {
-                let name = node_props::name(node).to_string();
-                let signature = node
-                    .properties
-                    .get_string("signature")
-                    .unwrap_or("")
-                    .to_string();
-                let language = {
-                    let l = node_props::language(node);
-                    if l.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        l.to_string()
-                    }
-                };
-
-                // For the root node, use the original URI from params
-                // For other nodes, try to get path from properties or symbol index
-                let node_path = if current_id == node_id {
-                    params.uri.clone()
+        // Convert domain nodes → LSP FunctionNode
+        let nodes: Vec<FunctionNode> = result
+            .nodes
+            .iter()
+            .map(|n| {
+                let uri = if n.path.is_empty() {
+                    self.symbol_index
+                        .find_file_for_node(n.id.parse().unwrap_or_default())
+                        .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
+                        .unwrap_or_default()
                 } else {
-                    let p = node_props::path(node);
-                    if !p.is_empty() {
-                        p.to_string()
-                    } else {
-                        self.symbol_index
-                            .find_file_for_node(current_id)
-                            .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                            .unwrap_or_default()
-                    }
+                    n.path.clone()
                 };
+                domain_node_to_function_node(n, uri)
+            })
+            .collect();
 
-                let start_line = node_props::line_start(node).saturating_sub(1);
-                let start_col = node_props::col_start_from_props(&node.properties);
-                let end_line = node_props::line_end(node).saturating_sub(1);
-                let end_col = node_props::col_end_from_props(&node.properties);
-
-                let func_node = FunctionNode {
-                    id: current_id.to_string(),
-                    name,
-                    signature,
-                    uri: node_path,
-                    range: Range {
-                        start: Position {
-                            line: start_line,
-                            character: start_col,
-                        },
-                        end: Position {
-                            line: end_line,
-                            character: end_col,
-                        },
-                    },
-                    language,
-                };
-
-                if current_id == node_id {
-                    root = Some(func_node.clone());
+        // Convert domain edges → LSP CallEdge
+        let edges: Vec<CallEdge> = result
+            .edges
+            .iter()
+            .map(|e| {
+                let is_recursive = e.from == e.to;
+                CallEdge {
+                    from: e.from.clone(),
+                    to: e.to.clone(),
+                    call_sites: Vec::new(),
+                    is_recursive,
                 }
-
-                nodes.push(func_node);
-
-                // Get call edges based on direction
-                let dir_param = params.direction.as_deref().unwrap_or("both");
-
-                // Collect edges based on direction
-                let collected_edges = Self::collect_edges_for_direction(
-                    &graph, current_id, dir_param, "callers", "callees",
-                );
-
-                for (source_id, target_id, edge_type) in collected_edges {
-                    if edge_type == EdgeType::Calls {
-                        let is_recursive = source_id == target_id;
-
-                        edges.push(CallEdge {
-                            from: source_id.to_string(),
-                            to: target_id.to_string(),
-                            call_sites: Vec::new(), // Could be populated from edge properties
-                            is_recursive,
-                        });
-
-                        let next_node = if source_id == current_id {
-                            target_id
-                        } else {
-                            source_id
-                        };
-
-                        if !visited.contains(&next_node) {
-                            visited.insert(next_node);
-                            queue.push_back((next_node, current_depth + 1));
-                        }
-                    }
-                }
-            }
-        }
+            })
+            .collect();
 
         Ok(CallGraphResponse { root, nodes, edges })
+    }
+}
+
+/// Convert a domain `CallGraphNode` to an LSP `FunctionNode`.
+fn domain_node_to_function_node(
+    node: &crate::domain::call_graph::CallGraphNode,
+    uri: String,
+) -> FunctionNode {
+    FunctionNode {
+        id: node.id.clone(),
+        name: node.name.clone(),
+        signature: node.signature.clone(),
+        uri,
+        range: Range {
+            start: Position {
+                line: node.line_start.saturating_sub(1),
+                character: node.col_start,
+            },
+            end: Position {
+                line: node.line_end.saturating_sub(1),
+                character: node.col_end,
+            },
+        },
+        language: node.language.clone(),
     }
 }
 
@@ -600,163 +443,92 @@ impl CodeGraphBackend {
             .to_file_path()
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
 
-        let graph = self.graph.read().await;
-
-        // Find node at position
-        let node_id = match self.find_node_at_position(&graph, &path, params.position)? {
-            Some(id) => id,
-            None => {
-                return Ok(ImpactAnalysisResponse {
-                    direct_impact: Vec::new(),
-                    indirect_impact: Vec::new(),
-                    affected_tests: Vec::new(),
-                    summary: ImpactSummary {
-                        files_affected: 0,
-                        breaking_changes: 0,
-                        warnings: 0,
-                    },
-                })
+        let node_id = {
+            let graph = self.graph.read().await;
+            match self.find_node_at_position(&graph, &path, params.position)? {
+                Some(id) => id,
+                None => {
+                    return Ok(ImpactAnalysisResponse {
+                        direct_impact: Vec::new(),
+                        indirect_impact: Vec::new(),
+                        affected_tests: Vec::new(),
+                        summary: ImpactSummary {
+                            files_affected: 0,
+                            breaking_changes: 0,
+                            warnings: 0,
+                        },
+                    })
+                }
             }
         };
 
-        let mut direct_impact = Vec::new();
-        let mut indirect_impact = Vec::new();
-        let mut affected_tests = Vec::new();
-        let mut affected_files = HashSet::new();
+        let result = crate::domain::impact::analyze_impact(
+            &self.graph,
+            &self.query_engine,
+            node_id,
+            &params.analysis_type,
+            false,
+            None,
+        )
+        .await;
 
-        // Find direct references
-        let incoming_edges = Self::get_incoming_edges(&graph, node_id);
+        // Convert domain impacted → LSP DirectImpact + AffectedTest
+        let mut direct_impact: Vec<DirectImpact> = Vec::new();
+        let mut affected_tests: Vec<AffectedTest> = Vec::new();
 
-        for (source_id, _target_id, edge_type) in incoming_edges {
-            if let Ok(ref_node) = graph.get_node(source_id) {
-                let ref_path = ref_node
-                    .properties
-                    .get_string("path")
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        self.symbol_index
-                            .find_file_for_node(source_id)
-                            .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                    })
-                    .unwrap_or_default();
-                let ref_name = node_props::name(ref_node).to_string();
+        for sym in &result.impacted {
+            let uri = if sym.path.is_empty() {
+                self.symbol_index
+                    .find_file_for_node(sym.node_id.parse().unwrap_or_default())
+                    .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
+                    .unwrap_or_default()
+            } else {
+                sym.path.clone()
+            };
 
-                affected_files.insert(ref_path.clone());
-
-                let start_line = node_props::line_start(ref_node).saturating_sub(1);
-                let start_col = node_props::col_start_from_props(&ref_node.properties);
-                let end_line = node_props::line_end(ref_node).saturating_sub(1);
-                let end_col = node_props::col_end_from_props(&ref_node.properties);
-
-                let impact_type = match edge_type {
-                    EdgeType::Calls => "caller",
-                    EdgeType::References => "reference",
-                    EdgeType::Extends => "subclass",
-                    EdgeType::Implements => "implementation",
-                    _ => "reference",
-                };
-
-                let severity = match params.analysis_type.as_str() {
-                    "delete" => "breaking",
-                    "rename" => "breaking",
-                    "modify" => "warning",
-                    _ => "info",
-                };
-
-                // Check if it's a test
-                let is_test = ref_name.starts_with("test_")
-                    || ref_name.ends_with("_test")
-                    || ref_path.contains("test");
-
-                if is_test {
-                    affected_tests.push(AffectedTest {
-                        uri: ref_path.clone(),
-                        test_name: ref_name,
-                    });
-                }
-
-                direct_impact.push(DirectImpact {
-                    uri: ref_path,
-                    range: Range {
-                        start: Position {
-                            line: start_line,
-                            character: start_col,
-                        },
-                        end: Position {
-                            line: end_line,
-                            character: end_col,
-                        },
-                    },
-                    impact_type: impact_type.to_string(),
-                    severity: severity.to_string(),
+            if sym.is_test {
+                affected_tests.push(AffectedTest {
+                    uri: uri.clone(),
+                    test_name: sym.name.clone(),
                 });
             }
+
+            direct_impact.push(DirectImpact {
+                uri,
+                range: Range {
+                    start: Position {
+                        line: sym.line_start.saturating_sub(1),
+                        character: sym.col_start,
+                    },
+                    end: Position {
+                        line: sym.line_end.saturating_sub(1),
+                        character: sym.col_end,
+                    },
+                },
+                impact_type: sym.impact_type.clone(),
+                severity: sym.severity.clone(),
+            });
         }
 
-        // Find indirect impact using built-in graph traversal
-        let mut indirect_visited: HashSet<NodeId> = HashSet::new();
-        indirect_visited.insert(node_id);
-
-        for impact in &direct_impact {
-            if let Ok(impact_nodes) = graph.query().property("path", impact.uri.clone()).execute() {
-                for n_id in impact_nodes {
-                    if n_id == node_id {
-                        continue;
-                    }
-                    indirect_visited.insert(n_id);
-
-                    // Follow incoming edges up to 2 levels from each direct impact
-                    if let Ok(indirect_ids) = graph.bfs(n_id, Direction::Incoming, Some(2)) {
-                        for indirect_id in indirect_ids {
-                            if indirect_id == node_id || indirect_visited.contains(&indirect_id) {
-                                continue;
-                            }
-                            indirect_visited.insert(indirect_id);
-
-                            if let Ok(ref_node) = graph.get_node(indirect_id) {
-                                let ref_path = ref_node
-                                    .properties
-                                    .get_string("path")
-                                    .map(|s| s.to_string())
-                                    .or_else(|| {
-                                        self.symbol_index
-                                            .find_file_for_node(indirect_id)
-                                            .and_then(|p| p.to_str().map(|s| format!("file://{s}")))
-                                    })
-                                    .unwrap_or_default();
-
-                                if !affected_files.contains(&ref_path) {
-                                    indirect_impact.push(IndirectImpact {
-                                        uri: ref_path.clone(),
-                                        path: vec![impact.uri.clone(), ref_path],
-                                        severity: "warning".to_string(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let breaking_count = direct_impact
-            .iter()
-            .filter(|i| i.severity == "breaking")
-            .count();
-        let warning_count = direct_impact
-            .iter()
-            .filter(|i| i.severity == "warning")
-            .count()
-            + indirect_impact.len();
+        // Convert domain indirect_impacted → LSP IndirectImpact
+        let indirect_impact: Vec<IndirectImpact> = result
+            .indirect_impacted
+            .into_iter()
+            .map(|i| IndirectImpact {
+                uri: i.path,
+                path: i.via_path,
+                severity: i.severity,
+            })
+            .collect();
 
         Ok(ImpactAnalysisResponse {
             direct_impact,
             indirect_impact,
             affected_tests,
             summary: ImpactSummary {
-                files_affected: affected_files.len(),
-                breaking_changes: breaking_count,
-                warnings: warning_count,
+                files_affected: result.files_affected,
+                breaking_changes: result.breaking_changes,
+                warnings: result.warnings,
             },
         })
     }
@@ -853,7 +625,7 @@ mod tests {
     use super::*;
     use crate::ai_query::QueryEngine;
     use crate::backend::CodeGraphBackend;
-    use codegraph::{CodeGraph, NodeType, PropertyMap, PropertyValue};
+    use codegraph::{CodeGraph, EdgeType, NodeId, NodeType, PropertyMap, PropertyValue};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1005,6 +777,8 @@ mod tests {
         };
 
         let query_engine = Arc::new(QueryEngine::new(Arc::clone(&graph)));
+        // Build caller/callee indexes so get_callees/get_callers work in tests
+        query_engine.build_indexes().await;
         let backend = CodeGraphBackend::new_for_test(graph, query_engine);
 
         // Add to symbol index
@@ -1472,46 +1246,4 @@ mod tests {
         assert!(response.metrics.is_empty());
     }
 
-    // ==========================================
-    // Edge collection helper tests
-    // ==========================================
-
-    #[tokio::test]
-    async fn test_collect_edges_for_direction_both() {
-        let (backend, func1_id, _func2_id) = create_backend_with_calls().await;
-        let graph = backend.graph.read().await;
-
-        let edges = CodeGraphBackend::collect_edges_for_direction(
-            &graph, func1_id, "both", "callers", "callees",
-        );
-
-        // func1 calls func2, so there should be an outgoing edge
-        assert!(!edges.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_collect_edges_for_direction_callees_only() {
-        let (backend, func1_id, _func2_id) = create_backend_with_calls().await;
-        let graph = backend.graph.read().await;
-
-        // Test func1 with direction = "callers" which matches skip_outgoing, so only incoming checked
-        // func1 (main) has no incoming edges (nothing calls it)
-        let edges = CodeGraphBackend::collect_edges_for_direction(
-            &graph, func1_id, "callers", "callers", "callees",
-        );
-
-        // func1 has no incoming edges (nothing calls main), so should be empty
-        assert!(edges.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_get_incoming_edges() {
-        let (backend, func1_id, func2_id) = create_backend_with_calls().await;
-        let graph = backend.graph.read().await;
-
-        // func2 is called by func1, so incoming edges to func2 should have func1
-        let edges = CodeGraphBackend::get_incoming_edges(&graph, func2_id);
-        assert!(!edges.is_empty());
-        assert!(edges.iter().any(|(src, _, _)| *src == func1_id));
-    }
 }
