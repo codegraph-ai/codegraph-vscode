@@ -4,6 +4,7 @@
 //! and MCP transports. Functions here know nothing about JSON-RPC, tower-lsp,
 //! or MCP protocol types.
 
+pub(crate) mod ai_context;
 pub(crate) mod complexity;
 pub(crate) mod node_props;
 pub(crate) mod node_resolution;
