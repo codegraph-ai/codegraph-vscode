@@ -292,6 +292,30 @@ pub struct DetailedSymbolResponse {
 }
 
 // ==========================================
+// Get Detailed Symbol Response (with source code)
+// ==========================================
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetDetailedSymbolResponse {
+    pub symbol: SymbolInfoResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub callers: Vec<CallInfoResponse>,
+    pub callees: Vec<CallInfoResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<u32>,
+    pub lines_of_code: usize,
+    pub is_public: bool,
+    pub is_deprecated: bool,
+    pub reference_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_message: Option<String>,
+}
+
+// ==========================================
 // Find By Signature Request
 // ==========================================
 
@@ -532,34 +556,30 @@ impl CodeGraphBackend {
     pub async fn handle_get_callers(&self, params: GetCallersParams) -> Result<GetCallersResponse> {
         let start = std::time::Instant::now();
 
-        let (node_id, used_fallback, fallback_message) = self
+        let (node_id, used_fallback, _) = self
             .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
             .await?;
         let depth = params.depth.unwrap_or(1);
 
-        let results = self.query_engine.get_callers(node_id, depth).await;
-
-        let callers = results
-            .into_iter()
-            .map(|c| CallInfoResponse {
-                node_id: c.node_id.to_string(),
-                symbol: symbol_info_to_response(&c.symbol),
-                call_site: SymbolLocationResponse {
-                    file: c.call_site.file,
-                    line: c.call_site.line,
-                    column: c.call_site.column,
-                    end_line: c.call_site.end_line,
-                    end_column: c.call_site.end_column,
-                },
-                depth: c.depth,
-            })
-            .collect();
+        let domain_result = crate::domain::callers::get_callers(
+            &self.graph,
+            &self.query_engine,
+            node_id,
+            depth,
+            used_fallback,
+            params.line,
+        )
+        .await;
 
         Ok(GetCallersResponse {
-            callers,
+            callers: domain_result
+                .callers
+                .into_iter()
+                .map(call_info_to_response)
+                .collect(),
             query_time_ms: start.elapsed().as_millis() as u64,
-            used_fallback: if used_fallback { Some(true) } else { None },
-            fallback_message,
+            used_fallback: domain_result.used_fallback,
+            fallback_message: domain_result.fallback_message,
         })
     }
 
@@ -567,34 +587,30 @@ impl CodeGraphBackend {
     pub async fn handle_get_callees(&self, params: GetCallersParams) -> Result<GetCallersResponse> {
         let start = std::time::Instant::now();
 
-        let (node_id, used_fallback, fallback_message) = self
+        let (node_id, used_fallback, _) = self
             .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
             .await?;
         let depth = params.depth.unwrap_or(1);
 
-        let results = self.query_engine.get_callees(node_id, depth).await;
-
-        let callers = results
-            .into_iter()
-            .map(|c| CallInfoResponse {
-                node_id: c.node_id.to_string(),
-                symbol: symbol_info_to_response(&c.symbol),
-                call_site: SymbolLocationResponse {
-                    file: c.call_site.file,
-                    line: c.call_site.line,
-                    column: c.call_site.column,
-                    end_line: c.call_site.end_line,
-                    end_column: c.call_site.end_column,
-                },
-                depth: c.depth,
-            })
-            .collect();
+        let domain_result = crate::domain::callers::get_callees(
+            &self.graph,
+            &self.query_engine,
+            node_id,
+            depth,
+            used_fallback,
+            params.line,
+        )
+        .await;
 
         Ok(GetCallersResponse {
-            callers,
+            callers: domain_result
+                .callees
+                .into_iter()
+                .map(call_info_to_response)
+                .collect(),
             query_time_ms: start.elapsed().as_millis() as u64,
-            used_fallback: if used_fallback { Some(true) } else { None },
-            fallback_message,
+            used_fallback: domain_result.used_fallback,
+            fallback_message: domain_result.fallback_message,
         })
     }
 
@@ -603,70 +619,111 @@ impl CodeGraphBackend {
         &self,
         params: GetDetailedInfoParams,
     ) -> Result<DetailedSymbolResponse> {
-        let (node_id, used_fallback, fallback_message) = self
+        let (node_id, used_fallback, _) = self
             .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
             .await?;
-
-        let info = self
-            .query_engine
-            .get_symbol_info(node_id)
-            .await
-            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Symbol not found"))?;
 
         let include_callers = params.include_callers.unwrap_or(true);
         let include_callees = params.include_callees.unwrap_or(true);
 
+        let domain_result = crate::domain::symbol_info::get_symbol_info(
+            &self.graph,
+            &self.query_engine,
+            node_id,
+            include_callers || include_callees,
+            used_fallback,
+            params.line,
+        )
+        .await
+        .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Symbol not found"))?;
+
         let callers = if include_callers {
-            info.callers
+            domain_result
+                .callers
+                .unwrap_or_default()
                 .into_iter()
-                .map(|c| CallInfoResponse {
-                    node_id: c.node_id.to_string(),
-                    symbol: symbol_info_to_response(&c.symbol),
-                    call_site: SymbolLocationResponse {
-                        file: c.call_site.file,
-                        line: c.call_site.line,
-                        column: c.call_site.column,
-                        end_line: c.call_site.end_line,
-                        end_column: c.call_site.end_column,
-                    },
-                    depth: c.depth,
-                })
+                .map(call_info_to_response)
                 .collect()
         } else {
             Vec::new()
         };
 
         let callees = if include_callees {
-            info.callees
+            domain_result
+                .callees
+                .unwrap_or_default()
                 .into_iter()
-                .map(|c| CallInfoResponse {
-                    node_id: c.node_id.to_string(),
-                    symbol: symbol_info_to_response(&c.symbol),
-                    call_site: SymbolLocationResponse {
-                        file: c.call_site.file,
-                        line: c.call_site.line,
-                        column: c.call_site.column,
-                        end_line: c.call_site.end_line,
-                        end_column: c.call_site.end_column,
-                    },
-                    depth: c.depth,
-                })
+                .map(call_info_to_response)
                 .collect()
         } else {
             Vec::new()
         };
 
         Ok(DetailedSymbolResponse {
-            symbol: symbol_info_to_response(&info.symbol),
+            symbol: symbol_info_to_response(&domain_result.symbol),
             callers,
             callees,
+            complexity: domain_result.complexity,
+            lines_of_code: domain_result.lines_of_code,
+            is_public: domain_result.is_public,
+            is_deprecated: domain_result.is_deprecated,
+            reference_count: domain_result.reference_count,
+            used_fallback: domain_result.used_fallback,
+            fallback_message: domain_result.fallback_message,
+        })
+    }
+
+    /// Handle get detailed symbol request (with optional source code)
+    pub async fn handle_get_detailed_symbol(
+        &self,
+        params: GetDetailedSymbolParams,
+    ) -> Result<GetDetailedSymbolResponse> {
+        let (node_id, used_fallback, _) = self
+            .resolve_node_id_with_fallback(&params.node_id, &params.uri, &params.line)
+            .await?;
+
+        let include_source = params.include_source.unwrap_or(false);
+        let include_callers = params.include_callers.unwrap_or(true);
+        let include_callees = params.include_callees.unwrap_or(true);
+
+        let domain_result = crate::domain::symbol_info::get_detailed_symbol(
+            &self.graph,
+            &self.query_engine,
+            node_id,
+            include_source,
+            include_callers,
+            include_callees,
+            used_fallback,
+            params.line,
+        )
+        .await;
+
+        let info = domain_result
+            .symbol
+            .ok_or_else(|| tower_lsp::jsonrpc::Error::invalid_params("Symbol not found"))?;
+
+        Ok(GetDetailedSymbolResponse {
+            symbol: symbol_info_to_response(&info.symbol),
+            source: domain_result.source,
+            callers: domain_result
+                .callers
+                .unwrap_or_default()
+                .into_iter()
+                .map(call_info_to_response)
+                .collect(),
+            callees: domain_result
+                .callees
+                .unwrap_or_default()
+                .into_iter()
+                .map(call_info_to_response)
+                .collect(),
             complexity: info.complexity,
             lines_of_code: info.lines_of_code,
             is_public: info.is_public,
             is_deprecated: info.is_deprecated,
             reference_count: info.reference_count,
-            used_fallback: if used_fallback { Some(true) } else { None },
-            fallback_message,
+            used_fallback: domain_result.used_fallback,
+            fallback_message: domain_result.fallback_message,
         })
     }
 
@@ -764,6 +821,22 @@ impl CodeGraphBackend {
         };
 
         Ok((node_id, used_fallback, fallback_message))
+    }
+}
+
+/// Helper to convert internal CallInfo to response format
+fn call_info_to_response(c: crate::ai_query::CallInfo) -> CallInfoResponse {
+    CallInfoResponse {
+        node_id: c.node_id.to_string(),
+        symbol: symbol_info_to_response(&c.symbol),
+        call_site: SymbolLocationResponse {
+            file: c.call_site.file,
+            line: c.call_site.line,
+            column: c.call_site.column,
+            end_line: c.call_site.end_line,
+            end_column: c.call_site.end_column,
+        },
+        depth: c.depth,
     }
 }
 

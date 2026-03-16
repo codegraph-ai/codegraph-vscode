@@ -2,7 +2,7 @@
 
 use crate::backend::CodeGraphBackend;
 use crate::handlers::ai_context::LocationInfo;
-use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
+use codegraph::{CodeGraph, NodeId, NodeType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tower_lsp::jsonrpc::Result;
@@ -345,143 +345,39 @@ impl CodeGraphBackend {
             .to_file_path()
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("Invalid file path"))?;
 
-        let graph = self.graph.read().await;
-        let _include_external = params.include_external.unwrap_or(false);
-
-        // Get all symbols in this file
         let file_symbols: HashSet<NodeId> = self
             .symbol_index
             .get_file_symbols(&path)
             .into_iter()
             .collect();
 
-        let mut dependents: Vec<String> = Vec::new();
-        let mut dependencies: Vec<String> = Vec::new();
-        let mut internal_refs = 0u32;
-        let mut external_refs = 0u32;
-
-        // Analyze each symbol in the file
-        for node_id in &file_symbols {
-            // Outgoing edges (what we depend on)
-            let outgoing = self.get_connected_edges(&graph, *node_id, Direction::Outgoing);
-            for (_, target, edge_type) in outgoing {
-                if edge_type == EdgeType::Imports || edge_type == EdgeType::Calls {
-                    if file_symbols.contains(&target) {
-                        internal_refs += 1;
-                    } else {
-                        external_refs += 1;
-                        // Get the file path of the dependency
-                        if let Ok(target_node) = graph.get_node(target) {
-                            if let Some(dep_path) = target_node.properties.get_string("path") {
-                                let dep_name = std::path::Path::new(dep_path)
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                if !dependencies.contains(&dep_name) {
-                                    dependencies.push(dep_name);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Incoming edges (who depends on us)
-            let incoming = self.get_connected_edges(&graph, *node_id, Direction::Incoming);
-            for (source, _, edge_type) in incoming {
-                if (edge_type == EdgeType::Imports || edge_type == EdgeType::Calls)
-                    && !file_symbols.contains(&source)
-                {
-                    if let Ok(source_node) = graph.get_node(source) {
-                        if let Some(src_path) = source_node.properties.get_string("path") {
-                            let src_name = std::path::Path::new(src_path)
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            if !dependents.contains(&src_name) {
-                                dependents.push(src_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let afferent = dependents.len() as u32;
-        let efferent = dependencies.len() as u32;
-        let instability = if afferent + efferent > 0 {
-            efferent as f64 / (afferent + efferent) as f64
-        } else {
-            0.0
-        };
-
-        let total_refs = internal_refs + external_refs;
-        let internal_ratio = if total_refs > 0 {
-            internal_refs as f64 / total_refs as f64
-        } else {
-            1.0
-        };
-
-        // Determine cohesion type
-        let cohesion_type = if internal_ratio > 0.7 {
-            "functional"
-        } else if internal_ratio > 0.4 {
-            "sequential"
-        } else {
-            "coincidental"
-        };
-
-        // Generate recommendations
-        let mut recommendations = Vec::new();
-        let mut violations = Vec::new();
-
-        if instability > 0.8 {
-            recommendations.push(
-                "High instability - this module depends on many others. Consider reducing dependencies."
-                    .to_string(),
-            );
-        }
-
-        if instability < 0.2 && efferent > 5 {
-            violations.push(ArchViolation {
-                violation_type: "stable_dependency".to_string(),
-                severity: "warning".to_string(),
-                description: "Stable module has many outgoing dependencies".to_string(),
-                suggestion: "Consider extracting dependencies to make module more focused"
-                    .to_string(),
-            });
-        }
-
-        if internal_ratio < 0.3 {
-            recommendations.push(
-                "Low cohesion - functions in this module don't reference each other much. Consider splitting."
-                    .to_string(),
-            );
-        }
-
-        if afferent > 10 {
-            recommendations.push(format!(
-                "Many modules ({afferent}) depend on this one. Changes here have wide impact."
-            ));
-        }
+        let graph = self.graph.read().await;
+        let result = crate::domain::coupling::analyze_coupling_for_file(&graph, file_symbols);
 
         Ok(CouplingResponse {
             coupling: CouplingMetrics {
-                afferent,
-                efferent,
-                instability,
-                dependents,
-                dependencies,
+                afferent: result.coupling.afferent,
+                efferent: result.coupling.efferent,
+                instability: result.coupling.instability,
+                dependents: result.coupling.dependents,
+                dependencies: result.coupling.dependencies,
             },
             cohesion: CohesionMetrics {
-                score: internal_ratio,
-                cohesion_type: cohesion_type.to_string(),
-                internal_reference_ratio: internal_ratio,
+                score: result.cohesion.score,
+                cohesion_type: result.cohesion.cohesion_type,
+                internal_reference_ratio: result.cohesion.internal_reference_ratio,
             },
-            violations,
-            recommendations,
+            violations: result
+                .violations
+                .into_iter()
+                .map(|v| ArchViolation {
+                    violation_type: v.violation_type,
+                    severity: v.severity,
+                    description: v.description,
+                    suggestion: v.suggestion,
+                })
+                .collect(),
+            recommendations: result.recommendations,
         })
     }
 }
@@ -519,7 +415,7 @@ mod tests {
 
     mod unused_code_tests {
         use super::*;
-        use codegraph::{CodeGraph, PropertyMap, PropertyValue};
+        use codegraph::{CodeGraph, EdgeType, PropertyMap, PropertyValue};
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
