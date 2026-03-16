@@ -100,6 +100,21 @@ Interfaces like `*Params` used as generic type arguments (`new RequestType<Depen
 ### 21. Cross-file `new ClassName()` instantiation detection
 `new ClassName()` in another file doesn't create an Instantiates edge to the class definition. The mapper only creates Instantiates for same-file `new` expressions. Needs cross-file resolution similar to how `resolve_cross_file_imports` works for Imports edges.
 
+### 32. Multi-arch symbol deduplication for C
+In multi-platform C codebases (e.g. open-vm-tools), the same function exists in arch-specific files (`backdoorGcc32.c`, `backdoorGcc64.c`, `backdoorGcc64_arm64.c`). The graph creates separate nodes for each variant, but call edges point to only one. Querying callers of the other variant returns 0. Need either: (a) merge arch variants into a single logical symbol with multiple definitions, or (b) cross-link variants so querying any one returns callers of all.
+
+### 33. Platform-aware indexing for C stubs
+When all source files are indexed equally, `free()` resolves to the Solaris `kmem_free` stub (`kernelStubsSolaris.c`) and `g_mutex_lock` resolves to empty GLib stubs. In multi-platform repos, common libc/framework functions get resolved to whichever platform stub was indexed. Could be addressed by: (a) platform exclude patterns (e.g. skip `modules/solaris/` on Linux builds), (b) stub detection heuristic (empty body or single-line wrapper → lower precedence), or (c) user-configured platform filter.
+
+### 34. Caller snippet length control in get_ai_context
+When a caller function is large (85+ lines), the full source is included even though only a few lines are relevant to the target symbol. The signature-only mode helps for token-constrained budgets, but full-source callers can still dominate the context. Could truncate to the relevant call site ± N lines, or show the call expression in context rather than the entire caller body.
+
+### 35. Struct-dispatch / vtable caller detection for C
+Functions registered in vtable structs (e.g. `vmkRDMAOps.getPrivStats = irndrv_RDMAOpGetPrivStats`) are never called by name — they're dispatched via struct field access. The graph only tracks direct `callee(func_name)` edges from call expressions. Detecting vtable dispatch requires pointer/struct field analysis: trace who holds the struct and invokes the field. This is a fundamental limitation of static call-graph analysis for C callback/vtable patterns.
+
+### 36. Architecture neighbor descriptions in get_ai_context
+The `architecture.neighbors` field returns module names only (e.g. `["message", "copyPasteCompat", "timeSync"]`) with no indication of whether they are callers, callees, or import dependents, and no description of what each module does. Adding relationship type and a one-line summary (from doc comments or file-level comments) would make this field more useful for AI agents.
+
 ---
 
 ## Completed
