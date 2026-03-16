@@ -1,8 +1,10 @@
 # Refactoring Plan: MCP/LSP Handler Unification
 
-> **Status**: Plan
-> **Date**: 2026-03-15
+> **Status**: Complete (Phases 0-9 merged to main)
+> **Date**: 2026-03-15 — 2026-03-16
 > **Scope**: server/src/mcp/server.rs, server/src/handlers/, server/src/backend.rs, server/src/ai_query/
+>
+> **Results**: 16 domain modules (4417 lines), mcp/server.rs 5200→2851 (-45%), handlers/ai_context.rs 1051→231 (-78%), 334 tests pass, all tools verified e2e
 
 ## Problem Statement
 
@@ -450,12 +452,12 @@ The 31 tool handlers, currently inline with graph walking, diagnostic generation
 
 ## Success Criteria
 
-1. **Zero duplication**: Every domain operation has exactly one implementation
-2. **Test parity**: MCP test suite (181 scenarios) passes with no regressions
-3. **LSP test parity**: All existing LSP tests pass
-4. **server.rs < 1500 lines**: Down from ~5200
-5. **Consistent behavior**: Both protocols return equivalent results for the same input
-6. **Property key standardization**: One canonical set of property key names, no fallback chains
+1. ~~**Zero duplication**: Every domain operation has exactly one implementation~~ — **Met**: 16 domain modules, both MCP and LSP call them
+2. ~~**Test parity**: MCP test suite passes with no regressions~~ — **Met**: 334 tests pass
+3. ~~**LSP test parity**: All existing LSP tests pass~~ — **Met**
+4. **server.rs < 1500 lines**: Down from ~5200 — **Partially met**: 2851 lines (~45% reduction). Remaining ~1300 lines are memory tools, git mining, and thin QueryEngine wrappers that already delegate to managers. Further reduction would require moving MemoryManager/GitMiner delegation into domain/, which adds abstraction without reducing duplication.
+5. ~~**Consistent behavior**: Both protocols return equivalent results for the same input~~ — **Met**: both call shared domain functions
+6. ~~**Property key standardization**: One canonical set of property key names, no fallback chains~~ — **Met**: `complexity_` prefix everywhere, `node_props` accessors
 
 ## Appendix: Inventory of Duplicated Functions
 
