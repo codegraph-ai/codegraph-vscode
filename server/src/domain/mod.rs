@@ -5,9 +5,17 @@
 //! or MCP protocol types.
 
 pub(crate) mod ai_context;
+pub(crate) mod call_graph;
+pub(crate) mod callers;
 pub(crate) mod complexity;
+pub(crate) mod coupling;
+pub(crate) mod curated_context;
+pub(crate) mod dependency_graph;
+pub(crate) mod edit_context;
+pub(crate) mod impact;
 pub(crate) mod node_props;
 pub(crate) mod node_resolution;
 pub(crate) mod related_tests;
 pub(crate) mod source_code;
+pub(crate) mod symbol_info;
 pub(crate) mod unused_code;

@@ -954,66 +954,16 @@ impl McpServer {
                 };
 
                 if let Some(start) = start_node {
-                    let result = self.backend.query_engine.get_callers(start, depth).await;
-
-                    // Get symbol name for fallback message
-                    let symbol_name = {
-                        let graph = self.backend.graph.read().await;
-                        graph
-                            .get_node(start)
-                            .ok()
-                            .map(|n| node_props::name(n).to_string())
-                            .unwrap_or_default()
-                    };
-
-                    if result.is_empty() {
-                        // Return diagnostic info when no callers found
-                        let graph = self.backend.graph.read().await;
-                        let edge_count = graph.edge_count();
-                        let mut response = serde_json::json!({
-                            "callers": [],
-                            "diagnostic": {
-                                "node_found": true,
-                                "node_id": start,
-                                "symbol_name": symbol_name,
-                                "total_edges_in_graph": edge_count,
-                                "note": "No callers found. This may indicate: (1) the function is not called anywhere, (2) the language parser doesn't extract call relationships, or (3) indexes need to be rebuilt."
-                            }
-                        });
-                        // Add fallback metadata if used
-                        if used_fallback {
-                            if let Some(obj) = response.as_object_mut() {
-                                obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                                obj.insert(
-                                    "fallback_message".to_string(),
-                                    serde_json::json!(format!(
-                                        "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                        line.unwrap_or(0),
-                                        symbol_name
-                                    )),
-                                );
-                            }
-                        }
-                        Ok(response)
-                    } else {
-                        let response = serde_json::to_value(&result).map_err(|e| e.to_string())?;
-                        // Wrap in object with callers key and add fallback metadata
-                        let mut obj = serde_json::Map::new();
-                        obj.insert("callers".to_string(), response);
-                        obj.insert("symbol_name".to_string(), serde_json::json!(symbol_name));
-                        if used_fallback {
-                            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                            obj.insert(
-                                "fallback_message".to_string(),
-                                serde_json::json!(format!(
-                                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                    line.unwrap_or(0),
-                                    symbol_name
-                                )),
-                            );
-                        }
-                        Ok(serde_json::Value::Object(obj))
-                    }
+                    let result = crate::domain::callers::get_callers(
+                        &self.backend.graph,
+                        &self.backend.query_engine,
+                        start,
+                        depth,
+                        used_fallback,
+                        line,
+                    )
+                    .await;
+                    Ok(result)
                 } else {
                     Ok(serde_json::json!({
                         "callers": [],
@@ -1048,68 +998,16 @@ impl McpServer {
                 };
 
                 if let Some(start) = start_node {
-                    let result = self.backend.query_engine.get_callees(start, depth).await;
-
-                    // Get symbol name for fallback message
-                    let symbol_name = {
-                        let graph = self.backend.graph.read().await;
-                        graph
-                            .get_node(start)
-                            .ok()
-                            .map(|n| node_props::name(n).to_string())
-                            .unwrap_or_default()
-                    };
-
-                    if result.is_empty() {
-                        // Return diagnostic info when no callees found
-                        let graph = self.backend.graph.read().await;
-                        let edge_count = graph.edge_count();
-                        let mut response = serde_json::json!({
-                            "callees": [],
-                            "diagnostic": {
-                                "node_found": true,
-                                "node_id": start,
-                                "symbol_name": symbol_name,
-                                "total_edges_in_graph": edge_count,
-                                "note": "No callees found. This may indicate: (1) the function doesn't call other functions, (2) the language parser doesn't extract call relationships, or (3) indexes need to be rebuilt."
-                            }
-                        });
-                        // Add fallback metadata if used
-                        if used_fallback {
-                            if let Some(obj) = response.as_object_mut() {
-                                obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                                obj.insert(
-                                    "fallback_message".to_string(),
-                                    serde_json::json!(format!(
-                                        "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                        line.unwrap_or(0),
-                                        symbol_name
-                                    )),
-                                );
-                            }
-                        }
-                        Ok(response)
-                    } else {
-                        // Wrap in object with callees key and add fallback metadata
-                        let mut obj = serde_json::Map::new();
-                        obj.insert(
-                            "callees".to_string(),
-                            serde_json::to_value(&result).map_err(|e| e.to_string())?,
-                        );
-                        obj.insert("symbol_name".to_string(), serde_json::json!(symbol_name));
-                        if used_fallback {
-                            obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                            obj.insert(
-                                "fallback_message".to_string(),
-                                serde_json::json!(format!(
-                                    "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                    line.unwrap_or(0),
-                                    symbol_name
-                                )),
-                            );
-                        }
-                        Ok(serde_json::Value::Object(obj))
-                    }
+                    let result = crate::domain::callers::get_callees(
+                        &self.backend.graph,
+                        &self.backend.query_engine,
+                        start,
+                        depth,
+                        used_fallback,
+                        line,
+                    )
+                    .await;
+                    Ok(result)
                 } else {
                     Ok(serde_json::json!({
                         "callees": [],
@@ -1284,39 +1182,17 @@ impl McpServer {
                 };
 
                 if let Some(node_id) = target_node {
-                    let result = self.backend.query_engine.get_symbol_info(node_id).await;
-                    match result {
-                        Some(info) => {
-                            let mut response =
-                                serde_json::to_value(&info).map_err(|e| e.to_string())?;
-                            // Add fallback metadata if used
-                            if used_fallback {
-                                if let Some(obj) = response.as_object_mut() {
-                                    obj.insert(
-                                        "used_fallback".to_string(),
-                                        serde_json::json!(true),
-                                    );
-                                    obj.insert(
-                                        "fallback_message".to_string(),
-                                        serde_json::json!(format!(
-                                            "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                            line.unwrap_or(0),
-                                            info.symbol.name
-                                        )),
-                                    );
-                                }
-                            }
-                            // Strip callers/callees/dependencies/dependents when includeReferences=false
-                            if !include_refs {
-                                if let Some(obj) = response.as_object_mut() {
-                                    obj.remove("callers");
-                                    obj.remove("callees");
-                                    obj.remove("dependencies");
-                                    obj.remove("dependents");
-                                }
-                            }
-                            Ok(response)
-                        }
+                    match crate::domain::symbol_info::get_symbol_info(
+                        &self.backend.graph,
+                        &self.backend.query_engine,
+                        node_id,
+                        include_refs,
+                        used_fallback,
+                        line,
+                    )
+                    .await
+                    {
+                        Some(response) => Ok(response),
                         None => Ok(serde_json::json!({
                             "error": "Symbol not found"
                         })),
@@ -1364,61 +1240,17 @@ impl McpServer {
                 };
 
                 if let Some(node_id) = target_node {
-                    let mut result = serde_json::Map::new();
-
-                    // Get basic symbol info
-                    let symbol_name = if let Some(info) =
-                        self.backend.query_engine.get_symbol_info(node_id).await
-                    {
-                        let name = info.symbol.name.clone();
-                        result.insert(
-                            "symbol".to_string(),
-                            serde_json::to_value(&info).unwrap_or(Value::Null),
-                        );
-                        name
-                    } else {
-                        String::new()
-                    };
-
-                    // Add fallback metadata if used
-                    if used_fallback {
-                        result.insert("used_fallback".to_string(), serde_json::json!(true));
-                        result.insert(
-                            "fallback_message".to_string(),
-                            serde_json::json!(format!(
-                                "No symbol at line {}. Using nearest symbol '{}' instead.",
-                                line.unwrap_or(0),
-                                symbol_name
-                            )),
-                        );
-                    }
-
-                    // Get source code if requested
-                    if include_source {
-                        if let Some(source) = self.get_symbol_source(node_id).await {
-                            result.insert("source".to_string(), Value::String(source));
-                        }
-                    }
-
-                    // Get callers if requested
-                    if include_callers {
-                        let callers = self.backend.query_engine.get_callers(node_id, 1).await;
-                        result.insert(
-                            "callers".to_string(),
-                            serde_json::to_value(&callers).unwrap_or(Value::Array(vec![])),
-                        );
-                    }
-
-                    // Get callees if requested
-                    if include_callees {
-                        let callees = self.backend.query_engine.get_callees(node_id, 1).await;
-                        result.insert(
-                            "callees".to_string(),
-                            serde_json::to_value(&callees).unwrap_or(Value::Array(vec![])),
-                        );
-                    }
-
-                    Ok(Value::Object(result))
+                    Ok(crate::domain::symbol_info::get_detailed_symbol(
+                        &self.backend.graph,
+                        &self.backend.query_engine,
+                        node_id,
+                        include_source,
+                        include_callers,
+                        include_callees,
+                        used_fallback,
+                        line,
+                    )
+                    .await)
                 } else {
                     Ok(serde_json::json!({
                         "error": "Could not find symbol. Provide either nodeId or uri+line."
@@ -1441,7 +1273,7 @@ impl McpServer {
                     .get("direction")
                     .and_then(|v| v.as_str())
                     .unwrap_or("both");
-                let include_external = args
+                let _include_external = args
                     .get("includeExternal")
                     .or_else(|| args.get("include_external"))
                     .and_then(|v| v.as_bool())
@@ -1451,9 +1283,18 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let result = self
-                    .get_dependency_graph(uri, depth, direction, include_external)
-                    .await;
+                let result = {
+                    let url = tower_lsp::lsp_types::Url::parse(uri)
+                        .map_err(|_| "Invalid URI".to_string())?;
+                    let path = url
+                        .to_file_path()
+                        .map_err(|_| "Invalid file path".to_string())?;
+                    let path_str = path.to_string_lossy().to_string();
+                    let graph = self.backend.graph.read().await;
+                    crate::domain::dependency_graph::get_dependency_graph(
+                        &graph, &path_str, depth, direction,
+                    )
+                };
 
                 if summary {
                     let node_count = result
@@ -1475,7 +1316,7 @@ impl McpServer {
                         }
                     }))
                 } else {
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    Ok(result)
                 }
             }
 
@@ -1503,7 +1344,31 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let result = self.get_call_graph(uri, line, depth, direction).await;
+                let (start_node, used_fallback) =
+                    match self.find_nearest_node_with_fallback(uri, line).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    };
+
+                let result = match start_node {
+                    Some(start) => {
+                        crate::domain::call_graph::get_call_graph(
+                            &self.backend.graph,
+                            &self.backend.query_engine,
+                            start,
+                            depth,
+                            direction,
+                            used_fallback,
+                            Some(line),
+                        )
+                        .await
+                    }
+                    None => serde_json::json!({
+                        "nodes": [],
+                        "edges": [],
+                        "message": "Could not find symbol at location"
+                    }),
+                };
 
                 if summary {
                     let caller_count = result
@@ -1530,7 +1395,7 @@ impl McpServer {
                         }
                     }))
                 } else {
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    Ok(result)
                 }
             }
 
@@ -1554,7 +1419,30 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let result = self.analyze_impact(uri, line, change_type).await;
+                let (start_node, used_fallback) =
+                    match self.find_nearest_node_with_fallback(uri, line).await {
+                        Some((id, fallback)) => (Some(id), fallback),
+                        None => (None, false),
+                    };
+
+                let result = match start_node {
+                    Some(start) => {
+                        crate::domain::impact::analyze_impact(
+                            &self.backend.graph,
+                            &self.backend.query_engine,
+                            start,
+                            change_type,
+                            used_fallback,
+                            Some(line),
+                        )
+                        .await
+                    }
+                    None => serde_json::json!({
+                        "impacted": [],
+                        "risk_level": "unknown",
+                        "message": "Could not find symbol at location"
+                    }),
+                };
 
                 if summary {
                     let total_impacted = result
@@ -1588,7 +1476,7 @@ impl McpServer {
                         }
                     }))
                 } else {
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    Ok(result)
                 }
             }
 
@@ -1607,7 +1495,16 @@ impl McpServer {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let result = self.analyze_coupling(uri, depth).await;
+                let result = {
+                    let url = tower_lsp::lsp_types::Url::parse(uri)
+                        .map_err(|_| "Invalid URI".to_string())?;
+                    let path = url
+                        .to_file_path()
+                        .map_err(|_| "Invalid file path".to_string())?;
+                    let path_str = path.to_string_lossy().to_string();
+                    let graph = self.backend.graph.read().await;
+                    crate::domain::coupling::analyze_coupling(&graph, &path_str, uri, depth)
+                };
 
                 if summary {
                     // Return just metrics, omit the full dependency_graph
@@ -1620,7 +1517,7 @@ impl McpServer {
                         "metrics": metrics,
                     }))
                 } else {
-                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    Ok(result)
                 }
             }
 
@@ -1682,8 +1579,23 @@ impl McpServer {
                     .map(|v| v as usize)
                     .unwrap_or(8000);
 
-                let result = self.get_edit_context(uri, line, max_tokens).await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                let file_path = tower_lsp::lsp_types::Url::parse(uri)
+                    .ok()
+                    .and_then(|u| u.to_file_path().ok())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let result = crate::domain::edit_context::get_edit_context(
+                    &self.backend.graph,
+                    &self.backend.query_engine,
+                    &self.backend.memory_manager,
+                    &self.backend.workspace_folders,
+                    &file_path,
+                    uri,
+                    line,
+                    max_tokens,
+                )
+                .await;
+                Ok(result)
             }
 
             "codegraph_get_curated_context" => {
@@ -1705,10 +1617,23 @@ impl McpServer {
                     .map(|v| v as usize)
                     .unwrap_or(5);
 
-                let result = self
-                    .get_curated_context(query, uri, max_tokens, max_symbols)
-                    .await;
-                Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+                let anchor_path: Option<String> = uri.and_then(|u| {
+                    tower_lsp::lsp_types::Url::parse(u)
+                        .ok()
+                        .and_then(|parsed| parsed.to_file_path().ok())
+                        .map(|p| p.to_string_lossy().to_string())
+                });
+                let result = crate::domain::curated_context::get_curated_context(
+                    &self.backend.graph,
+                    &self.backend.query_engine,
+                    &self.backend.memory_manager,
+                    query,
+                    anchor_path.as_deref(),
+                    max_tokens,
+                    max_symbols,
+                )
+                .await;
+                Ok(result)
             }
 
             "codegraph_find_related_tests" => {
@@ -2539,913 +2464,6 @@ impl McpServer {
         crate::domain::node_resolution::find_nearest_node(&graph, &path_str, line)
     }
 
-    /// Get source code for a symbol
-    async fn get_symbol_source(&self, node_id: codegraph::NodeId) -> Option<String> {
-        let graph = self.backend.graph.read().await;
-        crate::domain::source_code::get_symbol_source(&graph, node_id)
-    }
-
-    /// Get dependency graph for a file
-    async fn get_dependency_graph(
-        &self,
-        uri: &str,
-        depth: usize,
-        direction: &str,
-        _include_external: bool,
-    ) -> serde_json::Value {
-        use std::collections::HashSet;
-
-        let url = match tower_lsp::lsp_types::Url::parse(uri) {
-            Ok(u) => u,
-            Err(_) => {
-                return serde_json::json!({
-                    "nodes": [],
-                    "edges": [],
-                    "error": "Invalid URI"
-                })
-            }
-        };
-
-        let path = match url.to_file_path() {
-            Ok(p) => p,
-            Err(_) => {
-                return serde_json::json!({
-                    "nodes": [],
-                    "edges": [],
-                    "error": "Invalid file path"
-                })
-            }
-        };
-
-        let graph = self.backend.graph.read().await;
-        let path_str = path.to_string_lossy().to_string();
-
-        // Find the file node
-        let start_node = match codegraph::helpers::find_file_by_path(&graph, &path_str) {
-            Ok(Some(id)) => id,
-            _ => {
-                return serde_json::json!({
-                    "nodes": [],
-                    "edges": []
-                })
-            }
-        };
-
-        // Use built-in BFS for dependency traversal
-        let bfs_direction = match direction {
-            "imports" => codegraph::Direction::Outgoing,
-            "importedBy" => codegraph::Direction::Incoming,
-            _ => codegraph::Direction::Both,
-        };
-
-        let mut reachable_set: HashSet<codegraph::NodeId> = HashSet::new();
-        reachable_set.insert(start_node);
-        if let Ok(reachable) = graph.bfs(start_node, bfs_direction, Some(depth)) {
-            reachable_set.extend(reachable);
-        }
-
-        // Build response nodes
-        let mut nodes = Vec::new();
-        for &node_id in &reachable_set {
-            if let Ok(node) = graph.get_node(node_id) {
-                let name = node_props::name(node);
-                let node_type = format!("{:?}", node.node_type);
-                nodes.push(serde_json::json!({
-                    "id": node_id.to_string(),
-                    "name": name,
-                    "type": node_type,
-                }));
-            }
-        }
-
-        // Collect edges between reachable nodes
-        let mut edges = Vec::new();
-        let mut seen_edges: HashSet<(codegraph::NodeId, codegraph::NodeId)> = HashSet::new();
-
-        let edge_directions = match direction {
-            "imports" => vec![codegraph::Direction::Outgoing],
-            "importedBy" => vec![codegraph::Direction::Incoming],
-            _ => vec![
-                codegraph::Direction::Outgoing,
-                codegraph::Direction::Incoming,
-            ],
-        };
-
-        for &node_id in &reachable_set {
-            for &dir in &edge_directions {
-                if let Ok(neighbors) = graph.get_neighbors(node_id, dir) {
-                    for neighbor_id in neighbors {
-                        if !reachable_set.contains(&neighbor_id) {
-                            continue;
-                        }
-                        let (from, to) = match dir {
-                            codegraph::Direction::Outgoing => (node_id, neighbor_id),
-                            codegraph::Direction::Incoming => (neighbor_id, node_id),
-                            codegraph::Direction::Both => (node_id, neighbor_id),
-                        };
-                        if seen_edges.insert((from, to)) {
-                            edges.push(serde_json::json!({
-                                "from": from.to_string(),
-                                "to": to.to_string(),
-                                "type": "depends_on",
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-
-        serde_json::json!({
-            "nodes": nodes,
-            "edges": edges
-        })
-    }
-
-    /// Get call graph for a function
-    async fn get_call_graph(
-        &self,
-        uri: &str,
-        line: u32,
-        depth: u32,
-        direction: &str,
-    ) -> serde_json::Value {
-        // Use fallback for better symbol discovery
-        let (start, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
-            Some((id, fallback)) => (id, fallback),
-            None => {
-                return serde_json::json!({
-                    "nodes": [],
-                    "edges": [],
-                    "message": "Could not find symbol at location"
-                })
-            }
-        };
-
-        // Get symbol name for fallback message
-        let symbol_name = {
-            let graph = self.backend.graph.read().await;
-            graph
-                .get_node(start)
-                .ok()
-                .map(|n| node_props::name(n).to_string())
-                .unwrap_or_default()
-        };
-
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        seen.insert(start); // Don't include start node in results
-
-        // Get callers and/or callees based on direction
-        match direction {
-            "callers" => {
-                let callers = self.backend.query_engine.get_callers(start, depth).await;
-                for caller in callers {
-                    if seen.insert(caller.node_id) {
-                        nodes.push(serde_json::json!({
-                            "id": caller.node_id.to_string(),
-                            "name": caller.symbol.name,
-                            "depth": caller.depth,
-                        }));
-                        edges.push(serde_json::json!({
-                            "from": caller.node_id.to_string(),
-                            "to": start.to_string(),
-                            "type": "calls",
-                        }));
-                    }
-                }
-            }
-            "callees" => {
-                let callees = self.backend.query_engine.get_callees(start, depth).await;
-                for callee in callees {
-                    if seen.insert(callee.node_id) {
-                        nodes.push(serde_json::json!({
-                            "id": callee.node_id.to_string(),
-                            "name": callee.symbol.name,
-                            "depth": callee.depth,
-                        }));
-                        edges.push(serde_json::json!({
-                            "from": start.to_string(),
-                            "to": callee.node_id.to_string(),
-                            "type": "calls",
-                        }));
-                    }
-                }
-            }
-            _ => {
-                // Both directions
-                let callers = self.backend.query_engine.get_callers(start, depth).await;
-                let callees = self.backend.query_engine.get_callees(start, depth).await;
-
-                for caller in callers {
-                    if seen.insert(caller.node_id) {
-                        nodes.push(serde_json::json!({
-                            "id": caller.node_id.to_string(),
-                            "name": caller.symbol.name,
-                            "depth": caller.depth,
-                            "direction": "caller",
-                        }));
-                        edges.push(serde_json::json!({
-                            "from": caller.node_id.to_string(),
-                            "to": start.to_string(),
-                            "type": "calls",
-                        }));
-                    }
-                }
-
-                for callee in callees {
-                    if seen.insert(callee.node_id) {
-                        nodes.push(serde_json::json!({
-                            "id": callee.node_id.to_string(),
-                            "name": callee.symbol.name,
-                            "depth": callee.depth,
-                            "direction": "callee",
-                        }));
-                        edges.push(serde_json::json!({
-                            "from": start.to_string(),
-                            "to": callee.node_id.to_string(),
-                            "type": "calls",
-                        }));
-                    }
-                }
-            }
-        }
-
-        // Build base response
-        let mut response = if nodes.is_empty() {
-            let graph = self.backend.graph.read().await;
-            let edge_count = graph.edge_count();
-            serde_json::json!({
-                "root": start.to_string(),
-                "symbol_name": symbol_name,
-                "nodes": nodes,
-                "edges": edges,
-                "diagnostic": {
-                    "node_found": true,
-                    "total_edges_in_graph": edge_count,
-                    "note": "No call relationships found. Call graph analysis depends on language parser support for extracting call edges. Some parsers may have limited call extraction capabilities."
-                }
-            })
-        } else {
-            serde_json::json!({
-                "root": start.to_string(),
-                "symbol_name": symbol_name,
-                "nodes": nodes,
-                "edges": edges
-            })
-        };
-
-        // Add fallback metadata if used
-        if used_fallback {
-            if let Some(obj) = response.as_object_mut() {
-                obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                obj.insert(
-                    "fallback_message".to_string(),
-                    serde_json::json!(format!(
-                        "No symbol at line {}. Using nearest symbol '{}' instead.",
-                        line, symbol_name
-                    )),
-                );
-            }
-        }
-
-        response
-    }
-
-    /// Analyze impact of changes to a symbol
-    async fn analyze_impact(&self, uri: &str, line: u32, change_type: &str) -> serde_json::Value {
-        // Use fallback for better symbol discovery
-        let (start, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
-            Some((id, fallback)) => (id, fallback),
-            None => {
-                return serde_json::json!({
-                    "impacted": [],
-                    "risk_level": "unknown",
-                    "message": "Could not find symbol at location"
-                })
-            }
-        };
-
-        // Get symbol name for fallback message
-        let symbol_name = {
-            let graph = self.backend.graph.read().await;
-            graph
-                .get_node(start)
-                .ok()
-                .map(|n| node_props::name(n).to_string())
-                .unwrap_or_default()
-        };
-
-        // Get all callers (things that depend on this)
-        let callers = self.backend.query_engine.get_callers(start, 3).await;
-
-        let impacted: Vec<serde_json::Value> = callers
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "node_id": c.node_id.to_string(),
-                    "name": c.symbol.name,
-                    "depth": c.depth,
-                    "impact_type": if c.depth == 1 { "direct" } else { "indirect" },
-                })
-            })
-            .collect();
-
-        let risk_level = match (change_type, callers.len()) {
-            ("delete", n) if n > 10 => "critical",
-            ("delete", n) if n > 0 => "high",
-            ("rename", n) if n > 10 => "high",
-            ("rename", n) if n > 0 => "medium",
-            ("modify", n) if n > 20 => "medium",
-            ("modify", _) => "low",
-            _ => "low",
-        };
-
-        let mut response = serde_json::json!({
-            "symbol_id": start.to_string(),
-            "symbol_name": symbol_name,
-            "change_type": change_type,
-            "impacted": impacted,
-            "total_impacted": callers.len(),
-            "direct_impacted": callers.iter().filter(|c| c.depth == 1).count(),
-            "risk_level": risk_level,
-        });
-
-        // Add fallback metadata if used
-        if used_fallback {
-            if let Some(obj) = response.as_object_mut() {
-                obj.insert("used_fallback".to_string(), serde_json::json!(true));
-                obj.insert(
-                    "fallback_message".to_string(),
-                    serde_json::json!(format!(
-                        "No symbol at line {}. Using nearest symbol '{}' instead.",
-                        line, symbol_name
-                    )),
-                );
-            }
-        }
-
-        response
-    }
-
-    /// Analyze coupling for a file
-    async fn analyze_coupling(&self, uri: &str, depth: usize) -> serde_json::Value {
-        let dep_graph = self.get_dependency_graph(uri, depth, "both", false).await;
-
-        let nodes = dep_graph
-            .get("nodes")
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        let edges = dep_graph
-            .get("edges")
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-
-        // Simple coupling metrics
-        let afferent = dep_graph
-            .get("edges")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter(|e| e.get("to").is_some()).count())
-            .unwrap_or(0);
-
-        let efferent = dep_graph
-            .get("edges")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter(|e| e.get("from").is_some()).count())
-            .unwrap_or(0);
-
-        let instability = if afferent + efferent > 0 {
-            efferent as f64 / (afferent + efferent) as f64
-        } else {
-            0.0
-        };
-
-        serde_json::json!({
-            "uri": uri,
-            "metrics": {
-                "afferent_coupling": afferent,
-                "efferent_coupling": efferent,
-                "instability": instability,
-                "total_dependencies": nodes,
-                "total_connections": edges,
-            },
-            "dependency_graph": dep_graph,
-        })
-    }
-
-    /// Assemble comprehensive edit context for a file + line in a single call.
-    ///
-    /// Composes: symbol source, callers, tests, memories, and recent git changes.
-    /// Token budget is allocated with priority: symbol > callers > tests > memories > git.
-    async fn get_edit_context(&self, uri: &str, line: u32, max_tokens: usize) -> serde_json::Value {
-        let start_time = std::time::Instant::now();
-
-        // --- Resolve target symbol ---
-        let (target, used_fallback) = match self.find_nearest_node_with_fallback(uri, line).await {
-            Some(result) => result,
-            None => {
-                return serde_json::json!({
-                    "error": "No symbols found at this location. Try indexing the workspace first.",
-                    "uri": uri,
-                    "line": line
-                });
-            }
-        };
-
-        // Extract symbol metadata
-        let (name, node_type, language, path, line_start, line_end) = {
-            let graph = self.backend.graph.read().await;
-            let node = match graph.get_node(target) {
-                Ok(n) => n,
-                Err(_) => return serde_json::json!({ "error": "Could not load node" }),
-            };
-            let name = node_props::name(node).to_string();
-            let node_type = format!("{:?}", node.node_type).to_lowercase();
-            let language = node
-                .properties
-                .get_string("language")
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    node.properties
-                        .get_string("path")
-                        .and_then(|p| {
-                            std::path::Path::new(p)
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|e| e.to_string())
-                        })
-                        .unwrap_or_else(|| "unknown".to_string())
-                });
-            let path = node_props::path(node).to_string();
-            let line_start = node_props::line_start(node) as i64;
-            let line_end = {
-                let e = node_props::line_end(node) as i64;
-                if e == 0 {
-                    line_start
-                } else {
-                    e
-                }
-            };
-            (name, node_type, language, path, line_start, line_end)
-        };
-
-        // --- Section 1: Symbol source code (budget: up to 30%) ---
-        let source_code = self
-            .get_symbol_source(target)
-            .await
-            .unwrap_or_else(|| "<source not available>".to_string());
-        let source_tokens = source_code.len() / 4;
-        let mut budget_remaining = max_tokens.saturating_sub(source_tokens);
-
-        let symbol = serde_json::json!({
-            "name": name,
-            "type": node_type,
-            "code": source_code,
-            "language": language,
-            "location": {
-                "uri": uri,
-                "range": {
-                    "start": { "line": line_start, "character": 0 },
-                    "end": { "line": line_end, "character": 0 },
-                }
-            }
-        });
-
-        // --- Section 2: Callers (budget: up to 25% of original) ---
-        let caller_budget = max_tokens / 4;
-        let callers_json = {
-            let callers = self.backend.query_engine.get_callers(target, 1).await;
-            let mut caller_tokens_used = 0usize;
-            let mut caller_list = Vec::new();
-
-            for caller in callers.iter().take(10) {
-                if caller_tokens_used >= caller_budget {
-                    break;
-                }
-                let code = self.get_symbol_source(caller.node_id).await;
-                let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
-                caller_tokens_used += code_tokens;
-
-                caller_list.push(serde_json::json!({
-                    "name": caller.symbol.name,
-                    "code": code,
-                    "file": caller.symbol.location.file,
-                    "line": caller.symbol.location.line,
-                }));
-            }
-            budget_remaining = budget_remaining.saturating_sub(caller_tokens_used);
-            caller_list
-        };
-
-        // --- Section 3: Related tests (budget: up to 20% of original) ---
-        let test_budget = max_tokens / 5;
-        let tests_json = {
-            let mut test_list = Vec::new();
-            let mut test_tokens_used = 0usize;
-            let mut seen_ids = std::collections::HashSet::<codegraph::NodeId>::new();
-            seen_ids.insert(target);
-
-            // Stage 1: Tests that call target
-            let entry_types = vec![crate::ai_query::EntryType::TestEntry];
-            let tests = self
-                .backend
-                .query_engine
-                .find_entry_points(&entry_types)
-                .await;
-
-            for test in tests.iter().take(20) {
-                if test_list.len() >= 5 || test_tokens_used >= test_budget {
-                    break;
-                }
-                let callees = self.backend.query_engine.get_callees(test.node_id, 3).await;
-                if callees.iter().any(|c| c.node_id == target) && seen_ids.insert(test.node_id) {
-                    let code = self.get_symbol_source(test.node_id).await;
-                    let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
-                    test_tokens_used += code_tokens;
-
-                    test_list.push(serde_json::json!({
-                        "name": test.symbol.name,
-                        "relationship": "calls_target",
-                        "code": code,
-                    }));
-                }
-            }
-
-            // Stage 2: Same-file test functions (if room)
-            if test_list.len() < 5 {
-                let graph = self.backend.graph.read().await;
-                if let Ok(file_nodes) = graph.query().property("path", path.clone()).execute() {
-                    for node_id in file_nodes {
-                        if test_list.len() >= 5 || test_tokens_used >= test_budget {
-                            break;
-                        }
-                        if !seen_ids.insert(node_id) {
-                            continue;
-                        }
-                        if let Ok(node) = graph.get_node(node_id) {
-                            if node.node_type == codegraph::NodeType::Function
-                                && Self::is_mcp_test_node(node)
-                            {
-                                let test_name = node_props::name(node).to_string();
-                                // Don't fetch code for same-file tests (already visible)
-                                test_list.push(serde_json::json!({
-                                    "name": test_name,
-                                    "relationship": "same_file",
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
-
-            budget_remaining = budget_remaining.saturating_sub(test_tokens_used);
-            test_list
-        };
-
-        // --- Section 4: Memories (budget: up to 15% of original) ---
-        let memories_json = {
-            let url = tower_lsp::lsp_types::Url::parse(uri).ok();
-            let file_path = url.and_then(|u| u.to_file_path().ok());
-            let search_query = file_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| name.clone());
-
-            let config = crate::memory::SearchConfig {
-                limit: 5,
-                current_only: true,
-                ..Default::default()
-            };
-
-            match self
-                .backend
-                .memory_manager
-                .search(&search_query, &config, &[])
-                .await
-            {
-                Ok(results) => {
-                    let memory_budget = max_tokens * 15 / 100;
-                    let mut mem_tokens_used = 0usize;
-                    let mut mem_list = Vec::new();
-
-                    let mut seen_titles = std::collections::HashSet::new();
-                    for r in &results {
-                        if mem_tokens_used >= memory_budget {
-                            break;
-                        }
-                        if !seen_titles.insert(r.memory.title.clone()) {
-                            continue;
-                        }
-                        let content_tokens = r.memory.content.len() / 4;
-                        mem_tokens_used += content_tokens;
-
-                        mem_list.push(serde_json::json!({
-                            "id": r.memory.id,
-                            "title": r.memory.title,
-                            "content": r.memory.content,
-                            "kind": r.memory.kind.discriminant_name(),
-                            "score": r.score,
-                        }));
-                    }
-
-                    budget_remaining = budget_remaining.saturating_sub(mem_tokens_used);
-                    mem_list
-                }
-                Err(_) => Vec::new(),
-            }
-        };
-
-        // --- Section 5: Recent git changes (budget: up to 10% of original) ---
-        let git_json = {
-            let workspace = self.backend.workspace_folders.first().cloned();
-            let file_path_clone = path.clone();
-
-            match workspace {
-                Some(ws) => {
-                    let git_result = tokio::task::spawn_blocking(move || {
-                        let executor = GitExecutor::new(&ws).ok()?;
-                        // Get recent commits touching this file (last 10)
-                        let log_output = executor
-                            .log(
-                                "%H%x00%s%x00%an%x00%ai",
-                                Some(10),
-                                Some(std::path::Path::new(&file_path_clone)),
-                            )
-                            .ok()?;
-
-                        let commits: Vec<serde_json::Value> = log_output
-                            .lines()
-                            .filter(|l| !l.is_empty())
-                            .take(5)
-                            .filter_map(|line| {
-                                let parts: Vec<&str> = line.split('\0').collect();
-                                if parts.len() >= 4 {
-                                    Some(serde_json::json!({
-                                        "hash": &parts[0][..8.min(parts[0].len())],
-                                        "subject": parts[1],
-                                        "author": parts[2],
-                                        "date": parts[3],
-                                    }))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        Some(commits)
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                    git_result
-                }
-                None => Vec::new(),
-            }
-        };
-
-        let query_time = start_time.elapsed().as_millis() as u64;
-        let total_tokens = max_tokens.saturating_sub(budget_remaining);
-
-        let mut response = serde_json::json!({
-            "symbol": symbol,
-            "callers": callers_json,
-            "tests": tests_json,
-            "memories": memories_json,
-            "recentChanges": git_json,
-            "metadata": {
-                "totalTokens": total_tokens,
-                "maxTokens": max_tokens,
-                "queryTime": query_time,
-                "sections": {
-                    "symbol": !source_code.is_empty(),
-                    "callers": !callers_json.is_empty(),
-                    "tests": !tests_json.is_empty(),
-                    "memories": !memories_json.is_empty(),
-                    "recentChanges": !git_json.is_empty(),
-                }
-            }
-        });
-
-        if used_fallback {
-            if let Some(obj) = response.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-                obj.insert("usedFallback".to_string(), serde_json::json!(true));
-                obj.insert(
-                    "fallbackMessage".to_string(),
-                    serde_json::json!(format!(
-                        "No symbol at line {}. Using nearest symbol '{}' instead.",
-                        line, name
-                    )),
-                );
-            }
-        }
-
-        response
-    }
-
-    /// Discover and assemble cross-codebase context for a natural language query.
-    ///
-    /// Pipeline: search → resolve → expand → enrich → curate.
-    async fn get_curated_context(
-        &self,
-        query: &str,
-        anchor_uri: Option<&str>,
-        max_tokens: usize,
-        max_symbols: usize,
-    ) -> serde_json::Value {
-        let start_time = std::time::Instant::now();
-        let mut budget_remaining = max_tokens;
-
-        // --- Step 1: Search for relevant symbols ---
-        let options = crate::ai_query::SearchOptions {
-            limit: max_symbols * 3, // fetch extra for filtering
-            include_private: true,
-            compact: false,
-            ..Default::default()
-        };
-        let search_result = self
-            .backend
-            .query_engine
-            .symbol_search(query, &options)
-            .await;
-
-        // Resolve anchor file path for prioritization
-        let anchor_path: Option<String> = anchor_uri.and_then(|uri| {
-            tower_lsp::lsp_types::Url::parse(uri)
-                .ok()
-                .and_then(|u| u.to_file_path().ok())
-                .map(|p| p.to_string_lossy().to_string())
-        });
-
-        // Sort: anchor file matches first, then by score
-        let mut matches = search_result.results;
-        if let Some(ref anchor) = anchor_path {
-            matches.sort_by(|a, b| {
-                let a_anchor = a.symbol.location.file == *anchor;
-                let b_anchor = b.symbol.location.file == *anchor;
-                b_anchor.cmp(&a_anchor).then(b.score.total_cmp(&a.score))
-            });
-        }
-        let top_matches: Vec<_> = matches.into_iter().take(max_symbols).collect();
-
-        if top_matches.is_empty() {
-            return serde_json::json!({
-                "error": format!("No symbols found matching '{}'", query),
-                "query": query,
-                "suggestion": "Try a different query or ensure the workspace is indexed."
-            });
-        }
-
-        // --- Step 2: Resolve full source for top matches ---
-        let symbol_budget = max_tokens * 40 / 100;
-        let mut symbols_json = Vec::new();
-        let mut primary_node_ids = Vec::new();
-        let mut primary_files = std::collections::HashSet::new();
-        let mut symbols_tokens = 0usize;
-
-        for m in &top_matches {
-            if symbols_tokens >= symbol_budget {
-                break;
-            }
-            let code = self.get_symbol_source(m.node_id).await;
-            let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
-            symbols_tokens += code_tokens;
-            primary_node_ids.push(m.node_id);
-            primary_files.insert(m.symbol.location.file.clone());
-
-            symbols_json.push(serde_json::json!({
-                "name": m.symbol.name,
-                "kind": m.symbol.kind,
-                "file": m.symbol.location.file,
-                "line": m.symbol.location.line,
-                "score": m.score,
-                "matchReason": m.match_reason,
-                "code": code,
-            }));
-        }
-        budget_remaining = budget_remaining.saturating_sub(symbols_tokens);
-
-        // --- Step 3: Expand — walk dependencies from primary symbols ---
-        let dep_budget = max_tokens * 25 / 100;
-        let mut dependencies_json = Vec::new();
-        let mut dep_tokens = 0usize;
-        let mut seen_dep_ids = std::collections::HashSet::new();
-        for &nid in &primary_node_ids {
-            seen_dep_ids.insert(nid);
-        }
-
-        for &nid in &primary_node_ids {
-            if dep_tokens >= dep_budget {
-                break;
-            }
-            // Get imports (outgoing) and importedBy (incoming) at depth 1
-            let graph = self.backend.graph.read().await;
-            let edges = self.get_edges(&graph, nid, codegraph::Direction::Outgoing);
-            let import_edges: Vec<_> = edges
-                .iter()
-                .filter(|(_, _, t)| {
-                    *t == codegraph::EdgeType::Imports || *t == codegraph::EdgeType::Calls
-                })
-                .collect();
-
-            for (_, target, edge_type) in import_edges.iter().take(5) {
-                if dep_tokens >= dep_budget || !seen_dep_ids.insert(*target) {
-                    continue;
-                }
-                if let Ok(dep_node) = graph.get_node(*target) {
-                    let dep_name = node_props::name(dep_node).to_string();
-                    let dep_file = node_props::path(dep_node).to_string();
-                    let dep_kind = format!("{:?}", dep_node.node_type).to_lowercase();
-                    let relationship = format!("{:?}", edge_type).to_lowercase();
-                    drop(graph);
-
-                    // Get source for dependency (compact — skip if too large)
-                    let code = self.get_symbol_source(*target).await;
-                    let code_tokens = code.as_ref().map(|c| c.len() / 4).unwrap_or(0);
-                    if code_tokens > dep_budget / 3 {
-                        // Too large for a dependency — include without code
-                        dependencies_json.push(serde_json::json!({
-                            "name": dep_name,
-                            "kind": dep_kind,
-                            "file": dep_file,
-                            "relationship": relationship,
-                        }));
-                    } else {
-                        dep_tokens += code_tokens;
-                        dependencies_json.push(serde_json::json!({
-                            "name": dep_name,
-                            "kind": dep_kind,
-                            "file": dep_file,
-                            "relationship": relationship,
-                            "code": code,
-                        }));
-                    }
-
-                    // Re-acquire lock for next iteration
-                    break; // Need to re-acquire graph lock
-                }
-            }
-        }
-        budget_remaining = budget_remaining.saturating_sub(dep_tokens);
-
-        // --- Step 4: Enrich — memories related to primary files ---
-        let memory_budget = max_tokens * 15 / 100;
-        let mut memories_json = Vec::new();
-        let mut mem_tokens = 0usize;
-        let mut seen_mem_titles = std::collections::HashSet::new();
-
-        for file in primary_files.iter().take(3) {
-            if mem_tokens >= memory_budget {
-                break;
-            }
-            let config = crate::memory::SearchConfig {
-                limit: 3,
-                current_only: true,
-                ..Default::default()
-            };
-            if let Ok(results) = self.backend.memory_manager.search(file, &config, &[]).await {
-                for r in &results {
-                    if mem_tokens >= memory_budget {
-                        break;
-                    }
-                    if !seen_mem_titles.insert(r.memory.title.clone()) {
-                        continue;
-                    }
-                    let content_tokens = r.memory.content.len() / 4;
-                    mem_tokens += content_tokens;
-                    memories_json.push(serde_json::json!({
-                        "title": r.memory.title,
-                        "content": r.memory.content,
-                        "kind": r.memory.kind.discriminant_name(),
-                        "relatedFile": file,
-                    }));
-                }
-            }
-        }
-        budget_remaining = budget_remaining.saturating_sub(mem_tokens);
-
-        // --- Step 5: Curate — assemble response ---
-        let query_time = start_time.elapsed().as_millis() as u64;
-        let total_tokens = max_tokens.saturating_sub(budget_remaining);
-
-        serde_json::json!({
-            "query": query,
-            "symbols": symbols_json,
-            "dependencies": dependencies_json,
-            "memories": memories_json,
-            "metadata": {
-                "totalTokens": total_tokens,
-                "maxTokens": max_tokens,
-                "queryTime": query_time,
-                "symbolsFound": search_result.total_matches,
-                "symbolsIncluded": symbols_json.len(),
-                "dependenciesIncluded": dependencies_json.len(),
-                "memoriesIncluded": memories_json.len(),
-            }
-        })
-    }
-
     /// Search git history using semantic (memory embeddings) + keyword (git log --grep) matching.
     async fn search_git_history(
         &self,
@@ -3655,53 +2673,6 @@ impl McpServer {
         })
     }
 
-    /// Get edges for a node in a given direction.
-    fn get_edges(
-        &self,
-        graph: &CodeGraph,
-        node_id: codegraph::NodeId,
-        direction: codegraph::Direction,
-    ) -> Vec<(codegraph::NodeId, codegraph::NodeId, codegraph::EdgeType)> {
-        let neighbors = match graph.get_neighbors(node_id, direction) {
-            Ok(n) => n,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut edges = Vec::new();
-        for neighbor_id in neighbors {
-            let (source, target) = match direction {
-                codegraph::Direction::Outgoing => (node_id, neighbor_id),
-                codegraph::Direction::Incoming => (neighbor_id, node_id),
-                codegraph::Direction::Both => {
-                    // Try both directions for edges
-                    if let Ok(edge_ids) = graph.get_edges_between(node_id, neighbor_id) {
-                        for edge_id in edge_ids {
-                            if let Ok(edge) = graph.get_edge(edge_id) {
-                                edges.push((edge.source_id, edge.target_id, edge.edge_type));
-                            }
-                        }
-                    }
-                    if let Ok(edge_ids) = graph.get_edges_between(neighbor_id, node_id) {
-                        for edge_id in edge_ids {
-                            if let Ok(edge) = graph.get_edge(edge_id) {
-                                edges.push((edge.source_id, edge.target_id, edge.edge_type));
-                            }
-                        }
-                    }
-                    continue;
-                }
-            };
-            if let Ok(edge_ids) = graph.get_edges_between(source, target) {
-                for edge_id in edge_ids {
-                    if let Ok(edge) = graph.get_edge(edge_id) {
-                        edges.push((edge.source_id, edge.target_id, edge.edge_type));
-                    }
-                }
-            }
-        }
-        edges
-    }
-
     /// Build a memory node from parameters
     fn build_memory_node(
         &self,
@@ -3802,12 +2773,7 @@ impl McpServer {
         }
     }
 
-    /// Check if a node is a test function — delegates to domain::unused_code::is_test_node.
-    fn is_mcp_test_node(node: &codegraph::Node) -> bool {
-        crate::domain::unused_code::is_test_node(node)
-    }
-
-    /// Parse `kinds` filter from MCP args into MemoryKindFilter vec
+/// Parse `kinds` filter from MCP args into MemoryKindFilter vec
     fn parse_kinds_filter(args: &serde_json::Value) -> Vec<crate::memory::MemoryKindFilter> {
         args.get("kinds")
             .and_then(|v| v.as_array())
