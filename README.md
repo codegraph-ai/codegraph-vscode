@@ -98,9 +98,9 @@ All tool names are prefixed with `codegraph_` (e.g. `codegraph_get_ai_context`).
 
 ## Languages
 
-14 languages parsed via tree-sitter — all with functions, imports, call graph, complexity metrics, dependency graphs, symbol search, impact analysis, and unused code detection:
+15 languages parsed via tree-sitter — all with functions, imports, call graph, complexity metrics, dependency graphs, symbol search, impact analysis, and unused code detection:
 
-TypeScript/JS, Python, Rust, Go, C, C++, Java, Kotlin, C#, PHP, Ruby, Swift, Tcl
+TypeScript/JS, Python, Rust, Go, C, C++, Java, Kotlin, C#, PHP, Ruby, Swift, Tcl, Verilog
 
 ---
 

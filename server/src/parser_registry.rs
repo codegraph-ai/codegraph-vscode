@@ -15,6 +15,7 @@ use codegraph_rust::RustParser;
 use codegraph_swift::SwiftParser;
 use codegraph_tcl::TclParser;
 use codegraph_typescript::TypeScriptParser;
+use codegraph_verilog::VerilogParser;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ pub struct ParserRegistry {
     ruby: Arc<RubyParser>,
     swift: Arc<SwiftParser>,
     tcl: Arc<TclParser>,
+    verilog: Arc<VerilogParser>,
 }
 
 impl ParserRegistry {
@@ -56,7 +58,8 @@ impl ParserRegistry {
             php: Arc::new(PhpParser::with_config(config.clone())),
             ruby: Arc::new(RubyParser::with_config(config.clone())),
             swift: Arc::new(SwiftParser::with_config(config.clone())),
-            tcl: Arc::new(TclParser::with_config(config)),
+            tcl: Arc::new(TclParser::with_config(config.clone())),
+            verilog: Arc::new(VerilogParser::with_config(config)),
         }
     }
 
@@ -78,6 +81,7 @@ impl ParserRegistry {
             "ruby" => Some(self.ruby.clone()),
             "swift" => Some(self.swift.clone()),
             "tcl" => Some(self.tcl.clone()),
+            "verilog" | "systemverilog" => Some(self.verilog.clone()),
             _ => None,
         }
     }
@@ -88,7 +92,7 @@ impl ParserRegistry {
     /// C++-specific extensions (`.hpp`, `.cc`, `.cxx`, `.hh`, `.hxx`) are
     /// only claimed by the C++ parser and resolve correctly.
     pub fn parser_for_path(&self, path: &Path) -> Option<Arc<dyn CodeParser>> {
-        let parsers: [Arc<dyn CodeParser>; 13] = [
+        let parsers: [Arc<dyn CodeParser>; 14] = [
             self.python.clone(),
             self.rust.clone(),
             self.typescript.clone(),
@@ -102,6 +106,7 @@ impl ParserRegistry {
             self.ruby.clone(),
             self.swift.clone(),
             self.tcl.clone(),
+            self.verilog.clone(),
         ];
 
         parsers.into_iter().find(|p| p.can_parse(path))
@@ -123,6 +128,7 @@ impl ParserRegistry {
         extensions.extend(self.ruby.file_extensions().iter().copied());
         extensions.extend(self.swift.file_extensions().iter().copied());
         extensions.extend(self.tcl.file_extensions().iter().copied());
+        extensions.extend(self.verilog.file_extensions().iter().copied());
         extensions
     }
 
@@ -142,6 +148,7 @@ impl ParserRegistry {
             ("ruby", self.ruby.metrics()),
             ("swift", self.swift.metrics()),
             ("tcl", self.tcl.metrics()),
+            ("verilog", self.verilog.metrics()),
         ]
     }
 
@@ -586,7 +593,7 @@ mod tests {
         // Check that we have extensions for all 13 languages
         // (exact extension names may vary by parser implementation)
         assert!(!extensions.is_empty());
-        assert!(extensions.len() >= 13); // At least one extension per language
+        assert!(extensions.len() >= 14); // At least one extension per language
     }
 
     #[test]
@@ -620,7 +627,7 @@ mod tests {
         let registry = ParserRegistry::new();
         let metrics = registry.all_metrics();
 
-        assert_eq!(metrics.len(), 13);
+        assert_eq!(metrics.len(), 14);
         assert_eq!(metrics[0].0, "python");
         assert_eq!(metrics[1].0, "rust");
         assert_eq!(metrics[2].0, "typescript");

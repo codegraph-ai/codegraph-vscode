@@ -50,6 +50,7 @@ codegraph-php = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/co
 codegraph-ruby = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-ruby" }
 codegraph-swift = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-swift" }
 codegraph-tcl = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-tcl" }
+codegraph-verilog = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-verilog" }
 
 [profile.release]
 opt-level = 3
