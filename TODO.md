@@ -86,6 +86,7 @@ Low priority — `new ClassName()` already creates a `Calls` edge via `visit_new
 
 ## Completed
 
+- ~~Route matching — HTTP client to route handler edges (T1-3 Phase 2)~~ — create_runtime_call_edges() reads source from HTTP client callers, extracts URL paths, matches against route handler patterns. Creates RuntimeCalls edges. Supports exact and pattern matching ({id}, :id, <id>).
 - ~~Multi-arch symbol deduplication for callers/callees (#32)~~ — When get_callers/get_callees returns 0, searches for same-name function nodes in other files and aggregates their results. Handles arch-specific C files (backdoorGcc32.c vs backdoorGcc64.c).
 - ~~Prefer non-stub implementations in cross-file resolution (#33)~~ — symbol_weight() scores functions by complexity × 100 + lines. Stubs (empty body, complexity 1) get low scores; real implementations win deduplication.
 - ~~Vtable/struct-dispatch function pointer detection (#35)~~ — Designated initializer assignments (.field = func_name) detected as indirect calls. Creates Calls edges from file node to vtable-registered functions. Verified against VMware open-vm-tools fuse_operations vtable.
