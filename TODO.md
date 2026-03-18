@@ -79,43 +79,31 @@ Fork Lapce v0.4.6 (Apache-2.0) and integrate CodeGraph as a core subsystem with 
 ### 6. Publish to VS Code Marketplace + npm
 v0.9.1 VSIX and npm tarball ready. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
 
-### 30. File watcher not started for on-demand indexed directories
-When `index_on_startup=false`, the file watcher is not started. If the user indexes a directory via the `codegraph.indexDirectory` command, subsequent file changes won't trigger incremental re-indexing. The `handle_index_directory()` handler should start a watcher for newly indexed paths.
-
-### 31. Remove `log.md` from repo and VSIX
-4829-line log file committed in e37b5b0 and included in VSIX (1.25 MB). Should be in `.gitignore`. Also `server/codegraph-lsp` binary (59 MB) is duplicated in VSIX — add to `.vscodeignore`.
-
 ### 23. Linux binary requires glibc 2.39+ (Ubuntu 24.04+)
 Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Won't work on Ubuntu 22.04 (glibc 2.35). zigbuild can't cross-compile ONNX Runtime C++ code (`std::filesystem` symbols). Accepted tradeoff — Ubuntu 22.04 is EOL April 2027.
 
-### 19. Extend type reference extraction to other languages
-TypeScript type reference extraction (8c) now works for parameter types, return types, interface fields. Could extend to Rust (trait bounds, generic params, struct field types), Go (interface embedding, struct field types), etc.
-
-### 20. Detect type references in expressions (generic args, `as` casts)
-Interfaces like `*Params` used as generic type arguments (`new RequestType<DependencyGraphParams, ...>`) or `as` casts (`params as CallGraphParams`) are not detected by the current type reference extraction, which only scans function parameter/return annotations and interface field types. Needs extraction from `new_expression` type arguments, `as_expression` type targets, and variable type annotations (`const x: MyType`). Would eliminate ~19 remaining interface false positives in find_unused_code.
-
 ### 21. Cross-file `new ClassName()` instantiation detection
-`new ClassName()` in another file doesn't create an Instantiates edge to the class definition. The mapper only creates Instantiates for same-file `new` expressions. Needs cross-file resolution similar to how `resolve_cross_file_imports` works for Imports edges.
+Low priority — `new ClassName()` already creates a `Calls` edge via `visit_new_expression`, and `resolve_cross_file_imports` handles cross-file resolution. The only difference is using `Instantiates` instead of `Calls` edge type, which has no practical impact on `find_unused_code`.
 
 ### 32. Multi-arch symbol deduplication for C
 In multi-platform C codebases (e.g. open-vm-tools), the same function exists in arch-specific files (`backdoorGcc32.c`, `backdoorGcc64.c`, `backdoorGcc64_arm64.c`). The graph creates separate nodes for each variant, but call edges point to only one. Querying callers of the other variant returns 0. Need either: (a) merge arch variants into a single logical symbol with multiple definitions, or (b) cross-link variants so querying any one returns callers of all.
 
 ### 33. Platform-aware indexing for C stubs
-When all source files are indexed equally, `free()` resolves to the Solaris `kmem_free` stub (`kernelStubsSolaris.c`) and `g_mutex_lock` resolves to empty GLib stubs. In multi-platform repos, common libc/framework functions get resolved to whichever platform stub was indexed. Could be addressed by: (a) platform exclude patterns (e.g. skip `modules/solaris/` on Linux builds), (b) stub detection heuristic (empty body or single-line wrapper → lower precedence), or (c) user-configured platform filter.
-
-### 34. Caller snippet length control in get_ai_context
-When a caller function is large (85+ lines), the full source is included even though only a few lines are relevant to the target symbol. The signature-only mode helps for token-constrained budgets, but full-source callers can still dominate the context. Could truncate to the relevant call site ± N lines, or show the call expression in context rather than the entire caller body.
+When all source files are indexed equally, `free()` resolves to the Solaris `kmem_free` stub (`kernelStubsSolaris.c`) and `g_mutex_lock` resolves to empty GLib stubs. Could be addressed by: (a) platform exclude patterns, (b) stub detection heuristic (empty body → lower precedence), or (c) user-configured platform filter.
 
 ### 35. Struct-dispatch / vtable caller detection for C
-Functions registered in vtable structs (e.g. `vmkRDMAOps.getPrivStats = irndrv_RDMAOpGetPrivStats`) are never called by name — they're dispatched via struct field access. The graph only tracks direct `callee(func_name)` edges from call expressions. Detecting vtable dispatch requires pointer/struct field analysis: trace who holds the struct and invokes the field. This is a fundamental limitation of static call-graph analysis for C callback/vtable patterns.
-
-### 36. Architecture neighbor descriptions in get_ai_context
-The `architecture.neighbors` field returns module names only (e.g. `["message", "copyPasteCompat", "timeSync"]`) with no indication of whether they are callers, callees, or import dependents, and no description of what each module does. Adding relationship type and a one-line summary (from doc comments or file-level comments) would make this field more useful for AI agents.
+Functions registered in vtable structs are dispatched via struct field access, not called by name. Requires pointer/struct field analysis — fundamental limitation of static call-graph analysis for C callback/vtable patterns.
 
 ---
 
 ## Completed
 
+- ~~Type reference extraction for Rust and Go (#19)~~ — Both parsers now extract type references from function signatures (parameter types, return types, generic bounds). Creates References edges that prevent find_unused_code false positives.
+- ~~Type references in expressions (#20)~~ — TypeScript: variable type annotations (`const x: MyType`) now create References edges. Generic type args and `as` casts were already handled.
+- ~~Caller snippet truncation (#34)~~ — Large callers (>30 lines) truncated to function signature + call site ± 5 context lines with `// ... (N lines omitted)` markers.
+- ~~Architecture neighbor descriptions (#36)~~ — `architecture.neighbors` now returns `[{module, relationship}]` instead of plain strings. Relationship types: calls, called_by, imports, imported_by.
+- ~~File watcher for on-demand indexing (#30)~~ — `handle_index_directory()` now starts or extends the file watcher after indexing, so file changes trigger incremental re-indexing.
+- ~~VSIX cleanup (#31)~~ — Added `.vscodeignore` to exclude source, dev files, log.md, duplicate binary. VSIX reduced from 361MB to 63MB.
 - ~~MCP/LSP domain unification (Phases 0-9)~~ — Created 16 domain modules (4417 lines) as single source of truth for all tool handlers. Both MCP and LSP call identical domain functions with typed Result structs. mcp/server.rs reduced from ~5200 to ~2851 lines (-45%). handlers/ai_context.rs from 1051 to 231 lines (-78%). AI context improvements: signature-only mode, file-level imports, sibling functions, debug hints.
 - ~~Verilog/SystemVerilog parser (15th language)~~ (9689974, efe8ed4) — New codegraph-verilog crate with full SV 1800-2023 support. Extracts modules, functions, tasks, always blocks, classes, interfaces, packages, module instantiations (→calls), imports. File extensions: .v, .vh, .sv, .svh. 49 tests.
 - ~~Call graph extraction verified for all 15 languages~~ — All 8 "structure only" languages already had call extraction implemented. Added integration tests for Java, C++, Kotlin, C#, PHP, Ruby, Swift, Tcl. All confirmed working.
