@@ -4,7 +4,9 @@
 
 use crate::ai_query::QueryEngine;
 use crate::domain::node_props;
-use codegraph::{CodeGraph, Direction, EdgeType, NodeId};
+use codegraph::{
+    CodeGraph, Direction, EdgeType, NamespacedBackend, NodeId, RocksDBBackend, StorageBackend,
+};
 use serde::Serialize;
 use std::collections::HashSet;
 use tokio::sync::RwLock;
@@ -45,6 +47,15 @@ pub(crate) struct IndirectImpactItem {
     pub severity: String,
 }
 
+/// A consumer of the changed symbol found in another indexed project.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CrossProjectImpact {
+    pub project: String,
+    pub symbol_name: String,
+    pub path: String,
+    pub line_start: u32,
+}
+
 /// Result of `analyze_impact`.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ImpactResult {
@@ -55,6 +66,9 @@ pub(crate) struct ImpactResult {
     pub impacted: Vec<ImpactedSymbol>,
     /// Indirect impacts (2-level BFS from direct impact nodes).
     pub indirect_impacted: Vec<IndirectImpactItem>,
+    /// Consumers in other indexed projects.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cross_project_impacts: Vec<CrossProjectImpact>,
     pub total_impacted: usize,
     pub direct_impacted: usize,
     pub risk_level: String,
@@ -85,6 +99,7 @@ pub(crate) async fn analyze_impact(
     change_type: &str,
     used_fallback: bool,
     requested_line: Option<u32>,
+    current_project_slug: Option<&str>,
 ) -> ImpactResult {
     let symbol_name = {
         let g = graph.read().await;
@@ -192,7 +207,6 @@ pub(crate) async fn analyze_impact(
     let impacted: Vec<ImpactedSymbol> = direct_impacts.into_iter().map(|(_, sym)| sym).collect();
 
     let direct_impacted = impacted.len();
-    let total_impacted = direct_impacted + indirect_impacted.len();
     let breaking_changes = impacted.iter().filter(|i| i.severity == "breaking").count();
     let warnings =
         impacted.iter().filter(|i| i.severity == "warning").count() + indirect_impacted.len();
@@ -221,12 +235,18 @@ pub(crate) async fn analyze_impact(
         (None, None)
     };
 
+    // Cross-project impact: search other indexed projects for consumers
+    let cross_project_impacts = find_cross_project_consumers(&symbol_name, current_project_slug);
+
+    let total_impacted = direct_impacted + indirect_impacted.len() + cross_project_impacts.len();
+
     ImpactResult {
         symbol_id: start_node.to_string(),
         symbol_name,
         change_type: change_type.to_string(),
         impacted,
         indirect_impacted,
+        cross_project_impacts,
         total_impacted,
         direct_impacted,
         risk_level: risk_level.to_string(),
@@ -236,4 +256,91 @@ pub(crate) async fn analyze_impact(
         used_fallback: used_fallback_field,
         fallback_message,
     }
+}
+
+/// Search other indexed projects for functions that call or reference the given symbol.
+///
+/// Opens each project's graph from the shared RocksDB (excluding the current project),
+/// scans for nodes with unresolved_calls containing the symbol name.
+fn find_cross_project_consumers(
+    symbol_name: &str,
+    current_project_slug: Option<&str>,
+) -> Vec<CrossProjectImpact> {
+    if symbol_name.is_empty() {
+        return Vec::new();
+    }
+
+    let db_path = match crate::memory::shared_graph_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return Vec::new(),
+    };
+
+    let rocks = match RocksDBBackend::open(&db_path) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    // List all project slugs from the registry
+    let entries = match StorageBackend::scan_prefix(&rocks, b"_registry:") {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    let current_slug = current_project_slug.unwrap_or("");
+
+    for (key, value) in entries {
+        let slug = String::from_utf8_lossy(&key)
+            .strip_prefix("_registry:")
+            .unwrap_or("")
+            .to_string();
+
+        if slug == current_slug || slug.is_empty() {
+            continue;
+        }
+
+        let project_name = serde_json::from_slice::<serde_json::Value>(&value)
+            .ok()
+            .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+            .unwrap_or_else(|| slug.clone());
+
+        // Open this project's namespaced graph, load into memory, detach
+        let other_rocks = match RocksDBBackend::open(&db_path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let namespaced = NamespacedBackend::new(Box::new(other_rocks), &slug);
+        let mut other_graph = match CodeGraph::with_backend(Box::new(namespaced)) {
+            Ok(g) => g,
+            Err(_) => continue,
+        };
+        let _ = other_graph.detach_storage();
+
+        // Search for functions that have this symbol in unresolved_calls
+        for (_, node) in other_graph.iter_nodes() {
+            if let Some(calls) = node.properties.get_string_list_compat("unresolved_calls") {
+                if calls.iter().any(|c| c == symbol_name) {
+                    let name = node_props::name(node).to_string();
+                    let path = node_props::path(node).to_string();
+                    let line = node_props::line_start(node);
+                    results.push(CrossProjectImpact {
+                        project: project_name.clone(),
+                        symbol_name: name,
+                        path,
+                        line_start: line,
+                    });
+                }
+            }
+        }
+    }
+
+    if !results.is_empty() {
+        tracing::info!(
+            "Found {} cross-project consumers of '{}'",
+            results.len(),
+            symbol_name
+        );
+    }
+
+    results
 }

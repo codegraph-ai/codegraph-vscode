@@ -1428,6 +1428,7 @@ impl McpServer {
                             change_type,
                             used_fallback,
                             Some(line),
+                            Some(&self.backend.project_slug),
                         )
                         .await;
                         serde_json::to_value(&typed).unwrap_or_default()

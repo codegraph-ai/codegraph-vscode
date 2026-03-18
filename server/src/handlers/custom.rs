@@ -466,6 +466,7 @@ impl CodeGraphBackend {
             &params.analysis_type,
             false,
             None,
+            None, // LSP doesn't have project slug
         )
         .await;
 
