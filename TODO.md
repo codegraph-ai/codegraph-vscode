@@ -82,18 +82,13 @@ Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Wo
 ### 21. Cross-file `new ClassName()` instantiation detection
 Low priority — `new ClassName()` already creates a `Calls` edge via `visit_new_expression`, and `resolve_cross_file_imports` handles cross-file resolution. The only difference is using `Instantiates` instead of `Calls` edge type, which has no practical impact on `find_unused_code`.
 
-### 32. Multi-arch symbol deduplication for C
-In multi-platform C codebases (e.g. open-vm-tools), the same function exists in arch-specific files (`backdoorGcc32.c`, `backdoorGcc64.c`, `backdoorGcc64_arm64.c`). The graph creates separate nodes for each variant, but call edges point to only one. Querying callers of the other variant returns 0. Need either: (a) merge arch variants into a single logical symbol with multiple definitions, or (b) cross-link variants so querying any one returns callers of all.
-
-### 33. Platform-aware indexing for C stubs
-When all source files are indexed equally, `free()` resolves to the Solaris `kmem_free` stub (`kernelStubsSolaris.c`) and `g_mutex_lock` resolves to empty GLib stubs. Could be addressed by: (a) platform exclude patterns, (b) stub detection heuristic (empty body → lower precedence), or (c) user-configured platform filter.
-
-### 35. Struct-dispatch / vtable caller detection for C
-Functions registered in vtable structs are dispatched via struct field access, not called by name. Requires pointer/struct field analysis — fundamental limitation of static call-graph analysis for C callback/vtable patterns.
-
 ---
 
 ## Completed
+
+- ~~Multi-arch symbol deduplication for callers/callees (#32)~~ — When get_callers/get_callees returns 0, searches for same-name function nodes in other files and aggregates their results. Handles arch-specific C files (backdoorGcc32.c vs backdoorGcc64.c).
+- ~~Prefer non-stub implementations in cross-file resolution (#33)~~ — symbol_weight() scores functions by complexity × 100 + lines. Stubs (empty body, complexity 1) get low scores; real implementations win deduplication.
+- ~~Vtable/struct-dispatch function pointer detection (#35)~~ — Designated initializer assignments (.field = func_name) detected as indirect calls. Creates Calls edges from file node to vtable-registered functions. Verified against VMware open-vm-tools fuse_operations vtable.
 
 - ~~Type reference extraction for Rust and Go (#19)~~ — Both parsers now extract type references from function signatures (parameter types, return types, generic bounds). Creates References edges that prevent find_unused_code false positives.
 - ~~Type references in expressions (#20)~~ — TypeScript: variable type annotations (`const x: MyType`) now create References edges. Generic type args and `as` casts were already handled.
