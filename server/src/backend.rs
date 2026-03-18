@@ -180,6 +180,26 @@ impl CodeGraphBackend {
         }
     }
 
+    /// Add directories to the file watcher, creating one if it doesn't exist.
+    ///
+    /// Called after on-demand indexing so file changes trigger incremental updates.
+    pub async fn watch_directories(&self, paths: &[PathBuf]) {
+        let mut guard = self.file_watcher.lock().await;
+        if let Some(ref mut watcher) = *guard {
+            for path in paths {
+                if let Err(e) = watcher.watch(path) {
+                    tracing::warn!("Failed to watch {}: {}", path.display(), e);
+                } else {
+                    tracing::info!("Now watching: {}", path.display());
+                }
+            }
+        } else {
+            // No watcher yet — create one
+            drop(guard);
+            self.start_file_watcher(paths).await;
+        }
+    }
+
     /// Start the branch watcher for git-aware re-indexing on branch switches.
     pub async fn start_branch_watcher(&self, workspace_root: &Path) {
         match BranchWatcher::new(

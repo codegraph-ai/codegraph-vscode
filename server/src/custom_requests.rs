@@ -255,11 +255,16 @@ impl CodeGraphBackend {
         // Rebuild AI query engine indexes
         self.query_engine.build_indexes().await;
 
+        // Start or extend file watcher for the newly indexed directories
+        let indexed_paths: Vec<std::path::PathBuf> =
+            paths.iter().map(std::path::PathBuf::from).collect();
+        self.watch_directories(&indexed_paths).await;
+
         self.client
             .log_message(
                 tower_lsp::lsp_types::MessageType::INFO,
                 format!(
-                    "Index complete: {total_indexed} files from {} directories",
+                    "Index complete: {total_indexed} files from {} directories (watching for changes)",
                     paths.len()
                 ),
             )
