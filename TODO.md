@@ -76,9 +76,6 @@ Fork Lapce v0.4.6 (Apache-2.0) and integrate CodeGraph as a core subsystem with 
 
 ## Future / On Demand
 
-### 6. Publish to VS Code Marketplace + npm
-v0.9.1 VSIX and npm tarball ready. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
-
 ### 23. Linux binary requires glibc 2.39+ (Ubuntu 24.04+)
 Linux binary is built with native `cargo build` on Ubuntu 24.04 (glibc 2.39). Won't work on Ubuntu 22.04 (glibc 2.35). zigbuild can't cross-compile ONNX Runtime C++ code (`std::filesystem` symbols). Accepted tradeoff — Ubuntu 22.04 is EOL April 2027.
 

@@ -324,16 +324,28 @@ impl GraphUpdater {
             .execute()
             .unwrap_or_default();
 
-        // Build a map of symbol name -> node ID for quick lookup
+        // Build a map of symbol name -> node ID for quick lookup.
+        // When multiple symbols share a name (e.g. platform-specific stubs),
+        // prefer the non-stub version (higher complexity / more lines).
         let mut symbol_map: std::collections::HashMap<String, codegraph::NodeId> =
             std::collections::HashMap::new();
 
-        // Index all functions
+        // Index all functions — prefer non-stub implementations over stubs
         if let Ok(functions) = graph.query().node_type(NodeType::Function).execute() {
             for func_id in functions {
                 if let Ok(node) = graph.get_node(func_id) {
                     if let Some(name) = node.properties.get_string("name") {
-                        symbol_map.insert(name.to_string(), func_id);
+                        let name = name.to_string();
+                        if let Some(&existing_id) = symbol_map.get(&name) {
+                            // Prefer the version with higher complexity (non-stub)
+                            let existing_score = symbol_weight(graph, existing_id);
+                            let new_score = symbol_weight(graph, func_id);
+                            if new_score > existing_score {
+                                symbol_map.insert(name, func_id);
+                            }
+                        } else {
+                            symbol_map.insert(name, func_id);
+                        }
                     }
                 }
             }
@@ -515,6 +527,24 @@ impl GraphUpdater {
             let _ = graph.add_edge(from_id, to_id, EdgeType::References, props);
         }
     }
+}
+
+/// Weight a symbol for deduplication: prefer non-stub implementations.
+/// Returns a score based on complexity and line count — stubs (empty body,
+/// single-line return) get low scores, real implementations get high scores.
+fn symbol_weight(graph: &codegraph::CodeGraph, node_id: codegraph::NodeId) -> u32 {
+    let node = match graph.get_node(node_id) {
+        Ok(n) => n,
+        Err(_) => return 0,
+    };
+    let complexity = node.properties.get_int("complexity").unwrap_or(1) as u32;
+    let lines = {
+        let start = node.properties.get_int("line_start").unwrap_or(0) as u32;
+        let end = node.properties.get_int("line_end").unwrap_or(0) as u32;
+        end.saturating_sub(start) + 1
+    };
+    // Complexity is the primary signal, lines break ties
+    complexity * 100 + lines
 }
 
 /// Result of a batch update operation.
