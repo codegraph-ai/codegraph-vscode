@@ -1,6 +1,6 @@
 # CodeGraph VS Code — TODO
 
-> Last updated: 2026-03-14 (v0.8.4, 330 tests, 31 MCP tools)
+> Last updated: 2026-03-17 (v0.9.1, 334 tests, 31 MCP tools, 15 languages, unified domain architecture)
 >
 > See also: [docs/competitive-analysis.md](docs/competitive-analysis.md) | [docs/IDE_ARCHITECTURE.md](docs/IDE_ARCHITECTURE.md)
 
@@ -77,10 +77,7 @@ Fork Lapce v0.4.6 (Apache-2.0) and integrate CodeGraph as a core subsystem with 
 ## Future / On Demand
 
 ### 6. Publish to VS Code Marketplace + npm
-v0.8.4 VSIX built (`codegraph-0.8.4.vsix`, 76MB, all 4 platform binaries). npm package `@memoryx/codegraph-mcp` ready in `mcp-package/`. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
-
-### 29. VS Code LM tools — 14 of 30 disabled
-14 of 30 registered `vscode.lm` language model tools show as disabled/not available. All tool declarations have identical structure. Suspected per-extension tool limit (exactly 16 enabled). Needs investigation — may require splitting into multiple extensions or finding the VS Code limit documentation.
+v0.9.1 VSIX and npm tarball ready. Remaining: Azure DevOps PAT refresh (current token expired), then `npx @vscode/vsce publish` and `npm publish --access public`.
 
 ### 30. File watcher not started for on-demand indexed directories
 When `index_on_startup=false`, the file watcher is not started. If the user indexes a directory via the `codegraph.indexDirectory` command, subsequent file changes won't trigger incremental re-indexing. The `handle_index_directory()` handler should start a watcher for newly indexed paths.
@@ -119,6 +116,13 @@ The `architecture.neighbors` field returns module names only (e.g. `["message", 
 
 ## Completed
 
+- ~~MCP/LSP domain unification (Phases 0-9)~~ — Created 16 domain modules (4417 lines) as single source of truth for all tool handlers. Both MCP and LSP call identical domain functions with typed Result structs. mcp/server.rs reduced from ~5200 to ~2851 lines (-45%). handlers/ai_context.rs from 1051 to 231 lines (-78%). AI context improvements: signature-only mode, file-level imports, sibling functions, debug hints.
+- ~~Verilog/SystemVerilog parser (15th language)~~ (9689974, efe8ed4) — New codegraph-verilog crate with full SV 1800-2023 support. Extracts modules, functions, tasks, always blocks, classes, interfaces, packages, module instantiations (→calls), imports. File extensions: .v, .vh, .sv, .svh. 49 tests.
+- ~~Call graph extraction verified for all 15 languages~~ — All 8 "structure only" languages already had call extraction implemented. Added integration tests for Java, C++, Kotlin, C#, PHP, Ruby, Swift, Tcl. All confirmed working.
+- ~~VMK/kernel type preprocessing fix~~ (1831f2d) — tree-sitter silently misparses VMK typedefs without ERROR nodes, so tolerant fallback never triggered. Now detects VMK patterns upfront and preprocesses before strict parse.
+- ~~includePrivate default fix~~ (dac8f4e) — VS Code LM symbol_search defaulted includePrivate to false, filtering out static C functions. Fixed to true (matching MCP).
+- ~~QueryBuilder node iteration bug~~ — iterated 0..node_count() which missed nodes added after deletions. Fixed to use nodes_iter() over actual HashMap keys.
+- ~~MCP roots-based workspace discovery~~ — MCP initialize now accepts client roots for workspace detection. Global MCP config works without --workspace flag.
 - ~~Consolidate complexity analysis — single source of truth~~ (dd96a8b, 1d6afba) — Deleted ~130 lines of duplicated `analyze_complexity()` from mcp/server.rs. Extracted shared `analyze_file_complexity()` free function. MCP handler is now a thin JSON adapter. Fixed `QueryBuilder` bug: iterated `0..node_count()` which missed nodes added after deletions (caused cross-file resolution to fail after did_open). Added `nodes_iter()` to CodeGraph. Aligned all complexity property keys to `complexity_` prefix convention across all 14 parsers and server consumers. MCP `initialize` now accepts client `roots` for workspace discovery (global MCP config without per-project `--workspace`). Added ICE driver integration test (84 C files, 3690 functions, 100% parse rate).
 - ~~On-demand Index Directory command~~ (e37b5b0) — Added `CodeGraphConfig` with `index_on_startup` (default false), `codegraph.indexDirectory` VS Code command with folder picker, `handle_index_directory()` and `handle_update_configuration()` LSP handlers, safety limits (MAX_INDEX_DEPTH=20, MAX_INDEXED_FILES=5000), exclude glob patterns, file size limits. `did_open` now removes old entries before re-parse and rebuilds query indexes.
 - ~~Fix `codegraph_reindex_workspace` null return~~ — Server returned `Ok(None)`/`Ok(Value::Null)` in both `custom_requests.rs` and `backend.rs`, causing toolManager to throw "returned null — server may be busy or restarting". Fixed both handlers to return `{ status, message, files_indexed }`. Reindex now works end-to-end; verified 512 files indexed on workspace with two source folders.
