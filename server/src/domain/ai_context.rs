@@ -231,7 +231,8 @@ pub(crate) fn get_ai_context(
     let mut seen = HashSet::new();
     seen.insert(target);
 
-    let related_symbols = get_related_by_intent(graph, target, intent, &mut budget, &mut seen);
+    let related_symbols =
+        get_related_by_intent(graph, target, &name, intent, &mut budget, &mut seen);
 
     let dependencies = get_dependencies(graph, target);
     let imports = get_file_imports(graph, file_path);
@@ -279,6 +280,7 @@ pub(crate) fn get_ai_context(
 fn get_related_by_intent(
     graph: &CodeGraph,
     node_id: NodeId,
+    target_name: &str,
     intent: &str,
     budget: &mut TokenBudget,
     seen: &mut HashSet<NodeId>,
@@ -300,7 +302,7 @@ fn get_related_by_intent(
                     }
                 }
             }
-            // Priority 2: Direct callers
+            // Priority 2: Direct callers (truncated to call site for large functions)
             for (source, _, _) in incoming
                 .iter()
                 .filter(|(_, _, t)| *t == EdgeType::Calls)
@@ -310,8 +312,14 @@ fn get_related_by_intent(
                     break;
                 }
                 if seen.insert(*source) {
-                    if let Some(sym) = make_related_symbol(graph, *source, "called_by", 0.8, budget)
-                    {
+                    if let Some(sym) = make_related_symbol_for(
+                        graph,
+                        *source,
+                        "called_by",
+                        0.8,
+                        budget,
+                        Some(target_name),
+                    ) {
                         symbols.push(sym);
                     }
                 }
@@ -352,7 +360,7 @@ fn get_related_by_intent(
                     }
                 }
             }
-            // Priority 2: Non-test callers
+            // Priority 2: Non-test callers (truncated to call site)
             for (source, _, _) in incoming
                 .iter()
                 .filter(|(_, _, t)| *t == EdgeType::Calls)
@@ -365,9 +373,14 @@ fn get_related_by_intent(
                     if let Ok(n) = graph.get_node(*source) {
                         let n_name = node_props::name(n);
                         if !n_name.starts_with("test_") && !n_name.ends_with("_test") {
-                            if let Some(sym) =
-                                make_related_symbol(graph, *source, "called_by", 0.9, budget)
-                            {
+                            if let Some(sym) = make_related_symbol_for(
+                                graph,
+                                *source,
+                                "called_by",
+                                0.9,
+                                budget,
+                                Some(target_name),
+                            ) {
                                 symbols.push(sym);
                             }
                         }
@@ -376,8 +389,9 @@ fn get_related_by_intent(
             }
         }
         "debug" => {
-            // Call chain up to entry point
+            // Call chain up to entry point (truncated to call site)
             let mut current = node_id;
+            let mut current_name = target_name.to_string();
             let mut depth = 0;
             while depth < 5 && budget.has_budget() {
                 let cur_incoming = get_edges(graph, current, Direction::Incoming);
@@ -389,10 +403,19 @@ fn get_related_by_intent(
                     seen.insert(*source);
                     let relevance = 1.0 - (depth as f64 * 0.1);
                     let relationship = format!("call_chain_depth_{depth}");
-                    if let Some(sym) =
-                        make_related_symbol(graph, *source, &relationship, relevance, budget)
-                    {
+                    if let Some(sym) = make_related_symbol_for(
+                        graph,
+                        *source,
+                        &relationship,
+                        relevance,
+                        budget,
+                        Some(&current_name),
+                    ) {
                         symbols.push(sym);
+                    }
+                    // Track name for next level's truncation
+                    if let Ok(n) = graph.get_node(*source) {
+                        current_name = node_props::name(n).to_string();
                     }
                     current = *source;
                     depth += 1;
@@ -675,6 +698,11 @@ fn get_architecture_info(graph: &CodeGraph, node_id: NodeId) -> Option<Architect
     })
 }
 
+/// Maximum lines for a related symbol before truncation kicks in.
+const MAX_RELATED_LINES: usize = 30;
+/// Context lines around a call site when truncating.
+const CALL_SITE_CONTEXT: usize = 5;
+
 fn make_related_symbol(
     graph: &CodeGraph,
     node_id: NodeId,
@@ -682,7 +710,32 @@ fn make_related_symbol(
     relevance: f64,
     budget: &mut TokenBudget,
 ) -> Option<RelatedSymbol> {
-    let code = source_code::get_symbol_source(graph, node_id)?;
+    make_related_symbol_for(graph, node_id, relationship, relevance, budget, None)
+}
+
+/// Create a related symbol, optionally truncating large functions to the call site
+/// where `target_name` is called (± CALL_SITE_CONTEXT lines).
+fn make_related_symbol_for(
+    graph: &CodeGraph,
+    node_id: NodeId,
+    relationship: &str,
+    relevance: f64,
+    budget: &mut TokenBudget,
+    target_name: Option<&str>,
+) -> Option<RelatedSymbol> {
+    let full_code = source_code::get_symbol_source(graph, node_id)?;
+
+    // If the symbol is large and we know what call to focus on, truncate
+    let code = if full_code.lines().count() > MAX_RELATED_LINES {
+        if let Some(target) = target_name {
+            truncate_to_call_site(&full_code, target)
+        } else {
+            full_code
+        }
+    } else {
+        full_code
+    };
+
     let tokens = estimate_tokens(&code);
     if !budget.consume(tokens) {
         return None;
@@ -708,6 +761,56 @@ fn make_related_symbol(
         location: make_location(&path, start_line, end_line),
         relevance_score: relevance,
     })
+}
+
+/// Truncate a function body to the lines around where `target_name` is called.
+/// Returns signature + call site ± context. Falls back to first MAX_RELATED_LINES if not found.
+fn truncate_to_call_site(code: &str, target_name: &str) -> String {
+    let lines: Vec<&str> = code.lines().collect();
+
+    // Find the first line containing the target function call
+    let call_line = lines.iter().position(|line| line.contains(target_name));
+
+    if let Some(idx) = call_line {
+        let start = idx.saturating_sub(CALL_SITE_CONTEXT);
+        let end = (idx + CALL_SITE_CONTEXT + 1).min(lines.len());
+
+        // Always include the function signature (first line)
+        let mut result = String::new();
+        if start > 0 {
+            result.push_str(lines[0]);
+            result.push('\n');
+            if start > 1 {
+                result.push_str(&format!("    // ... ({} lines omitted)\n", start - 1));
+            }
+        }
+
+        for line in &lines[start..end] {
+            result.push_str(line);
+            result.push('\n');
+        }
+
+        if end < lines.len() {
+            result.push_str(&format!(
+                "    // ... ({} lines omitted)\n",
+                lines.len() - end
+            ));
+        }
+
+        result
+    } else {
+        // Target not found in source — return first MAX_RELATED_LINES
+        lines
+            .iter()
+            .take(MAX_RELATED_LINES)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+            + &format!(
+                "\n    // ... ({} lines omitted)",
+                lines.len() - MAX_RELATED_LINES
+            )
+    }
 }
 
 fn make_location(path: &str, start_line: u32, end_line: u32) -> LocationInfo {
