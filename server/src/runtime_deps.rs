@@ -337,24 +337,133 @@ pub fn create_runtime_call_edges(graph: &mut CodeGraph) -> usize {
         }
     }
 
-    // For now, we can't match URLs to routes because we don't capture
-    // the URL argument from client calls. This will be enhanced when
-    // parsers capture call arguments.
-    //
-    // Future: parse source files to extract URL strings from HTTP client
-    // calls and match them against route patterns.
+    if route_handlers.is_empty() || client_callers.is_empty() {
+        return 0;
+    }
 
-    let count = 0;
+    // Extract URL paths from client callers by reading their source code
+    // and scanning for string literals that look like URL paths
+    let mut edges_to_add: Vec<(NodeId, NodeId, PropertyMap)> = Vec::new();
 
-    if !route_handlers.is_empty() && !client_callers.is_empty() {
+    for &caller_id in &client_callers {
+        let source = crate::domain::source_code::get_symbol_source(graph, caller_id);
+        if let Some(source) = source {
+            let urls = extract_url_paths_from_source(&source);
+            for url in urls {
+                // Normalize: strip query params, trailing slash
+                let normalized = normalize_route(&url);
+                // Try exact match first, then pattern match
+                if let Some(handlers) = route_handlers.get(&normalized) {
+                    for &handler_id in handlers {
+                        let props = PropertyMap::new()
+                            .with("matched_route", normalized.as_str())
+                            .with("match_type", "exact");
+                        edges_to_add.push((caller_id, handler_id, props));
+                    }
+                } else {
+                    // Try pattern matching (e.g. "/users/123" matches "/users/{id}")
+                    for (pattern, handler_ids) in &route_handlers {
+                        if route_pattern_matches(pattern, &normalized) {
+                            for &handler_id in handler_ids {
+                                let props = PropertyMap::new()
+                                    .with("matched_route", pattern.as_str())
+                                    .with("match_type", "pattern");
+                                edges_to_add.push((caller_id, handler_id, props));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let count = edges_to_add.len();
+    for (from, to, props) in edges_to_add {
+        let _ = graph.add_edge(from, to, EdgeType::RuntimeCalls, props);
+    }
+
+    if count > 0 {
         tracing::info!(
-            "Found {} route handlers and {} HTTP client callers (edge creation requires URL argument capture)",
+            "Created {} RuntimeCalls edges ({} routes, {} callers)",
+            count,
             route_handlers.len(),
             client_callers.len()
         );
     }
 
     count
+}
+
+/// Extract URL path strings from function source code.
+///
+/// Scans for string literals that look like URL paths (start with "/").
+/// Handles: `fetch("/api/users")`, `requests.get("http://host/api/users")`,
+/// `axios.post('/items')`, template literals with paths.
+fn extract_url_paths_from_source(source: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    // Match string literals that contain URL paths
+    // Pattern: quoted string starting with "/" or containing "://"
+    for cap in regex::Regex::new(r#"["'`](/[a-zA-Z0-9_/{}\-\.]+)"#)
+        .unwrap()
+        .captures_iter(source)
+    {
+        if let Some(path) = cap.get(1) {
+            paths.push(path.as_str().to_string());
+        }
+    }
+
+    // Also extract paths from full URLs: "http://host:port/path"
+    // Use a non-greedy match for the host part so we capture the path
+    for cap in regex::Regex::new(r#"https?://[^/\s"'`]+(/[a-zA-Z0-9_/{}\-\.]+)"#)
+        .unwrap()
+        .captures_iter(source)
+    {
+        if let Some(path) = cap.get(1) {
+            let p = path.as_str().to_string();
+            if !paths.contains(&p) {
+                paths.push(p);
+            }
+        }
+    }
+
+    paths
+}
+
+/// Normalize a route path for matching.
+///
+/// Strips trailing slash, query params, fragments.
+fn normalize_route(route: &str) -> String {
+    let route = route.split('?').next().unwrap_or(route);
+    let route = route.split('#').next().unwrap_or(route);
+    let route = route.trim_end_matches('/');
+    if route.is_empty() {
+        "/".to_string()
+    } else {
+        route.to_string()
+    }
+}
+
+/// Check if a route pattern matches a concrete URL path.
+///
+/// Handles path parameters: "/users/{id}" matches "/users/123"
+fn route_pattern_matches(pattern: &str, path: &str) -> bool {
+    let pattern_parts: Vec<&str> = pattern.split('/').collect();
+    let path_parts: Vec<&str> = path.split('/').collect();
+
+    if pattern_parts.len() != path_parts.len() {
+        return false;
+    }
+
+    pattern_parts
+        .iter()
+        .zip(path_parts.iter())
+        .all(|(pat, actual)| {
+            pat == actual
+                || pat.starts_with('{') && pat.ends_with('}') // {id}, {user_id}, etc.
+                || pat.starts_with(':') // :id (Express-style)
+                || pat.starts_with('<') && pat.ends_with('>') // <id> (Flask-style)
+        })
 }
 
 #[cfg(test)]
@@ -500,4 +609,33 @@ mod tests {
         assert_eq!(node.properties.get_string("route"), Some("/items"));
         assert_eq!(node.properties.get_string("http_method"), Some("POST"));
     }
+}
+
+#[test]
+fn test_extract_url_paths_from_source() {
+    let source = r#"
+        async function getUsers() {
+            const resp = await fetch("/api/users");
+            const data = await axios.get("http://localhost:3000/api/items");
+        }
+        "#;
+    let paths = extract_url_paths_from_source(source);
+    assert!(paths.contains(&"/api/users".to_string()));
+    assert!(paths.contains(&"/api/items".to_string()));
+}
+
+#[test]
+fn test_normalize_route() {
+    assert_eq!(normalize_route("/users/"), "/users");
+    assert_eq!(normalize_route("/users?page=1"), "/users");
+    assert_eq!(normalize_route("/"), "/");
+}
+
+#[test]
+fn test_route_pattern_matches() {
+    assert!(route_pattern_matches("/users/{id}", "/users/123"));
+    assert!(route_pattern_matches("/users/:id", "/users/456"));
+    assert!(route_pattern_matches("/api/items", "/api/items"));
+    assert!(!route_pattern_matches("/users/{id}", "/posts/123"));
+    assert!(!route_pattern_matches("/users/{id}/posts", "/users/123"));
 }
