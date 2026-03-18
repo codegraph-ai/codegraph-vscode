@@ -71,7 +71,20 @@ pub(crate) async fn get_callers(
             .unwrap_or_default()
     };
 
-    let result = query_engine.get_callers(node_id, depth).await;
+    let mut result = query_engine.get_callers(node_id, depth).await;
+
+    // If no callers found, check for same-name variants in other files
+    // (handles multi-arch C codebases where the same function exists in
+    // arch-specific files like backdoorGcc32.c / backdoorGcc64.c)
+    if result.is_empty() && !symbol_name.is_empty() {
+        let g = graph.read().await;
+        let variants = find_same_name_variants(&g, &symbol_name, node_id);
+        drop(g);
+        for variant_id in variants {
+            let variant_callers = query_engine.get_callers(variant_id, depth).await;
+            result.extend(variant_callers);
+        }
+    }
 
     let diagnostic = if result.is_empty() {
         let edge_count = {
@@ -123,7 +136,18 @@ pub(crate) async fn get_callees(
             .unwrap_or_default()
     };
 
-    let result = query_engine.get_callees(node_id, depth).await;
+    let mut result = query_engine.get_callees(node_id, depth).await;
+
+    // Check same-name variants for callees (multi-arch dedup)
+    if result.is_empty() && !symbol_name.is_empty() {
+        let g = graph.read().await;
+        let variants = find_same_name_variants(&g, &symbol_name, node_id);
+        drop(g);
+        for variant_id in variants {
+            let variant_callees = query_engine.get_callees(variant_id, depth).await;
+            result.extend(variant_callees);
+        }
+    }
 
     let diagnostic = if result.is_empty() {
         let edge_count = {
@@ -159,6 +183,25 @@ pub(crate) async fn get_callees(
 // ============================================================
 // Private Helpers
 // ============================================================
+
+/// Find other function nodes with the same name but different node ID.
+/// Used for multi-arch symbol deduplication (e.g. same function in
+/// backdoorGcc32.c and backdoorGcc64.c).
+fn find_same_name_variants(graph: &CodeGraph, name: &str, exclude_id: NodeId) -> Vec<NodeId> {
+    graph
+        .nodes_iter()
+        .filter_map(|(&nid, node)| {
+            if nid != exclude_id
+                && node.node_type == codegraph::NodeType::Function
+                && node_props::name(node) == name
+            {
+                Some(nid)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 fn build_fallback(
     used_fallback: bool,
