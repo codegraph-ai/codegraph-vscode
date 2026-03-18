@@ -1,81 +1,53 @@
-# Source files (bundled output is in out/extension.js)
-src/**
-!src/**/*.d.ts
+# Include only what the extension needs:
+#   package.json, README.md, CHANGELOG.md, LICENSE
+#   out/extension.js (compiled TS)
+#   bin/* (platform binaries)
+#   images/* (icons)
 
-# TypeScript compiled files (we use esbuild bundle instead)
-out/**
-!out/extension.js
+# Exclude everything else
+**/.git/**
+**/.github/**
+**/.gitignore
+**/.gitattributes
+**/.vscode/**
+**/.cargo/**
+**/.claude/**
+**/.overstory/**
+**/.smelt/**
+**/.stellarion/**
+**/.mcp.json
 
-# Rust source (binary is pre-built)
-server/src/**
-server/Cargo.toml
-server/Cargo.lock
-server/target/**
-server/bin/**
+# Rust source and build
+server/**
+codegraph-memory/**
 Cargo.toml
 Cargo.lock
-
-# Development files
-.vscode/**
-.github/**
-.claude/**
-.codemender/**
-.cargo/**
-*.vsix
-
-# Test files
-**/*.test.ts
-**/*.test.js
-**/*.test.d.ts
-**/test/**
-**/tests/**
-**/__tests__/**
-**/fixtures/**
-
-# Build artifacts and caches
 target/**
-node_modules/**
-.turbo/**
-logs/**
-.fastembed_cache/**
-.codegraph/**
-.smelt/**
-.stellarion/**
-
-# Rust crates (source only, not needed at runtime)
-codegraph-memory/**
-
-# Keep models/model2vec for embedding support
-models/**
-!models/model2vec/**
-
-# npm package and prebuilt binaries (separate distribution)
-mcp-package/**
 prebuilt/**
 
-# Documentation (except README, LICENSE, CHANGELOG)
+# TypeScript source
+src/**
+tsconfig.json
+esbuild.js
+vitest.config.ts
+.eslintrc*
+tests/**
+
+# Dev/build files
+scripts/**
 docs/**
-!docs/AI_TOOL_EXAMPLES.md
+mcp-package/**
+node_modules/**
+
+# Documentation/dev files not needed in extension
 BUILD.md
-CONTRIBUTING.md
 PROGRESS.md
 TODO.md
-test_results*.md
-test_scenarios*.md
-
-# Config files
-.eslintrc*
-.prettierrc*
-tsconfig.json
-vitest.config.*
+test_scenarios.md
+test_results_*.md
+log.md
 vsforge.config.json
-.gitignore
-esbuild.js
 
-# Scripts (not needed at runtime)
-scripts/**
-
-# Editor and OS files
-.DS_Store
-*.swp
-*.swo
+# Package artifacts
+*.vsix
+*.tgz
