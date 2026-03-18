@@ -9,7 +9,7 @@
 
 use codegraph::{CodeGraph, Direction, EdgeType, NodeId, NodeType};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::{complexity, node_props, node_resolution, source_code};
 
@@ -80,7 +80,14 @@ pub struct UsageExample {
 pub struct ArchitectureInfo {
     pub module: String,
     pub layer: Option<String>,
-    pub neighbors: Vec<String>,
+    pub neighbors: Vec<NeighborInfo>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NeighborInfo {
+    pub module: String,
+    pub relationship: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -671,30 +678,73 @@ fn get_architecture_info(graph: &CodeGraph, node_id: NodeId) -> Option<Architect
 
     let layer = detect_layer(&path_str);
 
-    let mut neighbors = HashSet::new();
+    let mut neighbor_map: HashMap<String, HashSet<String>> = HashMap::new();
     let outgoing = get_edges(graph, node_id, Direction::Outgoing);
     let incoming = get_edges(graph, node_id, Direction::Incoming);
 
-    for (source, target, _) in outgoing.iter().chain(incoming.iter()) {
-        let other_id = if *source == node_id { *target } else { *source };
-        if let Ok(other_node) = graph.get_node(other_id) {
+    for (source, target, edge_type) in outgoing.iter() {
+        let _ = source; // outgoing: node_id -> target
+        if let Ok(other_node) = graph.get_node(*target) {
             if let Some(other_path) = other_node.properties.get_string("path") {
                 if let Some(other_module) = std::path::Path::new(other_path)
                     .file_stem()
                     .and_then(|s| s.to_str())
                 {
                     if other_module != module {
-                        neighbors.insert(other_module.to_string());
+                        let rel = match edge_type {
+                            EdgeType::Calls => "calls",
+                            EdgeType::Imports => "imports",
+                            _ => "depends_on",
+                        };
+                        neighbor_map
+                            .entry(other_module.to_string())
+                            .or_default()
+                            .insert(rel.to_string());
                     }
                 }
             }
         }
     }
 
+    for (source, _, edge_type) in incoming.iter() {
+        // incoming: source -> node_id
+        if let Ok(other_node) = graph.get_node(*source) {
+            if let Some(other_path) = other_node.properties.get_string("path") {
+                if let Some(other_module) = std::path::Path::new(other_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
+                    if other_module != module {
+                        let rel = match edge_type {
+                            EdgeType::Calls => "called_by",
+                            EdgeType::Imports => "imported_by",
+                            _ => "depended_on_by",
+                        };
+                        neighbor_map
+                            .entry(other_module.to_string())
+                            .or_default()
+                            .insert(rel.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let neighbors: Vec<NeighborInfo> = neighbor_map
+        .into_iter()
+        .map(|(module, rels)| {
+            let relationship = rels.into_iter().collect::<Vec<_>>().join(", ");
+            NeighborInfo {
+                module,
+                relationship,
+            }
+        })
+        .collect();
+
     Some(ArchitectureInfo {
         module,
         layer,
-        neighbors: neighbors.into_iter().collect(),
+        neighbors,
     })
 }
 
