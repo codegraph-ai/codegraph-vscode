@@ -7,6 +7,8 @@
 
 CodeGraph builds a semantic graph of your codebase — functions, classes, imports, call chains — and exposes it through **31 tools**, a **VS Code extension**, and a **persistent memory layer**. AI agents get structured code understanding instead of grepping through files.
 
+[![CodeGraph MCP server](https://glama.ai/mcp/servers/codegraph-ai/codegraph-vscode/badges/card.svg)](https://glama.ai/mcp/servers/codegraph-ai/codegraph-vscode)
+
 ## Quick Start
 
 ### MCP Server (Claude Code, Cursor, any MCP client)
