@@ -1,6 +1,7 @@
 {
   "name": "@memoryx/codegraph-mcp",
   "version": "0.9.1",
+  "mcpName": "io.github.codegraph-ai/codegraph",
   "description": "CodeGraph MCP server - Cross-language code intelligence for AI assistants",
   "author": "aStudioPlus",
   "license": "Apache-2.0",

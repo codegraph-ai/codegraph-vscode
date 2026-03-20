@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.codegraph-ai/codegraph",
+  "description": "Open-source code intelligence for AI agents. Builds a semantic graph of your codebase — functions, classes, imports, call chains — and exposes it through 31 MCP tools. Callers, callees, impact analysis, complexity metrics, unused code detection, AI context assembly, persistent memory, cross-project search. 15 languages via tree-sitter. Single Rust binary, local-first.",
+  "repository": {
+    "url": "https://github.com/codegraph-ai/codegraph-vscode",
+    "source": "github"
+  },
+  "version": "0.9.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@memoryx/codegraph-mcp",
+      "version": "0.9.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": []
+    }
+  ]
+}
