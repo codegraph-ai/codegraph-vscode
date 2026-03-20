@@ -65,11 +65,39 @@ startCommand:
 
 > Semantic code graph with 31 MCP tools — callers, callees, impact analysis, complexity, unused code, AI context. 15 languages. Local-first Rust binary.
 
+## Official MCP Registry + PulseMCP Publishing
+
+PulseMCP ingests from the official MCP registry automatically. Publish once, get listed on both.
+
+### Prerequisites
+- `mcpName` field in `mcp-package/package.json` (done: `io.github.codegraph-ai/codegraph`)
+- `mcp-package/server.json` with registry schema (done)
+- `mcp-publisher` CLI installed at `~/bin/mcp-publisher`
+
+### Publishing Steps
+```bash
+cd /Users/anvanster/projects/codegraph-vscode/mcp-package
+
+# 1. Publish npm package (must include mcpName field)
+npm publish --access public
+
+# 2. Login to MCP registry via GitHub (one-time, opens browser)
+~/bin/mcp-publisher login github
+
+# 3. Publish server metadata to official registry
+~/bin/mcp-publisher publish
+
+# 4. Verify
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codegraph-ai/codegraph"
+```
+
+PulseMCP picks up new entries within a week. Email `hello@pulsemcp.com` to expedite.
+
 ## Tracking
 
-- [ ] Create `smithery.yaml`
-- [ ] Submit to Smithery
-- [ ] Submit to PulseMCP
+- [ ] ~~Create `smithery.yaml`~~ — BLOCKED (requires HTTP transport)
+- [ ] ~~Submit to Smithery~~ — BLOCKED
+- [ ] Submit to PulseMCP (via official registry)
 - [ ] Submit to Glama
 - [ ] Submit to LobeHub
 - [ ] PR to awesome-mcp-servers
