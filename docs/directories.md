@@ -7,7 +7,7 @@
 
 | Registry | URL | Status | Notes |
 |---|---|---|---|
-| Smithery | smithery.ai | **TODO** | Needs `smithery.yaml` in repo root. Largest MCP directory. |
+| Smithery | smithery.ai | **BLOCKED** | Requires Streamable HTTP transport + public HTTPS URL. Our server is stdio-only. Need to add HTTP transport or deploy behind mcp-proxy. |
 | PulseMCP | pulsemcp.com/servers | **TODO** | Submit via pulsemcp.com/submit or API. |
 | Glama | glama.ai/mcp/servers | **TODO** | Backed by MCP working group. Auto-indexes from GitHub. |
 | LobeHub | lobehub.com/mcp | **TODO** | Coraline is already listed here. Submit via GitHub PR to plugin index. |
