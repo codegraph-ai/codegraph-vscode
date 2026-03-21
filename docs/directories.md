@@ -97,11 +97,11 @@ PulseMCP picks up new entries within a week. Email `hello@pulsemcp.com` to exped
 
 - [ ] ~~Create `smithery.yaml`~~ — BLOCKED (requires HTTP transport)
 - [ ] ~~Submit to Smithery~~ — BLOCKED
-- [ ] Submit to PulseMCP (via official registry)
-- [ ] Submit to Glama
-- [ ] Submit to LobeHub
-- [ ] PR to awesome-mcp-servers
-- [ ] Register on mcp-get
-- [ ] Submit to MCPHub
-- [ ] Submit to Composio
-- [ ] Publish to crates.io
+- [x] Submit to PulseMCP (via official registry) — published 2026-03-20
+- [x] Submit to Glama — submitted for review 2026-03-20
+- [ ] Submit to LobeHub — likely auto-indexes from official MCP registry. No public submit process found. Monitor.
+- [x] PR to awesome-mcp-servers — PR #3579 submitted 2026-03-20
+- [x] Register on mcp-get — PR submitted 2026-03-20
+- [ ] Submit to MCPHub — no clear submission process found, monitor
+- [ ] Submit to Composio — no submission form found, monitor
+- [ ] Publish to crates.io — requires publishing all codegraph-monorepo crates first (path deps → registry deps). Deferred.
