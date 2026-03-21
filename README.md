@@ -30,6 +30,23 @@ Add to `~/.claude.json` (or your MCP client config):
 
 The server indexes the current working directory automatically — no `--workspace` flag needed. It also accepts MCP `roots` from the client for workspace discovery.
 
+**Multi-project indexing** — index multiple codebases into a single graph:
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph-mcp",
+      "args": [
+        "--workspace", "/path/to/frontend",
+        "--workspace", "/path/to/backend",
+        "--workspace", "/path/to/shared-lib"
+      ]
+    }
+  }
+}
+```
+
 ### VS Code Extension
 
 ```bash

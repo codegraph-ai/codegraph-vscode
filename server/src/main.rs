@@ -22,9 +22,9 @@ struct Args {
     #[arg(long)]
     stdio: bool,
 
-    /// Workspace directory to index (required for MCP mode)
+    /// Workspace directories to index (can be specified multiple times for multi-project)
     #[arg(long, short)]
-    workspace: Option<PathBuf>,
+    workspace: Vec<PathBuf>,
 }
 
 #[tokio::main]
@@ -49,14 +49,16 @@ async fn main() {
 
     if args.mcp {
         // MCP mode
-        let workspace = args
-            .workspace
-            .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+        let workspaces = if args.workspace.is_empty() {
+            vec![std::env::current_dir().expect("Failed to get current directory")]
+        } else {
+            args.workspace
+        };
 
         tracing::info!("Starting CodeGraph MCP server");
-        tracing::info!("Workspace: {:?}", workspace);
+        tracing::info!("Workspaces: {:?}", workspaces);
 
-        let mut server = codegraph_lsp::mcp::McpServer::new(workspace);
+        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces);
         if let Err(e) = server.run().await {
             tracing::error!("MCP server error: {}", e);
             std::process::exit(1);

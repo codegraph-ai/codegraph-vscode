@@ -39,9 +39,15 @@ impl McpBackend {
     /// Starts with a fresh in-memory graph (re-indexes all files on startup).
     /// After indexing, persists to the shared database at `~/.codegraph/graph.db`
     /// (namespaced by project slug) for cross-project access.
-    pub fn new(workspace: PathBuf) -> Self {
-        let slug = memory::project_slug(&workspace);
+    pub fn new(workspaces: Vec<PathBuf>) -> Self {
+        let primary = workspaces.first().expect("At least one workspace required");
+        let slug = memory::project_slug(primary);
         tracing::info!("Project slug: {}", slug);
+        tracing::info!(
+            "Workspace folders: {:?} ({} total)",
+            workspaces,
+            workspaces.len()
+        );
 
         let graph = Arc::new(RwLock::new(
             CodeGraph::in_memory().expect("Failed to create in-memory graph"),
@@ -69,7 +75,7 @@ impl McpBackend {
             graph,
             parsers: Arc::new(ParserRegistry::new()),
             memory_manager: Arc::new(MemoryManager::new(extension_path)),
-            workspace_folders: vec![workspace],
+            workspace_folders: workspaces,
             project_slug: slug,
         }
     }
@@ -430,9 +436,9 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(workspace: PathBuf) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>) -> Self {
         Self {
-            backend: McpBackend::new(workspace),
+            backend: McpBackend::new(workspaces),
             initialized: false,
         }
     }
