@@ -51,6 +51,8 @@ codegraph-ruby = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/c
 codegraph-swift = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-swift" }
 codegraph-tcl = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-tcl" }
 codegraph-verilog = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-verilog" }
+codegraph-cobol = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-cobol" }
+codegraph-fortran = { path = "/Users/anvanster/projects/codegraph-monorepo/crates/codegraph-fortran" }
 
 [profile.release]
 opt-level = 3
