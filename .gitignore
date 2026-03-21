@@ -47,6 +47,20 @@ Thumbs.db
 *.log
 logs/
 
+# Internal docs (not for public repo)
+TODO.md
+PROGRESS.md
+BUILD.md
+log.md
+test_results_*.md
+vsforge.config.json
+docs/directories.md
+docs/competitive-analysis.md
+docs/refactoring-plan-mcp-lsp-unification.md
+
+# Overstory agent swarm
+.overstory/
+
 # Environment
 .env
 .env.local
