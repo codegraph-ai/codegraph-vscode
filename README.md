@@ -50,7 +50,7 @@ The server indexes the current working directory automatically — no `--workspa
 ### VS Code Extension
 
 ```bash
-code --install-extension codegraph-0.9.0.vsix
+code --install-extension codegraph-0.10.0.vsix
 ```
 
 The extension registers 30 tools as VS Code Language Model Tools. To steer Copilot toward using them:
@@ -115,9 +115,9 @@ All tool names are prefixed with `codegraph_` (e.g. `codegraph_get_ai_context`).
 
 ## Languages
 
-15 languages parsed via tree-sitter — all with functions, imports, call graph, complexity metrics, dependency graphs, symbol search, impact analysis, and unused code detection:
+17 languages parsed via tree-sitter — all with functions, imports, call graph, complexity metrics, dependency graphs, symbol search, impact analysis, and unused code detection:
 
-TypeScript/JS, Python, Rust, Go, C, C++, Java, Kotlin, C#, PHP, Ruby, Swift, Tcl, Verilog
+TypeScript/JS, Python, Rust, Go, C, C++, Java, Kotlin, C#, PHP, Ruby, Swift, Tcl, Verilog/SystemVerilog, COBOL, Fortran
 
 ---
 
@@ -133,7 +133,7 @@ MCP Client (Claude, Cursor, ...)        VS Code Extension
             ┌─────────────────────────────┐
             │  Shared Domain Layer (16 modules)  │
             ├─────────────────────────────┤
-            │  14 tree-sitter parsers     │
+            │  17 tree-sitter parsers     │
             │  Semantic graph engine      │
             │  AI query engine (BM25)     │
             │  Memory layer (RocksDB)     │
