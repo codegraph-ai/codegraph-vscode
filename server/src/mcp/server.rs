@@ -1389,18 +1389,19 @@ impl McpServer {
                 };
 
                 if summary {
-                    let caller_count = result
-                        .get("callers")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
+                    // Count callers/callees from nodes array (each has a "direction" field)
+                    let nodes = result
+                        .get("nodes")
+                        .and_then(|v| v.as_array());
+                    let caller_count = nodes
+                        .map(|a| a.iter().filter(|n| n.get("direction").and_then(|d| d.as_str()) == Some("caller")).count())
                         .unwrap_or(0);
-                    let callee_count = result
-                        .get("callees")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
+                    let callee_count = nodes
+                        .map(|a| a.iter().filter(|n| n.get("direction").and_then(|d| d.as_str()) == Some("callee")).count())
                         .unwrap_or(0);
                     let symbol = result
-                        .get("symbol")
+                        .get("root_node")
+                        .or_else(|| result.get("symbol_name"))
                         .cloned()
                         .unwrap_or(serde_json::json!(null));
                     Ok(serde_json::json!({
