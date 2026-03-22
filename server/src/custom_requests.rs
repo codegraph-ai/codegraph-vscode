@@ -156,6 +156,75 @@ impl CodeGraphBackend {
                 serde_json::to_value(response).map_err(|_| Error::internal_error())
             }
 
+            "codegraph/findDuplicates" => {
+                let threshold = params
+                    .get("threshold")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(0.7);
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(20);
+                let uri_filter = params.get("uri").and_then(|v| v.as_str());
+
+                let result = self
+                    .query_engine
+                    .find_duplicates(threshold, limit, uri_filter)
+                    .await;
+
+                serde_json::to_value(result).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/findSimilar" => {
+                let node_id = if let Some(id_str) = params.get("nodeId").and_then(|v| v.as_str()) {
+                    id_str
+                        .parse::<codegraph::NodeId>()
+                        .map_err(|_| Error::invalid_params("Invalid nodeId"))?
+                } else if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
+                    let line = params
+                        .get("line")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32)
+                        .unwrap_or(0);
+                    let path = uri.strip_prefix("file://").unwrap_or(uri);
+                    let graph = self.graph.read().await;
+                    let mut best: Option<(codegraph::NodeId, u32)> = None;
+                    for (nid, node) in graph.iter_nodes() {
+                        if node.node_type != codegraph::NodeType::Function {
+                            continue;
+                        }
+                        let node_path = crate::domain::node_props::path(node);
+                        if !node_path.ends_with(path) && !path.ends_with(&node_path) {
+                            continue;
+                        }
+                        let ls = crate::domain::node_props::line_start(node);
+                        let le = crate::domain::node_props::line_end(node);
+                        if line >= ls && line <= le {
+                            let span = le - ls;
+                            if best.is_none() || span < best.unwrap().1 {
+                                best = Some((nid, span));
+                            }
+                        }
+                    }
+                    best.map(|(id, _)| id)
+                        .ok_or_else(|| Error::invalid_params("Could not find symbol at location"))?
+                } else {
+                    return Err(Error::invalid_params("Missing 'uri' or 'nodeId' parameter"));
+                };
+
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(10);
+
+                let result = self.query_engine.find_similar(node_id, limit).await;
+
+                serde_json::to_value(result).map_err(|_| Error::internal_error())
+            }
+
             "codegraph/indexDirectory" => self.handle_index_directory(params).await,
 
             "codegraph/updateConfiguration" => self.handle_update_configuration(params).await,

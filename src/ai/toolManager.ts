@@ -1399,6 +1399,77 @@ export class CodeGraphToolManager {
             })
         );
 
+        // Tool: Find Duplicates
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_find_duplicates', {
+                invoke: async (options, token) => {
+                    const input = options.input as { threshold?: number; limit?: number; uri?: string };
+                    const { threshold = 0.7, limit = 20, uri } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<any>(
+                            'codegraph.findDuplicates',
+                            { threshold, limit, uri },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(JSON.stringify(response, null, 2))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'find duplicates', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { threshold?: number };
+                    return {
+                        invocationMessage: `Scanning for duplicate functions (threshold: ${input.threshold ?? 0.7})...`
+                    };
+                }
+            })
+        );
+
+        // Tool: Find Similar
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_find_similar', {
+                invoke: async (options, token) => {
+                    const input = options.input as { uri?: string; line?: number; nodeId?: string; limit?: number };
+                    const { uri, line = 0, nodeId, limit = 10 } = input;
+
+                    try {
+                        const params: any = { limit };
+                        if (nodeId) {
+                            params.nodeId = nodeId;
+                        } else if (uri) {
+                            params.uri = uri;
+                            params.line = line;
+                        }
+
+                        const response = await this.sendRequestWithRetry<any>(
+                            'codegraph.findSimilar',
+                            params,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(JSON.stringify(response, null, 2))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'find similar', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { uri?: string };
+                    const fileName = input.uri ? vscode.Uri.parse(input.uri).path.split('/').pop() : 'symbol';
+                    return {
+                        invocationMessage: `Finding functions similar to ${fileName}...`
+                    };
+                }
+            })
+        );
+
         console.log(`[CodeGraph] Registered ${this.disposables.length} Language Model tools`);
     }
 
