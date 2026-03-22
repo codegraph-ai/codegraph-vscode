@@ -1,6 +1,6 @@
 //! MCP Tool Definitions
 //!
-//! Defines all 31 CodeGraph tools for the MCP protocol.
+//! Defines all 33 CodeGraph tools for the MCP protocol.
 
 use super::protocol::{PropertySchema, Tool, ToolInputSchema};
 use std::collections::HashMap;
@@ -43,6 +43,9 @@ pub fn get_all_tools() -> Vec<Tool> {
         search_git_history_tool(),
         // Cross-Project Tools (1)
         cross_project_search_tool(),
+        // Code Similarity Tools (2)
+        find_duplicates_tool(),
+        find_similar_tool(),
         // Admin Tools (1)
         reindex_workspace_tool(),
     ]
@@ -1185,6 +1188,65 @@ fn reindex_workspace_tool() -> Tool {
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: None,
+            required: None,
+        },
+    }
+}
+
+fn find_duplicates_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "threshold".to_string(),
+        number_prop(
+            "Minimum similarity score (0.0-1.0) to consider a duplicate. Default 0.7 works well for code clones. Use 0.9+ for near-exact duplicates.",
+            Some(0.7),
+        ),
+    );
+    properties.insert(
+        "limit".to_string(),
+        number_prop("Maximum number of duplicate pairs to return", Some(20.0)),
+    );
+    properties.insert(
+        "uri".to_string(),
+        string_prop("Optional file URI to limit search scope to functions in matching files"),
+    );
+
+    Tool {
+        name: "codegraph_find_duplicates".to_string(),
+        description: Some("Detects duplicate and near-duplicate functions across the codebase using semantic code embeddings. USE WHEN: cleaning up code, finding copy-paste patterns, identifying refactoring opportunities, or auditing code quality. Returns pairs of similar functions ranked by similarity score. Works across languages — can find a Python function duplicated in Go. Threshold 0.7 catches renamed-variable clones, 0.9+ finds near-exact copies. Powered by Jina Code V2 embeddings trained on 150M+ code pairs.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: None,
+        },
+    }
+}
+
+fn find_similar_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "uri".to_string(),
+        string_prop("File URI containing the function to find similar code for"),
+    );
+    properties.insert(
+        "line".to_string(),
+        number_prop("Line number of the function (0-indexed)", None),
+    );
+    properties.insert(
+        "nodeId".to_string(),
+        string_prop("Node ID from symbol_search (alternative to uri+line)"),
+    );
+    properties.insert(
+        "limit".to_string(),
+        number_prop("Maximum number of similar functions to return", Some(10.0)),
+    );
+
+    Tool {
+        name: "codegraph_find_similar".to_string(),
+        description: Some("Finds functions most similar to a given function using semantic code embeddings. USE WHEN: checking if similar functionality already exists before writing new code, finding related implementations across the codebase, or discovering code that could be consolidated. Returns functions ranked by similarity score with file paths and signatures. Works across languages.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
             required: None,
         },
     }

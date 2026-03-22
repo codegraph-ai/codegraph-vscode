@@ -2444,6 +2444,66 @@ impl McpServer {
                 Ok(result)
             }
 
+            // ==================== Code Similarity Tools ====================
+            "codegraph_find_duplicates" => {
+                let threshold = args
+                    .get("threshold")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(0.7);
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(20);
+                let uri_filter = args.get("uri").and_then(|v| v.as_str());
+
+                let result = self
+                    .backend
+                    .query_engine
+                    .find_duplicates(threshold, limit, uri_filter)
+                    .await;
+
+                Ok(serde_json::to_value(&result).map_err(|e| e.to_string())?)
+            }
+
+            "codegraph_find_similar" => {
+                let node_id = if let Some(id_str) = args.get("nodeId").and_then(|v| v.as_str()) {
+                    id_str
+                        .parse::<codegraph::NodeId>()
+                        .map_err(|_| "Invalid nodeId")?
+                } else {
+                    let uri = args
+                        .get("uri")
+                        .and_then(|v| v.as_str())
+                        .ok_or("Missing 'uri' or 'nodeId' parameter")?;
+                    let line = args
+                        .get("line")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32)
+                        .unwrap_or(0);
+
+                    self.find_nearest_node_with_fallback(uri, line)
+                        .await
+                        .map(|(id, _)| id)
+                        .ok_or("Could not find symbol at location")?
+                };
+
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(10);
+
+                let result = self
+                    .backend
+                    .query_engine
+                    .find_similar(node_id, limit)
+                    .await;
+
+                Ok(serde_json::to_value(&result).map_err(|e| e.to_string())?)
+            }
+
             // ==================== Admin Tools ====================
             "codegraph_reindex_workspace" => {
                 tracing::info!("Reindexing workspace...");

@@ -208,6 +208,28 @@ pub struct SymbolSearchResult {
     pub query_time_ms: u64,
 }
 
+/// A pair of similar/duplicate functions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicatePair {
+    /// First symbol
+    pub symbol_a: SymbolInfo,
+    pub node_id_a: NodeId,
+    /// Second symbol
+    pub symbol_b: SymbolInfo,
+    pub node_id_b: NodeId,
+    /// Cosine similarity score (0.0-1.0)
+    pub similarity: f32,
+}
+
+/// Result of duplicate/similar code detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicateResult {
+    pub pairs: Vec<DuplicatePair>,
+    pub total_symbols_compared: usize,
+    pub threshold: f32,
+    pub query_time_ms: u64,
+}
+
 /// Import match mode for find_by_imports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

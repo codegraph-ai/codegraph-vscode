@@ -4,10 +4,10 @@
 //! Integrates with CodeGraph for graph-based code intelligence.
 
 use super::primitives::{
-    truncate_string, CallInfo, DetailedSymbolInfo, EntryPoint, EntryType, ImportMatchMode,
-    ImportSearchOptions, SearchOptions, SignaturePattern, SymbolInfo, SymbolLocation, SymbolMatch,
-    SymbolSearchResult, SymbolType, TraversalDirection, TraversalFilter, TraversalNode,
-    MAX_SIGNATURE_LENGTH,
+    truncate_string, CallInfo, DetailedSymbolInfo, DuplicatePair, DuplicateResult, EntryPoint,
+    EntryType, ImportMatchMode, ImportSearchOptions, SearchOptions, SignaturePattern, SymbolInfo,
+    SymbolLocation, SymbolMatch, SymbolSearchResult, SymbolType, TraversalDirection,
+    TraversalFilter, TraversalNode, MAX_SIGNATURE_LENGTH,
 };
 use super::text_index::{TextIndex, TextIndexBuilder};
 use crate::domain::node_props;
@@ -1293,6 +1293,198 @@ impl QueryEngine {
         }
 
         None
+    }
+
+    /// Find duplicate/similar functions across the codebase.
+    ///
+    /// Compares all function embedding vectors pairwise and returns pairs
+    /// above the similarity threshold. With Jina Code V2, a threshold of
+    /// 0.70 reliably identifies clones while filtering noise.
+    pub async fn find_duplicates(
+        &self,
+        threshold: f32,
+        limit: usize,
+        uri_filter: Option<&str>,
+    ) -> DuplicateResult {
+        let start = Instant::now();
+        let symbol_vecs = self.symbol_vectors.read().await;
+        let graph = self.graph.read().await;
+
+        // Collect function vectors, optionally filtered by file
+        let entries: Vec<(NodeId, &Vec<f32>)> = symbol_vecs
+            .iter()
+            .filter(|(node_id, _)| {
+                let Ok(node) = graph.get_node(**node_id) else {
+                    return false;
+                };
+                if node.node_type != NodeType::Function {
+                    return false;
+                }
+                if let Some(filter) = uri_filter {
+                    let path = node_props::path(node);
+                    path.contains(filter)
+                } else {
+                    true
+                }
+            })
+            .map(|(id, vec)| (*id, vec))
+            .collect();
+
+        let total_symbols = entries.len();
+        let mut pairs: Vec<DuplicatePair> = Vec::new();
+
+        // Common boilerplate function names across all supported languages.
+        // These produce false positive duplicates because they share identical
+        // signatures despite being unrelated implementations.
+        const SKIP_NAMES: &[&str] = &[
+            // Rust traits
+            "default", "new", "from", "fmt", "clone", "drop", "deref", "eq",
+            "hash", "into", "try_from", "try_into", "serialize", "deserialize",
+            // Java/Kotlin/C#
+            "tostring", "hashcode", "equals", "compareto", "getclass", "finalize",
+            "dispose", "close", "gettype", "gethashcode",
+            // Python
+            "__init__", "__str__", "__repr__", "__eq__", "__hash__", "__len__",
+            "__iter__", "__next__", "__enter__", "__exit__", "__del__",
+            // JavaScript/TypeScript
+            "constructor", "tostring", "valueof", "tolocalestring", "tojson",
+            // C/C++
+            "main", "init", "destroy", "free", "malloc", "realloc",
+            // Go
+            "string", "error", "len", "close",
+            // PHP
+            "__construct", "__destruct", "__tostring", "__clone", "__get", "__set",
+            // Ruby
+            "initialize", "to_s", "to_str", "inspect", "hash", "eql?",
+            // Swift
+            "init", "deinit", "description",
+            // Common getters/setters (all languages)
+            "get", "set", "getvalue", "setvalue",
+        ];
+
+        // Pairwise comparison (O(n²) but n is typically <5000)
+        for i in 0..entries.len() {
+            for j in (i + 1)..entries.len() {
+                let sim = cosine_similarity(entries[i].1, entries[j].1);
+                if sim >= threshold {
+                    let node_a = graph.get_node(entries[i].0);
+                    let node_b = graph.get_node(entries[j].0);
+                    if let (Ok(na), Ok(nb)) = (node_a, node_b) {
+                        // Skip common trait impl names (default, new, from, etc.)
+                        let name_a = node_props::name(na).to_lowercase();
+                        let name_b = node_props::name(nb).to_lowercase();
+                        if SKIP_NAMES.contains(&name_a.as_str())
+                            && SKIP_NAMES.contains(&name_b.as_str())
+                        {
+                            continue;
+                        }
+
+                        // Skip pairs in the same file at similar lines (likely the same function)
+                        let path_a = node_props::path(na);
+                        let path_b = node_props::path(nb);
+                        let line_a = node_props::line_start(na);
+                        let line_b = node_props::line_start(nb);
+                        if path_a == path_b && (line_a as i64 - line_b as i64).unsigned_abs() < 5 {
+                            continue;
+                        }
+
+                        if let (Some(sym_a), Some(sym_b)) = (
+                            self.node_to_symbol_info(&graph, entries[i].0),
+                            self.node_to_symbol_info(&graph, entries[j].0),
+                        ) {
+                            pairs.push(DuplicatePair {
+                                symbol_a: sym_a,
+                                node_id_a: entries[i].0,
+                                symbol_b: sym_b,
+                                node_id_b: entries[j].0,
+                                similarity: sim,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by similarity descending
+        pairs.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+        pairs.truncate(limit);
+
+        DuplicateResult {
+            pairs,
+            total_symbols_compared: total_symbols,
+            threshold,
+            query_time_ms: start.elapsed().as_millis() as u64,
+        }
+    }
+
+    /// Find functions most similar to a given function.
+    ///
+    /// Returns the top N functions closest to the target in embedding space.
+    /// Useful for "is there already a function that does this?" checks.
+    pub async fn find_similar(
+        &self,
+        target_node_id: NodeId,
+        limit: usize,
+    ) -> DuplicateResult {
+        let start = Instant::now();
+        let symbol_vecs = self.symbol_vectors.read().await;
+        let graph = self.graph.read().await;
+
+        let target_vec = match symbol_vecs.get(&target_node_id) {
+            Some(v) => v.clone(),
+            None => {
+                return DuplicateResult {
+                    pairs: Vec::new(),
+                    total_symbols_compared: 0,
+                    threshold: 0.0,
+                    query_time_ms: start.elapsed().as_millis() as u64,
+                };
+            }
+        };
+
+        let target_node = graph.get_node(target_node_id).ok();
+
+        let mut scored: Vec<(NodeId, f32)> = symbol_vecs
+            .iter()
+            .filter(|(id, _)| **id != target_node_id)
+            .filter(|(id, _)| {
+                graph
+                    .get_node(**id)
+                    .map(|n| n.node_type == NodeType::Function)
+                    .unwrap_or(false)
+            })
+            .map(|(id, vec)| (*id, cosine_similarity(&target_vec, vec)))
+            .filter(|(_, sim)| *sim > 0.1)
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        let pairs: Vec<DuplicatePair> = scored
+            .into_iter()
+            .filter_map(|(node_id, sim)| {
+                // Verify both nodes still exist
+                graph.get_node(node_id).ok()?;
+                target_node?;
+                let sym_a = self.node_to_symbol_info(&graph, target_node_id)?;
+                let sym_b = self.node_to_symbol_info(&graph, node_id)?;
+                Some(DuplicatePair {
+                    symbol_a: sym_a,
+                    node_id_a: target_node_id,
+                    symbol_b: sym_b,
+                    node_id_b: node_id,
+                    similarity: sim,
+                })
+            })
+            .collect();
+
+        let total = symbol_vecs.len();
+        DuplicateResult {
+            pairs,
+            total_symbols_compared: total,
+            threshold: 0.0,
+            query_time_ms: start.elapsed().as_millis() as u64,
+        }
     }
 }
 
