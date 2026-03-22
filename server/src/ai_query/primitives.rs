@@ -230,6 +230,61 @@ pub struct DuplicateResult {
     pub query_time_ms: u64,
 }
 
+/// A cluster of semantically related functions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolCluster {
+    /// Cluster label (auto-generated from most representative member)
+    pub label: String,
+    /// Members of this cluster
+    pub members: Vec<ClusterMember>,
+    /// Number of members
+    pub size: usize,
+}
+
+/// A member of a symbol cluster.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterMember {
+    pub node_id: NodeId,
+    pub name: String,
+    pub file: String,
+    pub line: u32,
+    pub similarity_to_centroid: f32,
+}
+
+/// Result of symbol clustering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterResult {
+    pub clusters: Vec<SymbolCluster>,
+    pub total_symbols: usize,
+    pub unclustered: usize,
+    pub query_time_ms: u64,
+}
+
+/// Comparison between two functions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolComparison {
+    pub symbol_a: SymbolInfo,
+    pub symbol_b: SymbolInfo,
+    pub similarity: f32,
+    pub verdict: String,
+    pub structural: StructuralComparison,
+    pub shared_callers: Vec<String>,
+    pub shared_callees: Vec<String>,
+}
+
+/// Structural comparison between two symbols.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuralComparison {
+    pub same_file: bool,
+    pub same_language: bool,
+    pub complexity_a: u32,
+    pub complexity_b: u32,
+    pub lines_a: u32,
+    pub lines_b: u32,
+    pub param_count_a: usize,
+    pub param_count_b: usize,
+}
+
 /// Import match mode for find_by_imports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

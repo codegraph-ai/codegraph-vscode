@@ -1470,6 +1470,66 @@ export class CodeGraphToolManager {
             })
         );
 
+        // Tool: Cluster Symbols
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_cluster_symbols', {
+                invoke: async (options, token) => {
+                    const input = options.input as { threshold?: number; minClusterSize?: number; limit?: number };
+                    const { threshold = 0.7, minClusterSize = 2, limit = 20 } = input;
+
+                    try {
+                        const response = await this.sendRequestWithRetry<any>(
+                            'codegraph.clusterSymbols',
+                            { threshold, minClusterSize, limit },
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(JSON.stringify(response, null, 2))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'cluster symbols', token);
+                    }
+                },
+                prepareInvocation: async (options, _token) => {
+                    const input = options.input as { threshold?: number };
+                    return {
+                        invocationMessage: `Clustering functions by semantic similarity (threshold: ${input.threshold ?? 0.7})...`
+                    };
+                }
+            })
+        );
+
+        // Tool: Compare Symbols
+        this.disposables.push(
+            vscode.lm.registerTool('codegraph_compare_symbols', {
+                invoke: async (options, token) => {
+                    const input = options.input as { uriA?: string; lineA?: number; uriB?: string; lineB?: number; nodeIdA?: string; nodeIdB?: string };
+
+                    try {
+                        const response = await this.sendRequestWithRetry<any>(
+                            'codegraph.compareSymbols',
+                            input,
+                            token,
+                            { retries: 1 }
+                        );
+
+                        return new vscode.LanguageModelToolResult([
+                            new vscode.LanguageModelTextPart(JSON.stringify(response, null, 2))
+                        ]);
+                    } catch (error) {
+                        return this.handleToolError(error, 'compare symbols', token);
+                    }
+                },
+                prepareInvocation: async (_options, _token) => {
+                    return {
+                        invocationMessage: 'Comparing two functions...'
+                    };
+                }
+            })
+        );
+
         console.log(`[CodeGraph] Registered ${this.disposables.length} Language Model tools`);
     }
 

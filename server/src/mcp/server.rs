@@ -2504,6 +2504,65 @@ impl McpServer {
                 Ok(serde_json::to_value(&result).map_err(|e| e.to_string())?)
             }
 
+            "codegraph_cluster_symbols" => {
+                let threshold = args
+                    .get("threshold")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(0.7);
+                let min_cluster_size = args
+                    .get("minClusterSize")
+                    .or_else(|| args.get("min_cluster_size"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(2);
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(20);
+
+                let result = self
+                    .backend
+                    .query_engine
+                    .cluster_symbols(threshold, min_cluster_size, limit)
+                    .await;
+
+                Ok(serde_json::to_value(&result).map_err(|e| e.to_string())?)
+            }
+
+            "codegraph_compare_symbols" => {
+                let node_a = if let Some(id_str) = args.get("nodeIdA").and_then(|v| v.as_str()) {
+                    id_str.parse::<codegraph::NodeId>().map_err(|_| "Invalid nodeIdA".to_string())?
+                } else {
+                    let uri = args.get("uriA").and_then(|v| v.as_str())
+                        .ok_or("Missing 'uriA' or 'nodeIdA'")?;
+                    let line = args.get("lineA").and_then(|v| v.as_u64()).map(|v| v as u32).unwrap_or(0);
+                    self.find_nearest_node_with_fallback(uri, line).await
+                        .map(|(id, _)| id)
+                        .ok_or("Could not find symbol A")?
+                };
+                let node_b = if let Some(id_str) = args.get("nodeIdB").and_then(|v| v.as_str()) {
+                    id_str.parse::<codegraph::NodeId>().map_err(|_| "Invalid nodeIdB".to_string())?
+                } else {
+                    let uri = args.get("uriB").and_then(|v| v.as_str())
+                        .ok_or("Missing 'uriB' or 'nodeIdB'")?;
+                    let line = args.get("lineB").and_then(|v| v.as_u64()).map(|v| v as u32).unwrap_or(0);
+                    self.find_nearest_node_with_fallback(uri, line).await
+                        .map(|(id, _)| id)
+                        .ok_or("Could not find symbol B")?
+                };
+
+                let result = self
+                    .backend
+                    .query_engine
+                    .compare_symbols(node_a, node_b)
+                    .await
+                    .ok_or("Could not compare symbols")?;
+
+                Ok(serde_json::to_value(&result).map_err(|e| e.to_string())?)
+            }
+
             // ==================== Admin Tools ====================
             "codegraph_reindex_workspace" => {
                 tracing::info!("Reindexing workspace...");

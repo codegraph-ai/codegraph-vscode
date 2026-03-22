@@ -4,8 +4,9 @@
 //! Integrates with CodeGraph for graph-based code intelligence.
 
 use super::primitives::{
-    truncate_string, CallInfo, DetailedSymbolInfo, DuplicatePair, DuplicateResult, EntryPoint,
-    EntryType, ImportMatchMode, ImportSearchOptions, SearchOptions, SignaturePattern, SymbolInfo,
+    truncate_string, CallInfo, ClusterMember, ClusterResult, DetailedSymbolInfo, DuplicatePair,
+    DuplicateResult, EntryPoint, EntryType, ImportMatchMode, ImportSearchOptions, SearchOptions,
+    SignaturePattern, StructuralComparison, SymbolCluster, SymbolComparison, SymbolInfo,
     SymbolLocation, SymbolMatch, SymbolSearchResult, SymbolType, TraversalDirection,
     TraversalFilter, TraversalNode, MAX_SIGNATURE_LENGTH,
 };
@@ -1485,6 +1486,218 @@ impl QueryEngine {
             threshold: 0.0,
             query_time_ms: start.elapsed().as_millis() as u64,
         }
+    }
+
+    /// Cluster functions into semantic groups using greedy clustering.
+    ///
+    /// Picks an unassigned function, finds all functions within `threshold`
+    /// similarity, forms a cluster, repeats. Labels clusters by the most
+    /// central member's name.
+    pub async fn cluster_symbols(
+        &self,
+        threshold: f32,
+        min_cluster_size: usize,
+        limit: usize,
+    ) -> ClusterResult {
+        let start = Instant::now();
+        let symbol_vecs = self.symbol_vectors.read().await;
+        let graph = self.graph.read().await;
+
+        // Collect function vectors
+        let entries: Vec<(NodeId, &Vec<f32>)> = symbol_vecs
+            .iter()
+            .filter(|(node_id, _)| {
+                graph
+                    .get_node(**node_id)
+                    .map(|n| n.node_type == NodeType::Function)
+                    .unwrap_or(false)
+            })
+            .map(|(id, vec)| (*id, vec))
+            .collect();
+
+        let total_symbols = entries.len();
+        let mut assigned = vec![false; entries.len()];
+        let mut clusters: Vec<SymbolCluster> = Vec::new();
+
+        for i in 0..entries.len() {
+            if assigned[i] {
+                continue;
+            }
+
+            // Find all unassigned entries similar to entries[i]
+            let mut members = vec![i];
+            for j in (i + 1)..entries.len() {
+                if assigned[j] {
+                    continue;
+                }
+                let sim = cosine_similarity(entries[i].1, entries[j].1);
+                if sim >= threshold {
+                    members.push(j);
+                }
+            }
+
+            if members.len() < min_cluster_size {
+                continue;
+            }
+
+            // Mark as assigned
+            for &idx in &members {
+                assigned[idx] = true;
+            }
+
+            // Build cluster
+            let cluster_members: Vec<ClusterMember> = members
+                .iter()
+                .filter_map(|&idx| {
+                    let node = graph.get_node(entries[idx].0).ok()?;
+                    let sim = cosine_similarity(entries[i].1, entries[idx].1);
+                    Some(ClusterMember {
+                        node_id: entries[idx].0,
+                        name: node_props::name(node).to_string(),
+                        file: node_props::path(node).to_string(),
+                        line: node_props::line_start(node),
+                        similarity_to_centroid: sim,
+                    })
+                })
+                .collect();
+
+            let label = cluster_members
+                .first()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let size = cluster_members.len();
+            clusters.push(SymbolCluster {
+                label,
+                members: cluster_members,
+                size,
+            });
+        }
+
+        // Sort by size descending
+        clusters.sort_by(|a, b| b.size.cmp(&a.size));
+        clusters.truncate(limit);
+
+        let unclustered = assigned.iter().filter(|&&a| !a).count();
+
+        ClusterResult {
+            clusters,
+            total_symbols,
+            unclustered,
+            query_time_ms: start.elapsed().as_millis() as u64,
+        }
+    }
+
+    /// Compare two functions structurally and semantically.
+    pub async fn compare_symbols(
+        &self,
+        node_id_a: NodeId,
+        node_id_b: NodeId,
+    ) -> Option<SymbolComparison> {
+        let symbol_vecs = self.symbol_vectors.read().await;
+        let graph = self.graph.read().await;
+
+        let node_a = graph.get_node(node_id_a).ok()?;
+        let node_b = graph.get_node(node_id_b).ok()?;
+
+        let sym_a = self.node_to_symbol_info(&graph, node_id_a)?;
+        let sym_b = self.node_to_symbol_info(&graph, node_id_b)?;
+
+        // Semantic similarity
+        let similarity = match (symbol_vecs.get(&node_id_a), symbol_vecs.get(&node_id_b)) {
+            (Some(va), Some(vb)) => cosine_similarity(va, vb),
+            _ => 0.0,
+        };
+
+        // Structural comparison
+        let path_a = node_props::path(node_a);
+        let path_b = node_props::path(node_b);
+        let lang_a = path_a.rsplit('.').next().unwrap_or("");
+        let lang_b = path_b.rsplit('.').next().unwrap_or("");
+
+        let complexity_a = node_a
+            .properties
+            .get_int("complexity_cyclomatic")
+            .unwrap_or(0) as u32;
+        let complexity_b = node_b
+            .properties
+            .get_int("complexity_cyclomatic")
+            .unwrap_or(0) as u32;
+
+        let structural = StructuralComparison {
+            same_file: path_a == path_b,
+            same_language: lang_a == lang_b,
+            complexity_a,
+            complexity_b,
+            lines_a: node_props::line_end(node_a).saturating_sub(node_props::line_start(node_a)) + 1,
+            lines_b: node_props::line_end(node_b).saturating_sub(node_props::line_start(node_b)) + 1,
+            param_count_a: node_a
+                .properties
+                .get_string_list_compat("parameters")
+                .map(|p| p.len())
+                .unwrap_or(0),
+            param_count_b: node_b
+                .properties
+                .get_string_list_compat("parameters")
+                .map(|p| p.len())
+                .unwrap_or(0),
+        };
+
+        // Find shared callers/callees by scanning all edges
+        let mut callers_a = std::collections::HashSet::new();
+        let mut callers_b = std::collections::HashSet::new();
+        let mut callees_a = std::collections::HashSet::new();
+        let mut callees_b = std::collections::HashSet::new();
+
+        for (_eid, edge) in graph.iter_edges() {
+            if edge.edge_type != EdgeType::Calls {
+                continue;
+            }
+            if let Ok(src) = graph.get_node(edge.source_id) {
+                let src_name = node_props::name(src).to_string();
+                if edge.target_id == node_id_a {
+                    callers_a.insert(src_name.clone());
+                }
+                if edge.target_id == node_id_b {
+                    callers_b.insert(src_name);
+                }
+            }
+            if let Ok(tgt) = graph.get_node(edge.target_id) {
+                let tgt_name = node_props::name(tgt).to_string();
+                if edge.source_id == node_id_a {
+                    callees_a.insert(tgt_name.clone());
+                }
+                if edge.source_id == node_id_b {
+                    callees_b.insert(tgt_name);
+                }
+            }
+        }
+
+        let shared_callers: Vec<String> = callers_a.intersection(&callers_b).cloned().collect();
+        let shared_callees: Vec<String> = callees_a.intersection(&callees_b).cloned().collect();
+
+        // Generate verdict
+        let verdict = if similarity > 0.9 {
+            "Near-identical: likely copy-paste clone. Consider extracting shared function.".to_string()
+        } else if similarity > 0.7 {
+            "Highly similar: same algorithm with different details. Review for consolidation.".to_string()
+        } else if similarity > 0.5 {
+            "Moderately similar: related functionality but distinct implementations.".to_string()
+        } else if similarity > 0.3 {
+            "Loosely related: some conceptual overlap but different purposes.".to_string()
+        } else {
+            "Unrelated: different functionality despite any naming similarity.".to_string()
+        };
+
+        Some(SymbolComparison {
+            symbol_a: sym_a,
+            symbol_b: sym_b,
+            similarity,
+            verdict,
+            structural,
+            shared_callers,
+            shared_callees,
+        })
     }
 }
 

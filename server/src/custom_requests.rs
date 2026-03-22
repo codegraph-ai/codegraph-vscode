@@ -225,6 +225,88 @@ impl CodeGraphBackend {
                 serde_json::to_value(result).map_err(|_| Error::internal_error())
             }
 
+            "codegraph/clusterSymbols" => {
+                let threshold = params
+                    .get("threshold")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(0.7);
+                let min_cluster_size = params
+                    .get("minClusterSize")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(2);
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(20);
+
+                let result = self
+                    .query_engine
+                    .cluster_symbols(threshold, min_cluster_size, limit)
+                    .await;
+
+                serde_json::to_value(result).map_err(|_| Error::internal_error())
+            }
+
+            "codegraph/compareSymbols" => {
+                let node_a = if let Some(id_str) = params.get("nodeIdA").and_then(|v| v.as_str()) {
+                    id_str.parse::<codegraph::NodeId>()
+                        .map_err(|_| Error::invalid_params("Invalid nodeIdA"))?
+                } else {
+                    let uri = params.get("uriA").and_then(|v| v.as_str())
+                        .ok_or_else(|| Error::invalid_params("Missing 'uriA' or 'nodeIdA'"))?;
+                    let line = params.get("lineA").and_then(|v| v.as_u64()).map(|v| v as u32).unwrap_or(0);
+                    let path = uri.strip_prefix("file://").unwrap_or(uri);
+                    let graph = self.graph.read().await;
+                    let mut best: Option<(codegraph::NodeId, u32)> = None;
+                    for (nid, node) in graph.iter_nodes() {
+                        if node.node_type != codegraph::NodeType::Function { continue; }
+                        let np = crate::domain::node_props::path(node);
+                        if !np.ends_with(path) && !path.ends_with(&np) { continue; }
+                        let ls = crate::domain::node_props::line_start(node);
+                        let le = crate::domain::node_props::line_end(node);
+                        if line >= ls && line <= le {
+                            let span = le - ls;
+                            if best.is_none() || span < best.unwrap().1 { best = Some((nid, span)); }
+                        }
+                    }
+                    best.map(|(id, _)| id)
+                        .ok_or_else(|| Error::invalid_params("Could not find symbol A"))?
+                };
+
+                let node_b = if let Some(id_str) = params.get("nodeIdB").and_then(|v| v.as_str()) {
+                    id_str.parse::<codegraph::NodeId>()
+                        .map_err(|_| Error::invalid_params("Invalid nodeIdB"))?
+                } else {
+                    let uri = params.get("uriB").and_then(|v| v.as_str())
+                        .ok_or_else(|| Error::invalid_params("Missing 'uriB' or 'nodeIdB'"))?;
+                    let line = params.get("lineB").and_then(|v| v.as_u64()).map(|v| v as u32).unwrap_or(0);
+                    let path = uri.strip_prefix("file://").unwrap_or(uri);
+                    let graph = self.graph.read().await;
+                    let mut best: Option<(codegraph::NodeId, u32)> = None;
+                    for (nid, node) in graph.iter_nodes() {
+                        if node.node_type != codegraph::NodeType::Function { continue; }
+                        let np = crate::domain::node_props::path(node);
+                        if !np.ends_with(path) && !path.ends_with(&np) { continue; }
+                        let ls = crate::domain::node_props::line_start(node);
+                        let le = crate::domain::node_props::line_end(node);
+                        if line >= ls && line <= le {
+                            let span = le - ls;
+                            if best.is_none() || span < best.unwrap().1 { best = Some((nid, span)); }
+                        }
+                    }
+                    best.map(|(id, _)| id)
+                        .ok_or_else(|| Error::invalid_params("Could not find symbol B"))?
+                };
+
+                let result = self.query_engine.compare_symbols(node_a, node_b).await
+                    .ok_or_else(|| Error::invalid_params("Could not compare symbols"))?;
+
+                serde_json::to_value(result).map_err(|_| Error::internal_error())
+            }
+
             "codegraph/indexDirectory" => self.handle_index_directory(params).await,
 
             "codegraph/updateConfiguration" => self.handle_update_configuration(params).await,

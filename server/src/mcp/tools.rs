@@ -1,6 +1,6 @@
 //! MCP Tool Definitions
 //!
-//! Defines all 33 CodeGraph tools for the MCP protocol.
+//! Defines all 35 CodeGraph tools for the MCP protocol.
 
 use super::protocol::{PropertySchema, Tool, ToolInputSchema};
 use std::collections::HashMap;
@@ -43,9 +43,11 @@ pub fn get_all_tools() -> Vec<Tool> {
         search_git_history_tool(),
         // Cross-Project Tools (1)
         cross_project_search_tool(),
-        // Code Similarity Tools (2)
+        // Code Similarity Tools (4)
         find_duplicates_tool(),
         find_similar_tool(),
+        cluster_symbols_tool(),
+        compare_symbols_tool(),
         // Admin Tools (1)
         reindex_workspace_tool(),
     ]
@@ -1244,6 +1246,73 @@ fn find_similar_tool() -> Tool {
     Tool {
         name: "codegraph_find_similar".to_string(),
         description: Some("Finds functions most similar to a given function using semantic code embeddings. USE WHEN: checking if similar functionality already exists before writing new code, finding related implementations across the codebase, or discovering code that could be consolidated. Returns functions ranked by similarity score with file paths and signatures. Works across languages.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: None,
+        },
+    }
+}
+
+fn cluster_symbols_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "threshold".to_string(),
+        number_prop(
+            "Similarity threshold for grouping (0.0-1.0). Higher = tighter clusters. Default 0.7.",
+            Some(0.7),
+        ),
+    );
+    properties.insert(
+        "minClusterSize".to_string(),
+        number_prop("Minimum number of functions to form a cluster", Some(2.0)),
+    );
+    properties.insert(
+        "limit".to_string(),
+        number_prop("Maximum number of clusters to return", Some(20.0)),
+    );
+
+    Tool {
+        name: "codegraph_cluster_symbols".to_string(),
+        description: Some("Groups functions into semantic clusters based on what they do (e.g., all database access functions, all error handlers, all auth checks). USE WHEN: understanding codebase architecture, finding related functionality, identifying patterns, or planning refactoring. Returns clusters ranked by size, each with members and their similarity scores. Powered by code-aware embeddings.".to_string()),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: Some(properties),
+            required: None,
+        },
+    }
+}
+
+fn compare_symbols_tool() -> Tool {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "uriA".to_string(),
+        string_prop("File URI of the first function"),
+    );
+    properties.insert(
+        "lineA".to_string(),
+        number_prop("Line number of the first function (0-indexed)", None),
+    );
+    properties.insert(
+        "uriB".to_string(),
+        string_prop("File URI of the second function"),
+    );
+    properties.insert(
+        "lineB".to_string(),
+        number_prop("Line number of the second function (0-indexed)", None),
+    );
+    properties.insert(
+        "nodeIdA".to_string(),
+        string_prop("Node ID of the first function (alternative to uriA+lineA)"),
+    );
+    properties.insert(
+        "nodeIdB".to_string(),
+        string_prop("Node ID of the second function (alternative to uriB+lineB)"),
+    );
+
+    Tool {
+        name: "codegraph_compare_symbols".to_string(),
+        description: Some("Compares two functions semantically and structurally. USE WHEN: reviewing duplicates from find_duplicates, deciding whether to merge similar code, or understanding how two functions relate. Returns: semantic similarity score, verdict (clone/similar/related/unrelated), structural comparison (complexity, lines, params), and shared callers/callees.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
