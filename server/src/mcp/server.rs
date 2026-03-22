@@ -433,6 +433,7 @@ impl McpBackend {
 pub struct McpServer {
     backend: McpBackend,
     initialized: bool,
+    indexed: bool,
 }
 
 impl McpServer {
@@ -440,7 +441,19 @@ impl McpServer {
         Self {
             backend: McpBackend::new(workspaces),
             initialized: false,
+            indexed: false,
         }
+    }
+
+    /// Ensure workspace is indexed (lazy — runs on first tool call)
+    async fn ensure_indexed(&mut self) {
+        if self.indexed {
+            return;
+        }
+        self.indexed = true;
+        tracing::info!("Indexing workspace: {:?}", self.backend.workspace_folders);
+        let indexed = self.backend.index_workspace().await;
+        tracing::info!("Indexed {} files", indexed);
     }
 
     /// Run the MCP server event loop
@@ -483,7 +496,7 @@ impl McpServer {
         match request.method.as_str() {
             "initialize" => self.handle_initialize(request.id, request.params).await,
             "initialized" => {
-                // Notification, no response needed but we return success
+                // Respond immediately, index in background to avoid client timeout
                 JsonRpcResponse::success(request.id, Value::Null)
             }
             "ping" => {
@@ -556,11 +569,6 @@ impl McpServer {
             );
         }
 
-        // Index the workspace
-        tracing::info!("Indexing workspace: {:?}", self.backend.workspace_folders);
-        let indexed = self.backend.index_workspace().await;
-        tracing::info!("Indexed {} files", indexed);
-
         self.initialized = true;
 
         let result = InitializeResult {
@@ -593,7 +601,9 @@ impl McpServer {
         JsonRpcResponse::success(id, serde_json::to_value(result).unwrap())
     }
 
-    async fn handle_tools_call(&self, id: Option<Value>, params: Option<Value>) -> JsonRpcResponse {
+    async fn handle_tools_call(&mut self, id: Option<Value>, params: Option<Value>) -> JsonRpcResponse {
+        self.ensure_indexed().await;
+
         let params: ToolCallParams = match params {
             Some(p) => match serde_json::from_value(p) {
                 Ok(p) => p,
