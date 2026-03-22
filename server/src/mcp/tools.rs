@@ -1,6 +1,6 @@
 //! MCP Tool Definitions
 //!
-//! Defines all 27 CodeGraph tools for the MCP protocol.
+//! Defines all 31 CodeGraph tools for the MCP protocol.
 
 use super::protocol::{PropertySchema, Tool, ToolInputSchema};
 use std::collections::HashMap;
@@ -538,7 +538,7 @@ fn symbol_search_tool() -> Tool {
 
     Tool {
         name: "codegraph_symbol_search".to_string(),
-        description: Some("Searches codebase for symbols by name or pattern. USE WHEN: finding function/class implementations, exploring unfamiliar code, or locating specific functionality. THIS IS YOUR STARTING POINT when you don't know where code is located. Returns array of matches, each with: name, kind (function/class/method/variable/interface/type/module), file path, line range, signature, and docstring. Use compact=true for minimal output (name, kind, location only). symbolType filters by kind — use 'any' to search all types.".to_string()),
+        description: Some("Searches codebase for symbols by name or pattern. USE WHEN: finding function/class implementations, exploring unfamiliar code, or locating specific functionality. THIS IS YOUR STARTING POINT when you don't know where code is located. Supports both exact name matching and natural language queries (e.g., 'function that validates email addresses'). Returns array of matches, each with: name, kind (function/class/method/variable/interface/type/module), file path, line range, signature, and docstring. Use compact=true for minimal output (name, kind, location only). symbolType filters by kind — use 'any' to search all types.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -584,16 +584,17 @@ fn find_entry_points_tool() -> Tool {
     properties.insert(
         "entryType".to_string(),
         enum_prop(
-            "Type of entry point to find",
+            "Type of entry point to find. Default returns architectural entry points (main, http_handler, cli_command, event_handler). Use 'all' to include tests and public API. Use 'test' or 'public' for those specifically.",
             vec![
                 "main",
                 "http_handler",
                 "cli_command",
                 "event_handler",
                 "test",
+                "public",
                 "all",
             ],
-            Some("all"),
+            None,
         ),
     );
     properties.insert(
@@ -614,7 +615,7 @@ fn find_entry_points_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_entry_points".to_string(),
-        description: Some("Discovers application entry points and execution starting points. USE WHEN: understanding app architecture, tracing request flow, or finding where to start debugging. START HERE when exploring unfamiliar backend applications. Returns array of entry points with name, kind, file path, line range, and signature. Filter by entryType: 'main' for program entry, 'http_handler' for API routes, 'cli_command' for CLI handlers, 'event_handler' for event listeners, 'test' for test functions. Use compact=true for minimal output.".to_string()),
+        description: Some("Discovers application entry points and execution starting points. USE WHEN: understanding app architecture, tracing request flow, or finding where to start debugging. START HERE when exploring unfamiliar backend applications. Returns array of entry points with name, kind, file path, line range, and signature. Default returns architectural entry points only (main, HTTP handlers, CLI commands, event handlers). Use entryType='all' to include tests and public API, or 'test'/'public' for those specifically. Default limit 50. Use compact=true for minimal output.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),

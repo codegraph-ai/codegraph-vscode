@@ -3,11 +3,16 @@
 Comprehensive test plan covering all 31 MCP tools and their LSP equivalents.
 Each scenario specifies the MCP call, the equivalent LSP call, expected behavior, and edge cases.
 
-**Test project**: codegraph-vscode itself (~70 indexed files, Rust + TypeScript)
+**Test projects**:
+- codegraph-vscode itself (~85 indexed files, Rust + TypeScript)
+- open-vm-tools (~800+ C/C++ files) — large C codebase stress test
+- aws-mainframe-modernization-carddemo (~80 COBOL files) — enterprise language test
+- Fortran-Astrodynamics-Toolkit (~63 Fortran files) — scientific computing test
 
 **Prerequisites**:
-- MCP server running with workspace indexed (`codegraph_reindex_workspace`)
+- MCP server running (indexes lazily on first tool call)
 - LSP server running in VS Code with workspace loaded
+- Embedding model: Jina Code V2 (768d, downloaded automatically on first run ~642MB)
 
 ---
 
@@ -603,54 +608,66 @@ MCP: { "moduleName": "vscode" }
 
 **LSP**: `codegraph.findEntryPoints`
 
-### 14.1 All entry types (default)
+### 14.1 Default — architectural entry points only
 ```json
 MCP: {}
 LSP: {}
 ```
-**Expected**: Mix of main functions, test entries, HTTP handlers.
+**Expected**: Main functions, event handlers, CLI commands. No tests, no PublicApi (too noisy). Default limit 50.
 
-### 14.2 Filter — main only
+### 14.2 All entry types (explicit)
+```json
+MCP: { "entryType": "all" }
+```
+**Expected**: Mix of main functions, test entries, HTTP handlers, event handlers, CLI commands, PublicApi. Limit 50.
+
+### 14.3 Filter — main only
 ```json
 MCP: { "entryType": "main" }
 ```
 **Expected**: Only main/entry point functions (main.rs main, extension.ts activate).
 
-### 14.3 Filter — test only
+### 14.4 Filter — test only
 ```json
 MCP: { "entryType": "test" }
 ```
-**Expected**: All test functions (test_*, #[test]).
+**Expected**: All test functions (test_*, #[test]). Should not appear in default results.
 
-### 14.4 Filter — http_handler
+### 14.5 Filter — http_handler
 ```json
 MCP: { "entryType": "http_handler" }
 ```
 **Expected**: HTTP/request handler functions (may be empty for this project).
 
-### 14.5 Filter — event_handler
+### 14.6 Filter — event_handler
 ```json
 MCP: { "entryType": "event_handler" }
 ```
-**Expected**: Event handler functions.
+**Expected**: Event handler functions (handle_*, on_*).
 
-### 14.6 Framework filter
+### 14.7 Framework filter
 ```json
 MCP: { "entryType": "all", "framework": "actix" }
 ```
 **Expected**: Empty (this project doesn't use actix).
 
-### 14.7 Compact mode
+### 14.8 Compact mode
 ```json
 MCP: { "entryType": "test", "compact": true }
 ```
 **Expected**: Minimal test entry info.
 
-### 14.8 Limit
+### 14.9 Limit
 ```json
 MCP: { "entryType": "all", "limit": 5 }
 ```
 **Expected**: At most 5 entry points.
+
+### 14.10 Response size — stress test
+```json
+MCP: { "entryType": "all", "limit": 1000 }
+```
+**Expected**: Should not exceed ~100KB response. Previously returned 482KB on test-heavy repos without limit.
 
 ---
 
@@ -1397,18 +1414,43 @@ Verify these node types appear:
 - `Interface` — traits/interfaces
 
 ### CC.6 Language coverage
-Run key tools on files from each supported language present:
+Run key tools (`symbol_search`, `get_call_graph`, `analyze_complexity`, `get_ai_context`) on files from each supported language:
 - Rust: `server/src/mcp/server.rs`
 - TypeScript: `src/toolManager.ts`
+- C: `open-vm-tools/lib/misc/util_misc.c` (requires open-vm-tools workspace)
+- C++: `open-vm-tools/services/plugins/dndcp/dndcp.cpp` (previously failed, now tolerant)
+- COBOL: `aws-mainframe-modernization-carddemo/app/cbl/COACTUPC.cbl` (PERFORM call graph)
+- Fortran: `Fortran-Astrodynamics-Toolkit/src/kepler_module.f90` (cross-file call resolution)
+- Verilog: any `.sv` file (function/task parameter extraction)
 
 ### CC.7 Performance
-- `reindex_workspace` completes in <10 seconds for 68 files
-- `symbol_search` responds in <500ms
+- `reindex_workspace` completes in <15 seconds for 85 files (Mac M-series)
+- `reindex_workspace` completes in <90 seconds for 85 files (Windows, older CPU)
+- `symbol_search` responds in <50ms (Jina Code V2 768d)
 - `get_callers`/`get_callees` respond in <200ms
 - `find_unused_code` workspace scope completes in <2 seconds
+- MCP `initialize` responds instantly (indexing deferred to first tool call)
+- `find_entry_points` default response <50KB
 
 ### CC.8 Error resilience
 - Invalid URI → meaningful error, no crash
 - Invalid nodeId → meaningful error, no crash
 - Empty parameters → sensible defaults
 - Very large depth values → no hang (bounded traversal)
+- C++ files with syntax errors → tolerant parsing, partial extraction (not rejection)
+- Fortran files with preprocessor directives → tolerant parsing
+
+### CC.9 Multi-project indexing
+```json
+args: ["--mcp", "--workspace", "/path/to/project1", "--workspace", "/path/to/project2"]
+```
+- Both projects indexed into single graph
+- `symbol_search` returns results from all projects
+- `get_call_graph` resolves cross-file calls within each project
+- `cross_project_search` finds symbols across indexed projects
+
+### CC.10 Embedding model (Jina Code V2)
+- Model downloads automatically on first run (~642MB fp32 ONNX)
+- v4→v5 database migration clears old BGE-Small 384d vectors
+- Semantic search returns code-relevant results for NL queries
+- Clone detection: unrelated functions score <0.2, true clones >0.7
