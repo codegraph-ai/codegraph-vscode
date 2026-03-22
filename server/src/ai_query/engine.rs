@@ -37,7 +37,7 @@ pub struct QueryEngine {
     callee_index: Arc<RwLock<HashMap<NodeId, Vec<NodeId>>>>,
     /// Shared vector engine for semantic embedding (set after memory init)
     vector_engine: Arc<RwLock<Option<Arc<VectorEngine>>>>,
-    /// Symbol embeddings: NodeId -> 384-dim vector
+    /// Symbol embeddings: NodeId -> 768-dim vector (Jina Code V2)
     symbol_vectors: Arc<RwLock<HashMap<NodeId, Vec<f32>>>>,
     /// Symbol text used for embedding (for rebuilding)
     symbol_texts: Arc<RwLock<HashMap<NodeId, String>>>,

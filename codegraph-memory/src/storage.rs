@@ -70,7 +70,7 @@ impl MemoryStore {
         // Set version key to current version to prevent migration on new data
         // Migration code expects v1 = JSON, but we now use JSON in v3+ too
         const DB_VERSION_KEY: &[u8] = b"_db_version";
-        const CURRENT_VERSION: u32 = 4; // v4 = fastembed 384d vectors
+        const CURRENT_VERSION: u32 = 5; // v5 = Jina Code V2 768d vectors
         if db.get(DB_VERSION_KEY)?.is_none() {
             db.put(DB_VERSION_KEY, CURRENT_VERSION.to_le_bytes())?;
             db.flush()?;

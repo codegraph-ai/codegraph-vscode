@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Database version stored in metadata
 const DB_VERSION_KEY: &[u8] = b"_db_version";
-const CURRENT_VERSION: u32 = 4; // v4 = fastembed 384d vectors (was 256d Model2Vec)
+const CURRENT_VERSION: u32 = 5; // v5 = Jina Code V2 768d vectors (was BGE-Small 384d)
 
 /// Check if database needs migration and perform if needed
 pub fn migrate_if_needed(db_path: impl AsRef<Path>) -> Result<()> {
@@ -83,6 +83,11 @@ fn perform_migration(db: &DB, from_version: u32) -> Result<()> {
         // v3→v4: Delete 256d Model2Vec vectors, clear embedding fields
         // Memories are preserved; vectors are regenerated with fastembed 384d on next load_cache()
         migrate_v3_to_v4(db)?;
+    }
+    if from_version < 5 {
+        // v4→v5: Clear 384d BGE-Small vectors for Jina Code V2 768d re-embedding
+        // Same pattern as v3→v4 — delete vec: keys, clear embedding fields
+        migrate_v4_to_v5(db)?;
     }
     if from_version > CURRENT_VERSION {
         return Err(MemoryError::InvalidPath(format!(
@@ -222,6 +227,62 @@ fn migrate_v3_to_v4(db: &DB) -> Result<()> {
 
     log::info!(
         "v3→v4 migration complete: deleted {} vectors, cleared {} embeddings",
+        vec_keys_deleted,
+        embeddings_cleared
+    );
+
+    Ok(())
+}
+
+/// Migrate from v4 (384d BGE-Small) to v5 (768d Jina Code V2)
+///
+/// Same pattern as v3→v4: deletes all `vec:` keys and clears `embedding`
+/// fields. Vectors are regenerated with Jina Code V2 (768d) on next `load_cache()`.
+fn migrate_v4_to_v5(db: &DB) -> Result<()> {
+    log::info!("Migrating v4→v5: clearing 384d BGE-Small vectors for Jina Code V2 768d re-embedding...");
+
+    let mut vec_keys_deleted = 0;
+    let mut embeddings_cleared = 0;
+
+    let mut vec_keys: Vec<Vec<u8>> = Vec::new();
+    let mut mem_updates: Vec<(Vec<u8>, MemoryNode)> = Vec::new();
+
+    let iter = db.iterator(IteratorMode::Start);
+    for item in iter {
+        let (key, value) = item.map_err(|e| {
+            MemoryError::InvalidPath(format!("Failed to read database entry: {}", e))
+        })?;
+        let key_str = String::from_utf8_lossy(&key);
+
+        if key_str.starts_with("vec:") {
+            vec_keys.push(key.to_vec());
+        } else if key_str.starts_with("mem:") {
+            if let Ok(mut memory) = serde_json::from_slice::<MemoryNode>(&value) {
+                if memory.embedding.is_some() {
+                    memory.embedding = None;
+                    mem_updates.push((key.to_vec(), memory));
+                }
+            }
+        }
+    }
+
+    for key in &vec_keys {
+        db.delete(key)?;
+        vec_keys_deleted += 1;
+    }
+
+    for (key, memory) in &mem_updates {
+        if let Ok(bytes) = serde_json::to_vec(memory) {
+            db.put(key, bytes)?;
+            embeddings_cleared += 1;
+        }
+    }
+
+    db.flush()
+        .map_err(|e| MemoryError::InvalidPath(format!("Failed to flush database: {}", e)))?;
+
+    log::info!(
+        "v4→v5 migration complete: deleted {} vectors, cleared {} embeddings",
         vec_keys_deleted,
         embeddings_cleared
     );

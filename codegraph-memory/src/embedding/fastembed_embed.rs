@@ -1,13 +1,14 @@
 //! Fastembed wrapper for codegraph-memory
 //!
-//! Uses BGE-Small-EN-v1.5 (384d) via ONNX Runtime for semantic embeddings.
+//! Uses Jina Code V2 (768d) via ONNX Runtime for code-aware semantic embeddings.
+//! Trained on 150M+ code Q&A and docstring-source pairs across 30 languages.
 
 use crate::error::{MemoryError, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::path::PathBuf;
 
-/// Embedding dimension for BGE-Small-EN-v1.5
-pub(crate) const EMBEDDING_DIM: usize = 384;
+/// Embedding dimension for Jina Code V2
+pub(crate) const EMBEDDING_DIM: usize = 768;
 
 /// ONNX Runtime version required by ort-sys 2.0.0-rc.9
 #[cfg(target_os = "windows")]
@@ -19,9 +20,9 @@ pub(crate) struct FastembedEmbedding {
 }
 
 impl FastembedEmbedding {
-    /// Create a new FastembedEmbedding with BGE-Small-EN-v1.5
+    /// Create a new FastembedEmbedding with Jina Code V2
     ///
-    /// The model is automatically downloaded to `cache_dir` on first use.
+    /// The model is automatically downloaded to `cache_dir` on first use (~162MB quantized ONNX).
     /// On Windows, also ensures onnxruntime.dll is available (downloaded if needed).
     pub(crate) fn new(cache_dir: PathBuf) -> Result<Self> {
         // MUST set FASTEMBED_CACHE_DIR before InitOptions::new() — its Default impl
@@ -33,7 +34,7 @@ impl FastembedEmbedding {
         #[cfg(target_os = "windows")]
         ensure_ort_dll(&cache_dir)?;
 
-        let options = InitOptions::new(EmbeddingModel::BGESmallENV15)
+        let options = InitOptions::new(EmbeddingModel::JinaEmbeddingsV2BaseCode)
             .with_cache_dir(cache_dir)
             .with_show_download_progress(true);
 
@@ -68,7 +69,7 @@ impl FastembedEmbedding {
             .map_err(|e| MemoryError::embedding(format!("Batch embedding failed: {e}")))
     }
 
-    /// Get the embedding dimension (384 for BGE-Small-EN-v1.5)
+    /// Get the embedding dimension (768 for Jina Code V2)
     pub(crate) fn dimension(&self) -> usize {
         EMBEDDING_DIM
     }
