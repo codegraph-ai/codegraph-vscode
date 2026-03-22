@@ -767,13 +767,20 @@ impl McpServer {
                     }
                     Some("test") | Some("TestEntry") => vec![crate::ai_query::EntryType::TestEntry],
                     Some("main") | Some("Main") => vec![crate::ai_query::EntryType::Main],
-                    Some("all") | None => vec![
+                    Some("all") => vec![
                         crate::ai_query::EntryType::HttpHandler,
                         crate::ai_query::EntryType::CliCommand,
                         crate::ai_query::EntryType::PublicApi,
                         crate::ai_query::EntryType::Main,
                         crate::ai_query::EntryType::EventHandler,
                         crate::ai_query::EntryType::TestEntry,
+                    ],
+                    // Default: architectural entry points only (no tests/public API noise)
+                    None => vec![
+                        crate::ai_query::EntryType::HttpHandler,
+                        crate::ai_query::EntryType::CliCommand,
+                        crate::ai_query::EntryType::Main,
+                        crate::ai_query::EntryType::EventHandler,
                     ],
                     _ => vec![
                         crate::ai_query::EntryType::HttpHandler,
@@ -791,12 +798,13 @@ impl McpServer {
                 let limit = args
                     .get("limit")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as usize);
+                    .map(|v| v as usize)
+                    .unwrap_or(50);
 
                 let result = self
                     .backend
                     .query_engine
-                    .find_entry_points_opts(&entry_types, compact, limit)
+                    .find_entry_points_opts(&entry_types, compact, Some(limit))
                     .await;
 
                 // Deduplicate by node_id
