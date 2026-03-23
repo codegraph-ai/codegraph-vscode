@@ -23,6 +23,7 @@ use tower_lsp::{Client, LanguageServer};
 
 /// Configuration for indexing behavior, populated from VS Code settings.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodeGraphConfig {
     #[serde(default)]
     pub index_on_startup: bool,
