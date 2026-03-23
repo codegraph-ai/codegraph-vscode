@@ -1334,35 +1334,6 @@ impl QueryEngine {
         let total_symbols = entries.len();
         let mut pairs: Vec<DuplicatePair> = Vec::new();
 
-        // Common boilerplate function names across all supported languages.
-        // These produce false positive duplicates because they share identical
-        // signatures despite being unrelated implementations.
-        const SKIP_NAMES: &[&str] = &[
-            // Rust traits
-            "default", "new", "from", "fmt", "clone", "drop", "deref", "eq",
-            "hash", "into", "try_from", "try_into", "serialize", "deserialize",
-            // Java/Kotlin/C#
-            "tostring", "hashcode", "equals", "compareto", "getclass", "finalize",
-            "dispose", "close", "gettype", "gethashcode",
-            // Python
-            "__init__", "__str__", "__repr__", "__eq__", "__hash__", "__len__",
-            "__iter__", "__next__", "__enter__", "__exit__", "__del__",
-            // JavaScript/TypeScript
-            "constructor", "tostring", "valueof", "tolocalestring", "tojson",
-            // C/C++
-            "main", "init", "destroy", "free", "malloc", "realloc",
-            // Go
-            "string", "error", "len", "close",
-            // PHP
-            "__construct", "__destruct", "__tostring", "__clone", "__get", "__set",
-            // Ruby
-            "initialize", "to_s", "to_str", "inspect", "hash", "eql?",
-            // Swift
-            "init", "deinit", "description",
-            // Common getters/setters (all languages)
-            "get", "set", "getvalue", "setvalue",
-        ];
-
         // Pairwise comparison (O(n²) but n is typically <5000)
         for i in 0..entries.len() {
             for j in (i + 1)..entries.len() {
@@ -1374,8 +1345,8 @@ impl QueryEngine {
                         // Skip common trait impl names (default, new, from, etc.)
                         let name_a = node_props::name(na).to_lowercase();
                         let name_b = node_props::name(nb).to_lowercase();
-                        if SKIP_NAMES.contains(&name_a.as_str())
-                            && SKIP_NAMES.contains(&name_b.as_str())
+                        if BOILERPLATE_NAMES.contains(&name_a.as_str())
+                            && BOILERPLATE_NAMES.contains(&name_b.as_str())
                         {
                             continue;
                         }
@@ -1503,14 +1474,18 @@ impl QueryEngine {
         let symbol_vecs = self.symbol_vectors.read().await;
         let graph = self.graph.read().await;
 
-        // Collect function vectors
+        // Collect function vectors, excluding boilerplate names
         let entries: Vec<(NodeId, &Vec<f32>)> = symbol_vecs
             .iter()
             .filter(|(node_id, _)| {
-                graph
-                    .get_node(**node_id)
-                    .map(|n| n.node_type == NodeType::Function)
-                    .unwrap_or(false)
+                let Ok(node) = graph.get_node(**node_id) else {
+                    return false;
+                };
+                if node.node_type != NodeType::Function {
+                    return false;
+                }
+                let name = node_props::name(node).to_lowercase();
+                !BOILERPLATE_NAMES.contains(&name.as_str())
             })
             .map(|(id, vec)| (*id, vec))
             .collect();
@@ -1700,6 +1675,35 @@ impl QueryEngine {
         })
     }
 }
+
+/// Common boilerplate function names across all supported languages.
+/// These produce false positive duplicates/clusters because they share identical
+/// signatures despite being unrelated implementations.
+const BOILERPLATE_NAMES: &[&str] = &[
+    // Rust traits
+    "default", "new", "from", "fmt", "clone", "drop", "deref", "eq",
+    "hash", "into", "try_from", "try_into", "serialize", "deserialize",
+    // Java/Kotlin/C#
+    "tostring", "hashcode", "equals", "compareto", "getclass", "finalize",
+    "dispose", "close", "gettype", "gethashcode",
+    // Python
+    "__init__", "__str__", "__repr__", "__eq__", "__hash__", "__len__",
+    "__iter__", "__next__", "__enter__", "__exit__", "__del__",
+    // JavaScript/TypeScript
+    "constructor", "tostring", "valueof", "tolocalestring", "tojson",
+    // C/C++
+    "main", "init", "destroy", "free", "malloc", "realloc",
+    // Go
+    "string", "error", "len", "close",
+    // PHP
+    "__construct", "__destruct", "__tostring", "__clone", "__get", "__set",
+    // Ruby
+    "initialize", "to_s", "to_str", "inspect", "hash", "eql?",
+    // Swift
+    "init", "deinit", "description",
+    // Common getters/setters (all languages)
+    "get", "set", "getvalue", "setvalue",
+];
 
 /// Cosine similarity between two vectors. Returns 0.0 for zero-length vectors.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
