@@ -802,6 +802,14 @@ impl LanguageServer for CodeGraphBackend {
 
         // Extract extension path and config from initialization options
         let init_opts = params.initialization_options;
+
+        // Debug: dump raw initialization options
+        if let Some(ref opts) = init_opts {
+            tracing::info!("[LSP::initialize] Raw initializationOptions: {}", opts);
+        } else {
+            tracing::warn!("[LSP::initialize] No initializationOptions received!");
+        }
+
         let extension_path = init_opts.as_ref().and_then(|opts| {
             opts.get("extensionPath")
                 .and_then(|v| v.as_str())

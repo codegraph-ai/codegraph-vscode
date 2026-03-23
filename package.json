@@ -140,6 +140,7 @@
                 "codegraph.enabled": {
                     "type": "boolean",
                     "default": true,
+                    "scope": "resource",
                     "description": "Enable CodeGraph extension"
                 },
                 "codegraph.languages": {
@@ -163,16 +164,19 @@
                         "swift",
                         "tcl"
                     ],
+                    "scope": "resource",
                     "description": "Languages to index"
                 },
                 "codegraph.indexOnStartup": {
                     "type": "boolean",
                     "default": false,
+                    "scope": "resource",
                     "description": "Index workspace on startup. When false, use 'Index Directory' command to index specific folders on demand."
                 },
                 "codegraph.maxFileSizeKB": {
                     "type": "number",
                     "default": 1024,
+                    "scope": "resource",
                     "description": "Maximum file size to index (KB)"
                 },
                 "codegraph.excludePatterns": {
@@ -191,6 +195,7 @@
                         "**/DerivedData/**",
                         "**/tmp/**"
                     ],
+                    "scope": "resource",
                     "description": "Glob patterns for files to exclude"
                 },
                 "codegraph.indexPaths": {
@@ -199,21 +204,25 @@
                         "type": "string"
                     },
                     "default": [],
+                    "scope": "resource",
                     "description": "Specific directories to index. When empty and indexOnStartup is true, all workspace folders are indexed. Use 'Index Directory' command to add paths interactively."
                 },
                 "codegraph.includePrivate": {
                     "type": "boolean",
                     "default": true,
+                    "scope": "resource",
                     "description": "Include private/internal symbols"
                 },
                 "codegraph.includeTests": {
                     "type": "boolean",
                     "default": true,
+                    "scope": "resource",
                     "description": "Include test files and functions"
                 },
                 "codegraph.ai.maxContextTokens": {
                     "type": "number",
                     "default": 4000,
+                    "scope": "resource",
                     "description": "Maximum tokens for AI context"
                 },
                 "codegraph.ai.contextStrategy": {
@@ -224,11 +233,19 @@
                         "maximum"
                     ],
                     "default": "smart",
+                    "scope": "resource",
                     "description": "AI context selection strategy"
+                },
+                "codegraph.debug": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "resource",
+                    "description": "Enable debug output channel with detailed initialization and config diagnostics"
                 },
                 "codegraph.visualization.defaultDepth": {
                     "type": "number",
                     "default": 3,
+                    "scope": "resource",
                     "description": "Default depth for graph visualizations"
                 },
                 "codegraph.cache.enabled": {

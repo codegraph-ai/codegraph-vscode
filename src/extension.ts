@@ -17,7 +17,25 @@ let aiProvider: CodeGraphAIProvider;
 let toolManager: CodeGraphToolManager;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    const config = vscode.workspace.getConfiguration('codegraph');
+    const config = vscode.workspace.getConfiguration('codegraph', vscode.workspace.workspaceFolders?.[0]?.uri);
+
+    // Debug output channel (enabled via codegraph.debug setting)
+    const debugEnabled = config.get<boolean>('debug', false);
+    const debugChannel = debugEnabled ? vscode.window.createOutputChannel('CodeGraph Debug') : null;
+    const debug = (msg: string) => {
+        if (debugChannel) { debugChannel.appendLine(msg); }
+        console.log(`[CodeGraph] ${msg}`);
+    };
+
+    if (debugEnabled && debugChannel) {
+        debugChannel.show(true);
+        debug(`Version: ${context.extension.packageJSON.version}`);
+        debug(`Workspace folders: ${vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath).join(', ') ?? 'none'}`);
+        debug(`indexOnStartup: ${config.get('indexOnStartup')} (inspect: ${JSON.stringify(config.inspect('indexOnStartup'))})`);
+        debug(`indexPaths: ${JSON.stringify(config.get('indexPaths'))}`);
+        debug(`excludePatterns: ${JSON.stringify(config.get('excludePatterns'))}`);
+        debug(`maxFileSizeKB: ${config.get('maxFileSizeKB')}`);
+    }
 
     if (!config.get<boolean>('enabled', true)) {
         return;
@@ -65,12 +83,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         outputChannel: vscode.window.createOutputChannel('CodeGraph'),
         traceOutputChannel: vscode.window.createOutputChannel('CodeGraph Trace'),
-        initializationOptions: {
-            extensionPath: context.extensionPath,
-            indexOnStartup: config.get<boolean>('indexOnStartup', false),
-            excludePatterns: config.get<string[]>('excludePatterns', []),
-            indexPaths: config.get<string[]>('indexPaths', []),
-            maxFileSizeKB: config.get<number>('maxFileSizeKB', 1024),
+        initializationOptions: () => {
+            // Re-read config at init time (not activation time) to pick up workspace settings.
+            // Pass workspace folder URI for scope to ensure .vscode/settings.json is included.
+            const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+            const latestConfig = vscode.workspace.getConfiguration('codegraph', wsFolder);
+            const opts = {
+                extensionPath: context.extensionPath,
+                indexOnStartup: latestConfig.get<boolean>('indexOnStartup'),
+                excludePatterns: latestConfig.get<string[]>('excludePatterns'),
+                indexPaths: latestConfig.get<string[]>('indexPaths'),
+                maxFileSizeKB: latestConfig.get<number>('maxFileSizeKB'),
+            };
+            console.log('[CodeGraph] Initialization options:', JSON.stringify(opts));
+            return opts;
         },
     };
 
