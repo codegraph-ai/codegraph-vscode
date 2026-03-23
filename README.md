@@ -5,7 +5,7 @@
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.90+-blue.svg)](https://code.visualstudio.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
-CodeGraph builds a semantic graph of your codebase — functions, classes, imports, call chains — and exposes it through **31 tools**, a **VS Code extension**, and a **persistent memory layer**. AI agents get structured code understanding instead of grepping through files.
+CodeGraph builds a semantic graph of your codebase — functions, classes, imports, call chains — and exposes it through **35 tools**, a **VS Code extension**, and a **persistent memory layer**. AI agents get structured code understanding instead of grepping through files.
 
 ## Quick Start
 
@@ -50,10 +50,10 @@ The server indexes the current working directory automatically — no `--workspa
 ### VS Code Extension
 
 ```bash
-code --install-extension codegraph-0.10.0.vsix
+code --install-extension codegraph-0.11.0.vsix
 ```
 
-The extension registers 30 tools as VS Code Language Model Tools. To steer Copilot toward using them:
+The extension registers all 35 MCP tools plus 3 additional VS Code-specific tools as Language Model Tools. To steer Copilot toward using them:
 
 ```jsonc
 // .vscode/settings.json
@@ -66,7 +66,7 @@ The extension registers 30 tools as VS Code Language Model Tools. To steer Copil
 
 ---
 
-## Tools (31)
+## Tools (35)
 
 ### Code Analysis (9)
 
@@ -82,11 +82,22 @@ The extension registers 30 tools as VS Code Language Model Tools. To steer Copil
 | `find_unused_code` | Dead code detection with confidence scoring |
 | `analyze_coupling` | Module coupling metrics and instability scores |
 
+### Code Similarity (4)
+
+Powered by [Jina Code V2](https://huggingface.co/jinaai/jina-embeddings-v2-base-code) embeddings — code-aware semantic search trained on 150M+ code pairs across 30 languages.
+
+| Tool | What it does |
+|------|-------------|
+| `find_duplicates` | Detect duplicate/near-duplicate functions across the codebase. Threshold 0.7 for clones, 0.9+ for near-exact copies. |
+| `find_similar` | Find functions most similar to a given function. "Does this already exist?" |
+| `cluster_symbols` | Group functions by semantic similarity — discovers patterns like "all DB access", "all error handlers" |
+| `compare_symbols` | Deep comparison of two functions: similarity score, structural diff, shared callers/callees, verdict |
+
 ### Code Navigation (12)
 
 | Tool | What it does |
 |------|-------------|
-| `symbol_search` | Find symbols by name (hybrid BM25 + semantic search) |
+| `symbol_search` | Find symbols by name or natural language (hybrid BM25 + Jina Code V2 semantic search) |
 | `get_callers` / `get_callees` | Who calls this? What does it call? (with transitive depth) |
 | `get_detailed_symbol` | Full symbol info: source, callers, callees, complexity |
 | `get_symbol_info` | Quick metadata: signature, visibility, kind |
@@ -137,7 +148,7 @@ MCP Client (Claude, Cursor, ...)        VS Code Extension
             │  Semantic graph engine      │
             │  AI query engine (BM25)     │
             │  Memory layer (RocksDB)     │
-            │  Fastembed (384d ONNX)      │
+            │  Jina Code V2 (768d ONNX)  │
             │  HNSW vector index          │
             └─────────────────────────────┘
 ```
@@ -146,7 +157,7 @@ A single Rust binary serves both MCP and LSP. Both protocols call the same domai
 
 - **Indexing**: Sub-10s for 100k LOC. Incremental re-indexing on file changes.
 - **Queries**: Sub-100ms for navigation. Cross-file import and call resolution at index time.
-- **Embeddings**: fastembed BGE-Small-EN-v1.5 (384d). Auto-downloads on first run.
+- **Embeddings**: Jina Code V2 (768d, code-aware). Auto-downloads on first run (~642MB).
 
 ---
 
