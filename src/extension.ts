@@ -135,12 +135,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async (e) => {
             if (e.affectsConfiguration('codegraph') && client) {
-                const updated = vscode.workspace.getConfiguration('codegraph');
+                const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+                const updated = vscode.workspace.getConfiguration('codegraph', wsFolder);
                 const newConfig = {
-                    indexOnStartup: updated.get<boolean>('indexOnStartup', false),
-                    excludePatterns: updated.get<string[]>('excludePatterns', []),
-                    indexPaths: updated.get<string[]>('indexPaths', []),
-                    maxFileSizeKB: updated.get<number>('maxFileSizeKB', 1024),
+                    indexOnStartup: updated.get<boolean>('indexOnStartup'),
+                    excludePatterns: updated.get<string[]>('excludePatterns'),
+                    indexPaths: updated.get<string[]>('indexPaths'),
+                    maxFileSizeKB: updated.get<number>('maxFileSizeKB'),
                 };
                 try {
                     await client.sendRequest('workspace/executeCommand', {
