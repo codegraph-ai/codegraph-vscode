@@ -25,6 +25,10 @@ struct Args {
     /// Workspace directories to index (can be specified multiple times for multi-project)
     #[arg(long, short)]
     workspace: Vec<PathBuf>,
+
+    /// Directories to exclude from indexing (can be specified multiple times)
+    #[arg(long, short)]
+    exclude: Vec<String>,
 }
 
 #[tokio::main]
@@ -57,8 +61,11 @@ async fn main() {
 
         tracing::info!("Starting CodeGraph MCP server");
         tracing::info!("Workspaces: {:?}", workspaces);
+        if !args.exclude.is_empty() {
+            tracing::info!("Excluding: {:?}", args.exclude);
+        }
 
-        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces);
+        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude);
         if let Err(e) = server.run().await {
             tracing::error!("MCP server error: {}", e);
             std::process::exit(1);

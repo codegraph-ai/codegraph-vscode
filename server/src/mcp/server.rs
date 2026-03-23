@@ -31,6 +31,8 @@ pub struct McpBackend {
     pub workspace_folders: Vec<PathBuf>,
     /// Project slug used as namespace in the shared graph database
     pub project_slug: String,
+    /// Additional directories to exclude from indexing
+    pub exclude_dirs: Vec<String>,
 }
 
 impl McpBackend {
@@ -39,7 +41,7 @@ impl McpBackend {
     /// Starts with a fresh in-memory graph (re-indexes all files on startup).
     /// After indexing, persists to the shared database at `~/.codegraph/graph.db`
     /// (namespaced by project slug) for cross-project access.
-    pub fn new(workspaces: Vec<PathBuf>) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>) -> Self {
         let primary = workspaces.first().expect("At least one workspace required");
         let slug = memory::project_slug(primary);
         tracing::info!("Project slug: {}", slug);
@@ -77,6 +79,7 @@ impl McpBackend {
             memory_manager: Arc::new(MemoryManager::new(extension_path)),
             workspace_folders: workspaces,
             project_slug: slug,
+            exclude_dirs,
         }
     }
 
@@ -376,16 +379,22 @@ impl McpBackend {
                 // Skip hidden files/directories and common exclusions
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with('.')
-                        || name == "node_modules"
-                        || name == "target"
-                        || name == "__pycache__"
-                        || name == ".git"
-                        || name == "dist"
-                        || name == "build"
-                        || name == "out"
-                        || name == "vendor"
-                        || name == "DerivedData"
-                        || name == "tmp"
+                        || matches!(
+                            name,
+                            "node_modules"
+                                | "target"
+                                | "__pycache__"
+                                | ".git"
+                                | "dist"
+                                | "build"
+                                | "out"
+                                | "vendor"
+                                | "DerivedData"
+                                | "tmp"
+                                | "coverage"
+                                | "logs"
+                        )
+                        || self.exclude_dirs.iter().any(|e| name == e.as_str())
                     {
                         continue;
                     }
@@ -437,9 +446,9 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(workspaces: Vec<PathBuf>) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>) -> Self {
         Self {
-            backend: McpBackend::new(workspaces),
+            backend: McpBackend::new(workspaces, exclude_dirs),
             initialized: false,
             indexed: false,
         }

@@ -47,6 +47,25 @@ The server indexes the current working directory automatically — no `--workspa
 }
 ```
 
+**Excluding directories** — skip custom build artifacts or generated code:
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph-mcp",
+      "args": [
+        "--exclude", "cmake-build-debug",
+        "--exclude", "bazel-out",
+        "--exclude", "generated"
+      ]
+    }
+  }
+}
+```
+
+Built-in exclusions (always skipped): `node_modules`, `target`, `dist`, `build`, `out`, `.git`, `__pycache__`, `vendor`, `DerivedData`, `tmp`, `coverage`, `logs`.
+
 ### VS Code Extension
 
 ```bash
@@ -173,14 +192,19 @@ Auto-indexing is **off by default**. Use the command palette (`CodeGraph: Index 
     "/path/to/project-a",
     "/path/to/project-b"
   ],
-  "codegraph.excludePatterns": ["**/logs/**", "**/*.bin"],
+  "codegraph.excludePatterns": [
+    "**/cmake-build-debug/**",
+    "**/bazel-out/**",
+    "**/generated/**",
+    "**/*.bin"
+  ],
   "codegraph.maxFileSizeKB": 1024
 }
 ```
 
 `indexPaths` accepts any absolute paths — they don't have to be inside your workspace. All paths are indexed into a single unified graph. In multi-root workspaces, put `indexPaths` in **one** `settings.json` only (arrays are not merged across folders).
 
-Always-skipped directories: `node_modules`, `target`, `.git`, `dist`, `build`, `out`, `__pycache__`, `vendor`, `DerivedData`, `tmp`, `coverage`, `logs`.
+Always-skipped directories: `node_modules`, `target`, `.git`, `dist`, `build`, `out`, `__pycache__`, `vendor`, `DerivedData`, `tmp`, `coverage`, `logs`. For MCP, use `--exclude` flags. For VS Code, use `codegraph.excludePatterns` with glob syntax.
 
 ---
 
