@@ -921,6 +921,8 @@ impl LanguageServer for CodeGraphBackend {
                         "codegraph.searchGitHistory".to_string(),
                         // On-demand indexing
                         "codegraph.indexDirectory".to_string(),
+                        // Configuration
+                        "codegraph.updateConfiguration".to_string(),
                     ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
@@ -1950,6 +1952,20 @@ impl LanguageServer for CodeGraphBackend {
                     .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
                 let response = self.handle_search_git_history(search_params).await?;
                 Ok(Some(response))
+            }
+
+            "codegraph.updateConfiguration" => {
+                let args = params.arguments.first().ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments")
+                })?;
+                let new_config: CodeGraphConfig = serde_json::from_value(args.clone())
+                    .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid config: {e}")))?;
+                tracing::info!("Configuration updated: {:?}", new_config);
+                *self.config.write().await = new_config;
+                self.client
+                    .log_message(MessageType::INFO, "Configuration updated")
+                    .await;
+                Ok(Some(serde_json::json!({"status": "ok"})))
             }
 
             _ => Err(tower_lsp::jsonrpc::Error::method_not_found()),

@@ -117,7 +117,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     maxFileSizeKB: updated.get<number>('maxFileSizeKB', 1024),
                 };
                 try {
-                    await client.sendRequest('codegraph/updateConfiguration', newConfig);
+                    await client.sendRequest('workspace/executeCommand', {
+                        command: 'codegraph.updateConfiguration',
+                        arguments: [newConfig],
+                    });
                     console.log('[CodeGraph] Configuration updated:', JSON.stringify(newConfig));
                 } catch (error) {
                     console.error('[CodeGraph] Failed to update configuration:', error);
