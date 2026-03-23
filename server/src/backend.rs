@@ -989,10 +989,16 @@ impl LanguageServer for CodeGraphBackend {
                 .log_message(MessageType::INFO, "Cross-file imports resolved")
                 .await;
 
-            // Build AI query engine indexes
+            // Build AI query engine indexes (includes embedding all symbols — can take 30-120s)
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Building semantic search index ({total_indexed} files)... This may take a moment."),
+                )
+                .await;
             self.query_engine.build_indexes().await;
             self.client
-                .log_message(MessageType::INFO, "AI query engine indexes built")
+                .log_message(MessageType::INFO, "Semantic search index ready")
                 .await;
         } else {
             self.client

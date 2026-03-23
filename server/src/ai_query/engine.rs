@@ -188,6 +188,11 @@ impl QueryEngine {
             return;
         }
 
+        tracing::info!(
+            "[QueryEngine] Embedding {} symbols (Jina Code V2, 768d)...",
+            texts.len()
+        );
+
         // Batch embed all symbol texts
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         match engine.embed_batch(&text_refs) {
