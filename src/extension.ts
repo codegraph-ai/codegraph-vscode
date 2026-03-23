@@ -137,18 +137,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (e.affectsConfiguration('codegraph') && client) {
                 const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
                 const updated = vscode.workspace.getConfiguration('codegraph', wsFolder);
-                const inspectStartup = updated.inspect('indexOnStartup');
-                const inspectPaths = updated.inspect('indexPaths');
-                console.log('[CodeGraph] Config change - indexOnStartup inspect:', JSON.stringify(inspectStartup));
-                console.log('[CodeGraph] Config change - indexPaths inspect:', JSON.stringify(inspectPaths));
-                console.log('[CodeGraph] Config change - wsFolder:', wsFolder?.fsPath);
                 const newConfig = {
                     indexOnStartup: updated.get<boolean>('indexOnStartup'),
                     excludePatterns: updated.get<string[]>('excludePatterns'),
                     indexPaths: updated.get<string[]>('indexPaths'),
                     maxFileSizeKB: updated.get<number>('maxFileSizeKB'),
                 };
-                console.log('[CodeGraph] Sending config to server:', JSON.stringify(newConfig));
                 try {
                     await client.sendRequest('workspace/executeCommand', {
                         command: 'codegraph.updateConfiguration',
