@@ -105,6 +105,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // Continue activation even if tool registration fails
     }
 
+    // Watch for settings changes and push to LSP server
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(async (e) => {
+            if (e.affectsConfiguration('codegraph') && client) {
+                const updated = vscode.workspace.getConfiguration('codegraph');
+                const newConfig = {
+                    indexOnStartup: updated.get<boolean>('indexOnStartup', false),
+                    excludePatterns: updated.get<string[]>('excludePatterns', []),
+                    indexPaths: updated.get<string[]>('indexPaths', []),
+                    maxFileSizeKB: updated.get<number>('maxFileSizeKB', 1024),
+                };
+                try {
+                    await client.sendRequest('codegraph/updateConfiguration', newConfig);
+                    console.log('[CodeGraph] Configuration updated:', JSON.stringify(newConfig));
+                } catch (error) {
+                    console.error('[CodeGraph] Failed to update configuration:', error);
+                }
+            }
+        })
+    );
+
     // Register commands, tree providers, etc.
     registerCommands(context, client, aiProvider);
     registerTreeDataProviders(context, client);
