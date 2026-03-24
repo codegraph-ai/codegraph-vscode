@@ -193,27 +193,53 @@ impl QueryEngine {
             texts.len()
         );
 
-        // Batch embed all symbol texts
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        match engine.embed_batch(&text_refs) {
-            Ok(vectors) => {
-                let mut symbol_vecs = HashMap::with_capacity(vectors.len());
-                for (i, vec) in vectors.into_iter().enumerate() {
-                    symbol_vecs.insert(node_ids[i], vec);
+        // Embed in chunks to limit peak memory usage.
+        // ONNX Runtime allocates large intermediate tensors proportional to batch size.
+        // Without chunking, a 50K-function codebase can consume 50GB+ of RAM.
+        const CHUNK_SIZE: usize = 256;
+        let mut symbol_vecs = HashMap::with_capacity(texts.len());
+        let total_chunks = (texts.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+        for (chunk_idx, chunk_start) in (0..texts.len()).step_by(CHUNK_SIZE).enumerate() {
+            let chunk_end = (chunk_start + CHUNK_SIZE).min(texts.len());
+            let chunk_refs: Vec<&str> = texts[chunk_start..chunk_end]
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+
+            match engine.embed_batch(&chunk_refs) {
+                Ok(vectors) => {
+                    for (i, vec) in vectors.into_iter().enumerate() {
+                        symbol_vecs.insert(node_ids[chunk_start + i], vec);
+                    }
+                    if total_chunks > 1 && (chunk_idx + 1) % 10 == 0 {
+                        tracing::info!(
+                            "[QueryEngine] Embedded chunk {}/{} ({} symbols so far)",
+                            chunk_idx + 1,
+                            total_chunks,
+                            symbol_vecs.len()
+                        );
+                    }
                 }
-                let count = symbol_vecs.len();
-                *self.symbol_vectors.write().await = symbol_vecs;
-                *self.symbol_texts.write().await = text_map;
-                tracing::info!(
-                    "[QueryEngine] Built {} symbol vectors in {:?}",
-                    count,
-                    start.elapsed()
-                );
-            }
-            Err(e) => {
-                tracing::error!("[QueryEngine] Failed to build symbol vectors: {:?}", e);
+                Err(e) => {
+                    tracing::error!(
+                        "[QueryEngine] Failed to embed chunk {}/{}: {:?}",
+                        chunk_idx + 1,
+                        total_chunks,
+                        e
+                    );
+                }
             }
         }
+
+        let count = symbol_vecs.len();
+        *self.symbol_vectors.write().await = symbol_vecs;
+        *self.symbol_texts.write().await = text_map;
+        tracing::info!(
+            "[QueryEngine] Built {} symbol vectors in {:?}",
+            count,
+            start.elapsed()
+        );
     }
 
     /// Search for symbols by name, docstring, or comments.

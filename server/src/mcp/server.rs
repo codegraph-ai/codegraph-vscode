@@ -33,6 +33,8 @@ pub struct McpBackend {
     pub project_slug: String,
     /// Additional directories to exclude from indexing
     pub exclude_dirs: Vec<String>,
+    /// Maximum number of files to index
+    pub max_files: usize,
 }
 
 impl McpBackend {
@@ -41,7 +43,7 @@ impl McpBackend {
     /// Starts with a fresh in-memory graph (re-indexes all files on startup).
     /// After indexing, persists to the shared database at `~/.codegraph/graph.db`
     /// (namespaced by project slug) for cross-project access.
-    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize) -> Self {
         let primary = workspaces.first().expect("At least one workspace required");
         let slug = memory::project_slug(primary);
         tracing::info!("Project slug: {}", slug);
@@ -80,6 +82,7 @@ impl McpBackend {
             workspace_folders: workspaces,
             project_slug: slug,
             exclude_dirs,
+            max_files,
         }
     }
 
@@ -402,6 +405,17 @@ impl McpBackend {
                 }
 
                 if path.is_dir() {
+                    // Check file limit before recursing
+                    let current = self.graph.read().await.node_count();
+                    if current >= self.max_files * 10 {
+                        // Rough heuristic: ~10 nodes per file
+                        tracing::warn!(
+                            "Approaching max file limit ({} nodes, max_files={}), stopping",
+                            current,
+                            self.max_files
+                        );
+                        break;
+                    }
                     indexed_count += Box::pin(self.index_directory(&path)).await;
                 } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     // supported_extensions includes the dot (e.g., ".rs"), but path.extension() doesn't
@@ -447,9 +461,9 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize) -> Self {
         Self {
-            backend: McpBackend::new(workspaces, exclude_dirs),
+            backend: McpBackend::new(workspaces, exclude_dirs, max_files),
             initialized: false,
             indexed: false,
         }

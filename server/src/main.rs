@@ -29,6 +29,10 @@ struct Args {
     /// Directories to exclude from indexing (can be specified multiple times)
     #[arg(long, short)]
     exclude: Vec<String>,
+
+    /// Maximum number of files to index (default: 5000)
+    #[arg(long, default_value = "5000")]
+    max_files: usize,
 }
 
 #[tokio::main]
@@ -65,7 +69,7 @@ async fn main() {
             tracing::info!("Excluding: {:?}", args.exclude);
         }
 
-        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude);
+        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude, args.max_files);
         if let Err(e) = server.run().await {
             tracing::error!("MCP server error: {}", e);
             std::process::exit(1);
