@@ -57,7 +57,8 @@ impl FastembedEmbedding {
             .ok_or_else(|| MemoryError::embedding("Empty embedding result"))
     }
 
-    /// Generate embeddings for a batch of texts
+    /// Generate embeddings for a batch of texts.
+    /// Uses batch_size=64 to limit ONNX Runtime peak memory allocation.
     pub(crate) fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -65,7 +66,7 @@ impl FastembedEmbedding {
 
         let owned: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
         self.model
-            .embed(owned, None)
+            .embed(owned, Some(64))
             .map_err(|e| MemoryError::embedding(format!("Batch embedding failed: {e}")))
     }
 

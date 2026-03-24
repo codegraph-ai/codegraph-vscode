@@ -193,10 +193,12 @@ impl QueryEngine {
             texts.len()
         );
 
-        // Embed in chunks to limit peak memory usage.
-        // ONNX Runtime allocates large intermediate tensors proportional to batch size.
-        // Without chunking, a 50K-function codebase can consume 50GB+ of RAM.
-        const CHUNK_SIZE: usize = 256;
+        // Embed in small chunks to limit peak memory usage.
+        // ONNX Runtime allocates intermediate tensors proportional to batch size,
+        // and fastembed uses par_chunks (Rayon) so each CPU core holds its own tensors.
+        // With Jina Code V2 (768d fp32), each embedding is ~3KB but ONNX intermediate
+        // tensors can be 100x larger. Chunk size 64 keeps peak memory under ~2GB.
+        const CHUNK_SIZE: usize = 64;
         let mut symbol_vecs = HashMap::with_capacity(texts.len());
         let total_chunks = (texts.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
