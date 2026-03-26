@@ -242,6 +242,17 @@
                     "scope": "resource",
                     "description": "Enable debug output channel with detailed initialization and config diagnostics"
                 },
+                "codegraph.embeddingModel": {
+                    "type": "string",
+                    "enum": ["jina-code-v2", "bge-small"],
+                    "default": "jina-code-v2",
+                    "scope": "resource",
+                    "enumDescriptions": [
+                        "Jina Code V2 (768d) — best quality for code similarity and clone detection. ~642MB download, slower indexing.",
+                        "BGE-Small-EN-v1.5 (384d) — 4-5x faster indexing, smaller download (~127MB). Lower quality for clone detection."
+                    ],
+                    "description": "Embedding model for semantic search and code similarity"
+                },
                 "codegraph.visualization.defaultDepth": {
                     "type": "number",
                     "default": 3,

@@ -39,7 +39,7 @@ pub mod storage;
 pub mod temporal;
 
 // Re-exports for convenience
-pub use embedding::VectorEngine;
+pub use embedding::{CodeGraphEmbeddingModel, VectorEngine};
 pub use error::MemoryError;
 pub use node::{
     CodeLink, IssueSeverity, LinkedNodeType, MemoryId, MemoryKind, MemoryNode, MemoryNodeBuilder,

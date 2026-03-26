@@ -841,8 +841,19 @@ impl LanguageServer for CodeGraphBackend {
                 path.display()
             );
             // Update memory manager with extension path by replacing it
+            // Read embedding model from init options
+            let embedding_model = init_opts.as_ref()
+                .and_then(|opts| opts.get("embeddingModel"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| match s {
+                    "bge-small" => Some(codegraph_memory::CodeGraphEmbeddingModel::BgeSmall),
+                    "jina-code-v2" => Some(codegraph_memory::CodeGraphEmbeddingModel::JinaCodeV2),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
             // Safety: We're replacing the Arc contents during initialization before any use
-            let new_manager = Arc::new(MemoryManager::new(Some(path.clone())));
+            let new_manager = Arc::new(MemoryManager::with_model(Some(path.clone()), embedding_model));
             let self_mut = self as *const Self as *mut Self;
             unsafe {
                 (*self_mut).memory_manager = new_manager;

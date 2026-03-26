@@ -1,14 +1,51 @@
 //! Fastembed wrapper for codegraph-memory
 //!
-//! Uses Jina Code V2 (768d) via ONNX Runtime for code-aware semantic embeddings.
-//! Trained on 150M+ code Q&A and docstring-source pairs across 30 languages.
+//! Supports configurable embedding models:
+//! - Jina Code V2 (768d) — code-aware, trained on 150M+ code pairs. Best quality for clone detection.
+//! - BGE-Small-EN-v1.5 (384d) — fast general-purpose. 4-5x faster, lower quality on code similarity.
 
 use crate::error::{MemoryError, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::path::PathBuf;
 
-/// Embedding dimension for Jina Code V2
-pub(crate) const EMBEDDING_DIM: usize = 768;
+/// Configurable embedding model selection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodeGraphEmbeddingModel {
+    /// Jina Code V2 (768d) — code-aware, best quality for clone detection
+    JinaCodeV2,
+    /// BGE-Small-EN-v1.5 (384d) — fast, 4-5x faster than Jina, lower quality
+    BgeSmall,
+}
+
+impl Default for CodeGraphEmbeddingModel {
+    fn default() -> Self {
+        Self::JinaCodeV2
+    }
+}
+
+impl CodeGraphEmbeddingModel {
+    fn to_fastembed(self) -> EmbeddingModel {
+        match self {
+            Self::JinaCodeV2 => EmbeddingModel::JinaEmbeddingsV2BaseCode,
+            Self::BgeSmall => EmbeddingModel::BGESmallENV15,
+        }
+    }
+
+    pub fn dimension(self) -> usize {
+        match self {
+            Self::JinaCodeV2 => 768,
+            Self::BgeSmall => 384,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::JinaCodeV2 => "Jina Code V2 (768d)",
+            Self::BgeSmall => "BGE-Small-EN-v1.5 (384d)",
+        }
+    }
+}
 
 /// ONNX Runtime version required by ort-sys 2.0.0-rc.9
 #[cfg(target_os = "windows")]
@@ -17,14 +54,15 @@ const ORT_VERSION: &str = "1.20.0";
 /// Fastembed-based text embedding model
 pub(crate) struct FastembedEmbedding {
     model: TextEmbedding,
+    model_type: CodeGraphEmbeddingModel,
 }
 
 impl FastembedEmbedding {
-    /// Create a new FastembedEmbedding with Jina Code V2
+    /// Create a new FastembedEmbedding with the specified model.
     ///
-    /// The model is automatically downloaded to `cache_dir` on first use (~162MB quantized ONNX).
+    /// The model is automatically downloaded to `cache_dir` on first use.
     /// On Windows, also ensures onnxruntime.dll is available (downloaded if needed).
-    pub(crate) fn new(cache_dir: PathBuf) -> Result<Self> {
+    pub(crate) fn new(cache_dir: PathBuf, model_type: CodeGraphEmbeddingModel) -> Result<Self> {
         // MUST set FASTEMBED_CACHE_DIR before InitOptions::new() — its Default impl
         // calls get_cache_dir() which falls back to ".fastembed_cache" in CWD.
         // Note: the env var is FASTEMBED_CACHE_DIR (not _PATH).
@@ -34,14 +72,16 @@ impl FastembedEmbedding {
         #[cfg(target_os = "windows")]
         ensure_ort_dll(&cache_dir)?;
 
-        let options = InitOptions::new(EmbeddingModel::JinaEmbeddingsV2BaseCode)
+        log::info!("Loading embedding model: {}", model_type.display_name());
+
+        let options = InitOptions::new(model_type.to_fastembed())
             .with_cache_dir(cache_dir)
             .with_show_download_progress(true);
 
         let model = TextEmbedding::try_new(options)
-            .map_err(|e| MemoryError::model(format!("Failed to load fastembed model: {e}")))?;
+            .map_err(|e| MemoryError::model(format!("Failed to load {} model: {e}", model_type.display_name())))?;
 
-        Ok(Self { model })
+        Ok(Self { model, model_type })
     }
 
     /// Generate embedding for a single text
@@ -70,9 +110,14 @@ impl FastembedEmbedding {
             .map_err(|e| MemoryError::embedding(format!("Batch embedding failed: {e}")))
     }
 
-    /// Get the embedding dimension (768 for Jina Code V2)
+    /// Get the embedding dimension (depends on model)
     pub(crate) fn dimension(&self) -> usize {
-        EMBEDDING_DIM
+        self.model_type.dimension()
+    }
+
+    /// Get the model type
+    pub(crate) fn model_type(&self) -> CodeGraphEmbeddingModel {
+        self.model_type
     }
 }
 

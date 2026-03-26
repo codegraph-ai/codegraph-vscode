@@ -1,8 +1,9 @@
 //! Embedding module for semantic search
 //!
-//! Uses fastembed with Jina Code V2 (768d) for code-aware semantic embeddings.
+//! Supports configurable embedding models: Jina Code V2 (768d, code-aware) or BGE-Small (384d, fast).
 
 mod engine;
 mod fastembed_embed;
 
 pub use engine::VectorEngine;
+pub use fastembed_embed::CodeGraphEmbeddingModel;

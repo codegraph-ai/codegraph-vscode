@@ -94,6 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 excludePatterns: latestConfig.get<string[]>('excludePatterns'),
                 indexPaths: latestConfig.get<string[]>('indexPaths'),
                 maxFileSizeKB: latestConfig.get<number>('maxFileSizeKB'),
+                embeddingModel: latestConfig.get<string>('embeddingModel'),
             };
             console.log('[CodeGraph] Initialization options:', JSON.stringify(opts));
             return opts;

@@ -97,18 +97,26 @@ pub struct MemoryManager {
     extension_path: Option<PathBuf>,
     /// Cached vector engine (holds model, not DB - safe to keep)
     engine: Arc<RwLock<Option<Arc<VectorEngine>>>>,
+    /// Embedding model selection
+    embedding_model: codegraph_memory::CodeGraphEmbeddingModel,
 }
 
 impl MemoryManager {
     /// Create a new MemoryManager
-    ///
-    /// # Arguments
-    /// * `extension_path` - Optional path to the VS Code extension root for model discovery
     pub fn new(extension_path: Option<PathBuf>) -> Self {
+        Self::with_model(extension_path, codegraph_memory::CodeGraphEmbeddingModel::default())
+    }
+
+    /// Create a new MemoryManager with a specific embedding model
+    pub fn with_model(
+        extension_path: Option<PathBuf>,
+        embedding_model: codegraph_memory::CodeGraphEmbeddingModel,
+    ) -> Self {
         Self {
             data_dir: Arc::new(RwLock::new(None)),
             extension_path,
             engine: Arc::new(RwLock::new(None)),
+            embedding_model,
         }
     }
 
@@ -157,8 +165,14 @@ impl MemoryManager {
             e
         })?;
 
-        // Initialize vector engine with bundled model (cached, doesn't hold DB lock)
-        let engine = VectorEngine::new(self.extension_path.as_deref()).map_err(|e| {
+        // Initialize vector engine with selected model (cached, doesn't hold DB lock)
+        let cache_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".codegraph")
+            .join("fastembed_cache");
+        let engine = VectorEngine::with_model(cache_dir, self.embedding_model).map_err(|e| {
             tracing::error!(
                 "[MemoryManager::initialize] VectorEngine initialization failed: {:?}",
                 e

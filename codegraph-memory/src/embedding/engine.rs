@@ -2,7 +2,7 @@
 //!
 //! High-level API for generating and caching embeddings.
 
-use super::fastembed_embed::FastembedEmbedding;
+use super::fastembed_embed::{CodeGraphEmbeddingModel, FastembedEmbedding};
 use crate::error::Result;
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 /// Vector embedding engine with caching
 ///
-/// Wraps fastembed BGE-Small-EN-v1.5 with a DashMap cache for efficient repeated lookups.
+/// Wraps fastembed with a configurable model and DashMap cache for efficient repeated lookups.
 pub struct VectorEngine {
     model: Arc<FastembedEmbedding>,
     cache: DashMap<String, Vec<f32>>,
@@ -18,22 +18,19 @@ pub struct VectorEngine {
 }
 
 impl VectorEngine {
-    /// Create VectorEngine with fastembed BGE-Small-EN-v1.5
-    ///
-    /// # Arguments
-    /// * `_extension_path` - Unused (kept for API compatibility). Fastembed
-    ///   auto-downloads the model to `~/.codegraph/fastembed_cache/`.
+    /// Create VectorEngine with the default model (Jina Code V2)
     pub fn new(_extension_path: Option<&Path>) -> Result<Self> {
-        Self::with_cache_dir(default_cache_dir())
+        Self::with_model(default_cache_dir(), CodeGraphEmbeddingModel::default())
     }
 
-    /// Create VectorEngine with a custom cache directory
-    pub fn with_cache_dir(cache_dir: PathBuf) -> Result<Self> {
-        let model = FastembedEmbedding::new(cache_dir)?;
+    /// Create VectorEngine with a specific embedding model
+    pub fn with_model(cache_dir: PathBuf, model_type: CodeGraphEmbeddingModel) -> Result<Self> {
+        let model = FastembedEmbedding::new(cache_dir, model_type)?;
         let dimension = model.dimension();
 
         log::info!(
-            "VectorEngine ready (fastembed BGE-Small-EN-v1.5, {}d)",
+            "VectorEngine ready ({}, {}d)",
+            model_type.display_name(),
             dimension
         );
 

@@ -33,6 +33,10 @@ struct Args {
     /// Maximum number of files to index (default: 5000)
     #[arg(long, default_value = "5000")]
     max_files: usize,
+
+    /// Embedding model: jina-code-v2 (768d, best quality) or bge-small (384d, 5x faster)
+    #[arg(long, default_value = "jina-code-v2")]
+    embedding_model: String,
 }
 
 #[tokio::main]
@@ -63,13 +67,19 @@ async fn main() {
             args.workspace
         };
 
+        let embedding_model = match args.embedding_model.as_str() {
+            "bge-small" => codegraph_memory::CodeGraphEmbeddingModel::BgeSmall,
+            _ => codegraph_memory::CodeGraphEmbeddingModel::JinaCodeV2,
+        };
+
         tracing::info!("Starting CodeGraph MCP server");
         tracing::info!("Workspaces: {:?}", workspaces);
+        tracing::info!("Embedding model: {}", embedding_model.display_name());
         if !args.exclude.is_empty() {
             tracing::info!("Excluding: {:?}", args.exclude);
         }
 
-        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude, args.max_files);
+        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude, args.max_files, embedding_model);
         if let Err(e) = server.run().await {
             tracing::error!("MCP server error: {}", e);
             std::process::exit(1);

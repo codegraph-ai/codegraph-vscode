@@ -43,7 +43,7 @@ impl McpBackend {
     /// Starts with a fresh in-memory graph (re-indexes all files on startup).
     /// After indexing, persists to the shared database at `~/.codegraph/graph.db`
     /// (namespaced by project slug) for cross-project access.
-    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize, embedding_model: codegraph_memory::CodeGraphEmbeddingModel) -> Self {
         let primary = workspaces.first().expect("At least one workspace required");
         let slug = memory::project_slug(primary);
         tracing::info!("Project slug: {}", slug);
@@ -78,7 +78,7 @@ impl McpBackend {
             query_engine: Arc::new(QueryEngine::new(Arc::clone(&graph))),
             graph,
             parsers: Arc::new(ParserRegistry::new()),
-            memory_manager: Arc::new(MemoryManager::new(extension_path)),
+            memory_manager: Arc::new(MemoryManager::with_model(extension_path, embedding_model)),
             workspace_folders: workspaces,
             project_slug: slug,
             exclude_dirs,
@@ -461,9 +461,14 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize) -> Self {
+    pub fn new(
+        workspaces: Vec<PathBuf>,
+        exclude_dirs: Vec<String>,
+        max_files: usize,
+        embedding_model: codegraph_memory::CodeGraphEmbeddingModel,
+    ) -> Self {
         Self {
-            backend: McpBackend::new(workspaces, exclude_dirs, max_files),
+            backend: McpBackend::new(workspaces, exclude_dirs, max_files, embedding_model),
             initialized: false,
             indexed: false,
         }
