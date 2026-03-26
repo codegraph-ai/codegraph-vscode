@@ -1136,10 +1136,13 @@ impl LanguageServer for CodeGraphBackend {
         };
 
         // Respect indexOnStartup=false: only index on did_open if the file
-        // is already tracked (was previously indexed), or if indexOnStartup is true.
+        // was previously indexed (exists in symbol_index), or if indexOnStartup is true.
+        // We check symbol_index instead of file_cache because did_close removes from
+        // file_cache, causing VS Code's close/reopen cycles to lose track of files.
         let config = self.config.read().await.clone();
-        if !config.index_on_startup && !self.file_cache.contains_key(&uri) {
-            tracing::info!("Skipping did_open index for {:?}: indexOnStartup=false and file not yet tracked", path);
+        let previously_indexed = !self.symbol_index.get_file_symbols(&path).is_empty();
+        if !config.index_on_startup && !previously_indexed {
+            tracing::info!("Skipping did_open index for {:?}: indexOnStartup=false and file not yet indexed", path);
             return;
         }
 
