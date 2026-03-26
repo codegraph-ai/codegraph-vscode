@@ -1,5 +1,6 @@
 {
   "_comment": "Advanced — using the binary directly (requires --mcp flag)",
+  "_embedding_models": "jina-code-v2 (best quality, 768d) or bge-small (5x faster, 384d)",
   "mcpServers": {
     "codegraph": {
       "command": "/path/to/codegraph-lsp",

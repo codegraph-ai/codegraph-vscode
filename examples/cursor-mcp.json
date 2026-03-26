@@ -1,5 +1,6 @@
 {
   "_comment": "Add to ~/.cursor/mcp.json or .cursor/mcp.json in your project root",
+  "_embedding_models": "For faster indexing add: --embedding-model bge-small (5x faster, lower clone detection quality)",
   "mcpServers": {
     "codegraph": {
       "command": "codegraph-mcp",

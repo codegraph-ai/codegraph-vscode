@@ -28,3 +28,8 @@ All tools that target a specific symbol accept either:
 - Use `compact: true` on search tools for smaller responses
 - `find_duplicates` with `threshold: 0.9` for near-exact clones, `0.7` for similar code
 - `cluster_symbols` with `threshold: 0.8, minClusterSize: 3` for architectural patterns
+
+### Embedding model
+Default is `jina-code-v2` (768d, best clone detection quality). For faster indexing on slower hardware, configure `bge-small` (384d, 5x faster):
+- MCP: add `--embedding-model bge-small` to args
+- VS Code: set `"codegraph.embeddingModel": "bge-small"` in settings.json

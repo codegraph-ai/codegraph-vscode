@@ -1,6 +1,6 @@
 {
-  "_comment_1": "Option A: npm package (auto-adds --mcp)",
-  "_comment_2": "Add to ~/.claude.json or .mcp.json in your project root",
+  "_comment_1": "Add to ~/.claude.json or .mcp.json in your project root",
+  "_comment_2": "For faster indexing on slower hardware, add: --embedding-model bge-small",
   "mcpServers": {
     "codegraph": {
       "command": "codegraph-mcp",

@@ -15,3 +15,5 @@ When analyzing code structure, dependencies, or quality, use CodeGraph MCP tools
 - **Check complexity**: Use `codegraph_analyze_complexity` to identify functions that need refactoring
 
 All tools use `uri` (file URI like `file:///path/to/file.rs`) and `line` (0-indexed) to identify symbols. Use `nodeId` from `symbol_search` results as an alternative.
+
+If indexing is slow, switch to the faster embedding model by adding `--embedding-model bge-small` to your MCP config args. Default is `jina-code-v2` (best quality for clone detection, 5x slower).
