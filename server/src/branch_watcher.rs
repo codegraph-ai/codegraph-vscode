@@ -382,5 +382,11 @@ async fn handle_branch_switch(
     ctx.query_cache.invalidate_all();
     ctx.query_engine.build_indexes().await;
 
+    // Incrementally re-embed changed files' symbols
+    for path in &modified_files {
+        let path_str = path.to_string_lossy().to_string();
+        ctx.query_engine.update_file_vectors(&path_str).await;
+    }
+
     Ok((modified_count, deleted_count))
 }
