@@ -2,7 +2,8 @@
 
 **Cross-language code intelligence for AI agents and developers.**
 
-[![VS Code](https://img.shields.io/badge/VS%20Code-1.90+-blue.svg)](https://code.visualstudio.com/)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/i/astudioplus.codegraph?label=VS%20Code%20installs)](https://marketplace.visualstudio.com/items?itemName=astudioplus.codegraph)
+[![npm](https://img.shields.io/npm/v/@memoryx/codegraph-mcp)](https://www.npmjs.com/package/@memoryx/codegraph-mcp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
 CodeGraph builds a semantic graph of your codebase — functions, classes, imports, call chains — and exposes it through **35 tools**, a **VS Code extension**, and a **persistent memory layer**. AI agents get structured code understanding instead of grepping through files.
@@ -28,48 +29,14 @@ Add to `~/.claude.json` (or your MCP client config):
 }
 ```
 
-The server indexes the current working directory automatically — no `--workspace` flag needed. It also accepts MCP `roots` from the client for workspace discovery.
-
-**Multi-project indexing** — index multiple codebases into a single graph:
-
-```json
-{
-  "mcpServers": {
-    "codegraph": {
-      "command": "codegraph-mcp",
-      "args": [
-        "--workspace", "/path/to/frontend",
-        "--workspace", "/path/to/backend",
-        "--workspace", "/path/to/shared-lib"
-      ]
-    }
-  }
-}
-```
-
-**Excluding directories** — skip custom build artifacts or generated code:
-
-```json
-{
-  "mcpServers": {
-    "codegraph": {
-      "command": "codegraph-mcp",
-      "args": [
-        "--exclude", "cmake-build-debug",
-        "--exclude", "bazel-out",
-        "--exclude", "generated"
-      ]
-    }
-  }
-}
-```
-
-Built-in exclusions (always skipped): `node_modules`, `target`, `dist`, `build`, `out`, `.git`, `__pycache__`, `vendor`, `DerivedData`, `tmp`, `coverage`, `logs`.
+The server indexes the current working directory automatically. See `examples/` for advanced configs (multi-project, exclusions, model selection).
 
 ### VS Code Extension
 
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=astudioplus.codegraph) or manually:
+
 ```bash
-code --install-extension codegraph-0.11.0.vsix
+code --install-extension codegraph-0.11.1.vsix
 ```
 
 The extension registers all 35 MCP tools plus 3 additional VS Code-specific tools as Language Model Tools. To steer Copilot toward using them:
@@ -85,13 +52,50 @@ The extension registers all 35 MCP tools plus 3 additional VS Code-specific tool
 
 ---
 
+## Configuration
+
+### MCP Server flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace <path>` | current dir | Directories to index (repeatable for multi-project) |
+| `--exclude <dir>` | — | Directories to skip (repeatable) |
+| `--embedding-model <model>` | `jina-code-v2` | `jina-code-v2` (768d, best quality) or `bge-small` (384d, 5x faster) |
+| `--max-files <n>` | 5000 | Maximum files to index |
+
+### VS Code settings
+
+```jsonc
+{
+  "codegraph.indexOnStartup": true,
+  "codegraph.indexPaths": ["/path/to/project-a", "/path/to/project-b"],
+  "codegraph.excludePatterns": ["**/cmake-build-debug/**", "**/generated/**"],
+  "codegraph.embeddingModel": "jina-code-v2",
+  "codegraph.maxFileSizeKB": 1024,
+  "codegraph.debug": false
+}
+```
+
+### Embedding models
+
+| Model | Dimensions | Speed (real code) | Clone detection | Download |
+|-------|-----------|-------------------|-----------------|----------|
+| `jina-code-v2` (default) | 768 | ~10 fn/sec | Excellent — clean separation at threshold 0.7 | 642MB |
+| `bge-small` | 384 | ~64 fn/sec | Limited — no usable threshold for clones | 127MB |
+
+Built-in exclusions (always skipped): `node_modules`, `target`, `dist`, `build`, `out`, `.git`, `__pycache__`, `vendor`, `DerivedData`, `tmp`, `coverage`, `logs`.
+
+See `examples/` for complete configs for Claude Code, VS Code, and Cursor.
+
+---
+
 ## Tools (35)
 
 ### Code Analysis (9)
 
 | Tool | What it does |
 |------|-------------|
-| `get_ai_context` | **Primary context tool.** Intent-aware (explain/modify/debug/test) with token budgeting. Returns source, related symbols (full or signature-only), file imports, sibling functions, debug hints, architecture. |
+| `get_ai_context` | **Primary context tool.** Intent-aware (explain/modify/debug/test) with token budgeting. Returns source, related symbols, imports, siblings, debug hints. |
 | `get_edit_context` | Everything needed before editing: source + callers + tests + memories + git history |
 | `get_curated_context` | Cross-codebase context for a natural language query ("how does auth work?") |
 | `get_dependency_graph` | File/module import relationships with depth control |
@@ -103,7 +107,7 @@ The extension registers all 35 MCP tools plus 3 additional VS Code-specific tool
 
 ### Code Similarity (4)
 
-Powered by [Jina Code V2](https://huggingface.co/jinaai/jina-embeddings-v2-base-code) embeddings — code-aware semantic search trained on 150M+ code pairs across 30 languages.
+Powered by configurable embeddings — [Jina Code V2](https://huggingface.co/jinaai/jina-embeddings-v2-base-code) (default) or BGE-Small for faster indexing.
 
 | Tool | What it does |
 |------|-------------|
@@ -116,13 +120,13 @@ Powered by [Jina Code V2](https://huggingface.co/jinaai/jina-embeddings-v2-base-
 
 | Tool | What it does |
 |------|-------------|
-| `symbol_search` | Find symbols by name or natural language (hybrid BM25 + Jina Code V2 semantic search) |
+| `symbol_search` | Find symbols by name or natural language (hybrid BM25 + semantic search) |
 | `get_callers` / `get_callees` | Who calls this? What does it call? (with transitive depth) |
 | `get_detailed_symbol` | Full symbol info: source, callers, callees, complexity |
 | `get_symbol_info` | Quick metadata: signature, visibility, kind |
-| `find_by_imports` | Find files importing a module (`moduleName` param) |
+| `find_by_imports` | Find files importing a module |
 | `find_by_signature` | Search by param count, return type, modifiers |
-| `find_entry_points` | Main functions, HTTP handlers, tests |
+| `find_entry_points` | Main functions, HTTP handlers, CLI commands, event handlers |
 | `find_related_tests` | Tests that exercise a given function |
 | `traverse_graph` | Custom graph traversal with edge/node type filters |
 | `cross_project_search` | Search across all indexed projects |
@@ -139,7 +143,7 @@ Persistent AI context across sessions — debugging insights, architectural deci
 | `mine_git_history` / `mine_git_history_for_file` | Auto-create memories from commits |
 | `search_git_history` | Semantic search over commit history |
 
-All tool names are prefixed with `codegraph_` (e.g. `codegraph_get_ai_context`).
+All tool names are prefixed with `codegraph_` (e.g. `codegraph_get_ai_context`). Tools that target a specific symbol accept `uri` + `line` or `nodeId` from `symbol_search` results.
 
 ---
 
@@ -167,44 +171,16 @@ MCP Client (Claude, Cursor, ...)        VS Code Extension
             │  Semantic graph engine      │
             │  AI query engine (BM25)     │
             │  Memory layer (RocksDB)     │
-            │  Jina Code V2 (768d ONNX)  │
+            │  Configurable embeddings    │
             │  HNSW vector index          │
             └─────────────────────────────┘
 ```
 
 A single Rust binary serves both MCP and LSP. Both protocols call the same domain layer — identical logic, identical results.
 
-- **Indexing**: Sub-10s for 100k LOC. Incremental re-indexing on file changes.
+- **Indexing**: Sub-15s for 800+ files. Incremental re-indexing on file changes.
 - **Queries**: Sub-100ms for navigation. Cross-file import and call resolution at index time.
-- **Embeddings**: Jina Code V2 (768d, code-aware). Auto-downloads on first run (~642MB).
-
----
-
-## Indexing Configuration
-
-Auto-indexing is **off by default**. Use the command palette (`CodeGraph: Index Directory`) for on-demand indexing, or configure paths:
-
-```jsonc
-// .vscode/settings.json
-{
-  "codegraph.indexOnStartup": true,
-  "codegraph.indexPaths": [
-    "/path/to/project-a",
-    "/path/to/project-b"
-  ],
-  "codegraph.excludePatterns": [
-    "**/cmake-build-debug/**",
-    "**/bazel-out/**",
-    "**/generated/**",
-    "**/*.bin"
-  ],
-  "codegraph.maxFileSizeKB": 1024
-}
-```
-
-`indexPaths` accepts any absolute paths — they don't have to be inside your workspace. All paths are indexed into a single unified graph. In multi-root workspaces, put `indexPaths` in **one** `settings.json` only (arrays are not merged across folders).
-
-Always-skipped directories: `node_modules`, `target`, `.git`, `dist`, `build`, `out`, `__pycache__`, `vendor`, `DerivedData`, `tmp`, `coverage`, `logs`. For MCP, use `--exclude` flags. For VS Code, use `codegraph.excludePatterns` with glob syntax.
+- **Embeddings**: Jina Code V2 (768d) or BGE-Small (384d). Auto-downloads on first run. Configurable via `--embedding-model` or `codegraph.embeddingModel`.
 
 ---
 
