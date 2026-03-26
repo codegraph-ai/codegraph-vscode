@@ -298,6 +298,27 @@ impl CodeGraphBackend {
         "logs",
     ];
 
+    /// Build a `GlobSet` from user-configured exclude patterns.
+    /// Uses the `globset` crate which properly supports `**` (globstar).
+    /// Logs warnings for any patterns that fail to compile.
+    fn build_exclude_set(patterns: &[String]) -> globset::GlobSet {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pattern in patterns {
+            match globset::Glob::new(pattern) {
+                Ok(g) => {
+                    builder.add(g);
+                }
+                Err(e) => {
+                    tracing::warn!("Invalid exclude pattern '{}': {}", pattern, e);
+                }
+            }
+        }
+        builder.build().unwrap_or_else(|e| {
+            tracing::warn!("Failed to build exclude GlobSet: {}", e);
+            globset::GlobSet::empty()
+        })
+    }
+
     /// Index all supported files in a directory
     pub fn index_directory<'a>(
         &'a self,
@@ -334,11 +355,7 @@ impl CodeGraphBackend {
             // Read config for exclude patterns and max file size
             let config = self.config.read().await.clone();
             let max_file_size = config.max_file_size_kb * 1024;
-            let exclude_globs: Vec<glob::Pattern> = config
-                .exclude_patterns
-                .iter()
-                .filter_map(|p| glob::Pattern::new(p).ok())
-                .collect();
+            let exclude_set = Self::build_exclude_set(&config.exclude_patterns);
 
             let mut indexed_count = 0;
             let supported_extensions = self.parsers.supported_extensions();
@@ -377,9 +394,8 @@ impl CodeGraphBackend {
 
                         // Skip directories matching user-configured exclude globs
                         let path_str = path.to_string_lossy();
-                        if exclude_globs
-                            .iter()
-                            .any(|g| g.matches(&path_str) || g.matches(&dir_name))
+                        if exclude_set.is_match(path_str.as_ref())
+                            || exclude_set.is_match(dir_name.as_ref())
                         {
                             tracing::info!("Skipping {:?}: matched exclude pattern", path);
                             continue;
@@ -392,7 +408,7 @@ impl CodeGraphBackend {
                     } else if path.is_file() {
                         // Skip files matching exclude globs
                         let path_str = path.to_string_lossy();
-                        if exclude_globs.iter().any(|g| g.matches(&path_str)) {
+                        if exclude_set.is_match(path_str.as_ref()) {
                             continue;
                         }
 
@@ -1118,6 +1134,22 @@ impl LanguageServer for CodeGraphBackend {
                 return;
             }
         };
+
+        // Respect indexOnStartup=false: only index on did_open if the file
+        // is already tracked (was previously indexed), or if indexOnStartup is true.
+        let config = self.config.read().await.clone();
+        if !config.index_on_startup && !self.file_cache.contains_key(&uri) {
+            tracing::info!("Skipping did_open index for {:?}: indexOnStartup=false and file not yet tracked", path);
+            return;
+        }
+
+        // Skip files matching exclude patterns
+        let exclude_set = Self::build_exclude_set(&config.exclude_patterns);
+        let path_str = path.to_string_lossy();
+        if exclude_set.is_match(path_str.as_ref()) {
+            tracing::info!("Skipping did_open for {:?}: matched exclude pattern", path);
+            return;
+        }
 
         if let Some(parser) = self.parsers.parser_for_path(&path) {
             tracing::info!("Parser found for: {:?}", path);
