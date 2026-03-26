@@ -1245,11 +1245,11 @@ fn find_similar_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_similar".to_string(),
-        description: Some("Finds functions most similar to a given function using semantic code embeddings. USE WHEN: checking if similar functionality already exists before writing new code, finding related implementations across the codebase, or discovering code that could be consolidated. Returns functions ranked by similarity score with file paths and signatures. Works across languages.".to_string()),
+        description: Some("Finds functions most similar to a given function using semantic code embeddings. USE WHEN: checking if similar functionality already exists before writing new code, finding related implementations across the codebase, or discovering code that could be consolidated. Returns functions ranked by similarity score with file paths and signatures. Works across languages. Identify the target function via nodeId (from symbol_search results) OR uri+line.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
-            required: None,
+            required: None, // either nodeId or uri+line
         },
     }
 }
@@ -1312,7 +1312,7 @@ fn compare_symbols_tool() -> Tool {
 
     Tool {
         name: "codegraph_compare_symbols".to_string(),
-        description: Some("Compares two functions semantically and structurally. USE WHEN: reviewing duplicates from find_duplicates, deciding whether to merge similar code, or understanding how two functions relate. Returns: semantic similarity score, verdict (clone/similar/related/unrelated), structural comparison (complexity, lines, params), and shared callers/callees.".to_string()),
+        description: Some("Compares two functions semantically and structurally. USE WHEN: reviewing duplicates from find_duplicates, deciding whether to merge similar code, or understanding how two functions relate. Returns: semantic similarity score, verdict (clone/similar/related/unrelated), structural comparison (complexity, lines, params), and shared callers/callees. Identify each function via nodeIdA/nodeIdB (strings from symbol_search) OR uriA+lineA / uriB+lineB.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
