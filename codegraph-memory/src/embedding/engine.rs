@@ -107,6 +107,11 @@ impl VectorEngine {
         self.dimension
     }
 
+    /// Get model display name (e.g. "Jina Code V2 (768d)")
+    pub fn model_name(&self) -> &'static str {
+        self.model.model_type().display_name()
+    }
+
     /// Get cache size
     pub fn cache_size(&self) -> usize {
         self.cache.len()

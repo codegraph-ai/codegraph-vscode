@@ -188,9 +188,11 @@ impl QueryEngine {
             return;
         }
 
+        let model_name = engine.model_name();
         tracing::info!(
-            "[QueryEngine] Embedding {} symbols (Jina Code V2, 768d)...",
-            texts.len()
+            "[QueryEngine] Embedding {} symbols ({})...",
+            texts.len(),
+            model_name,
         );
 
         // Embed in small chunks to limit peak memory usage.
