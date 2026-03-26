@@ -1,4 +1,6 @@
 {
+  "_comment_1": "Option A: npm package (auto-adds --mcp)",
+  "_comment_2": "Add to ~/.claude.json or .mcp.json in your project root",
   "mcpServers": {
     "codegraph": {
       "command": "codegraph-mcp",
