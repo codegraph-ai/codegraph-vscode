@@ -1,0 +1,16 @@
+{
+  "_comment": "Advanced configuration — add to ~/.claude.json or .mcp.json in your project root",
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph-mcp",
+      "args": [
+        "--workspace", "/path/to/your/project",
+        "--workspace", "/path/to/another/project",
+        "--exclude", "cmake-build-debug",
+        "--exclude", "generated",
+        "--embedding-model", "jina-code-v2",
+        "--max-files", "5000"
+      ]
+    }
+  }
+}

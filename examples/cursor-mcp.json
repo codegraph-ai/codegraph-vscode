@@ -1,0 +1,9 @@
+{
+  "_comment": "Add to ~/.cursor/mcp.json or .cursor/mcp.json in your project root",
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph-mcp",
+      "args": []
+    }
+  }
+}

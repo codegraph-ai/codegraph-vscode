@@ -1,0 +1,37 @@
+// .vscode/settings.json — CodeGraph configuration
+// Add these to your project's .vscode/settings.json
+{
+  // Index workspace automatically when VS Code starts
+  "codegraph.indexOnStartup": true,
+
+  // Specific directories to index (when empty, all workspace folders are indexed)
+  "codegraph.indexPaths": [
+    "/path/to/your/project/src",
+    "/path/to/your/project/lib"
+  ],
+
+  // Directories to exclude from indexing (glob patterns)
+  "codegraph.excludePatterns": [
+    "**/cmake-build-debug/**",
+    "**/bazel-out/**",
+    "**/generated/**",
+    "**/*.min.js",
+    "**/*.bundle.js"
+  ],
+
+  // Maximum file size to index in KB (default: 1024)
+  "codegraph.maxFileSizeKB": 1024,
+
+  // Embedding model for semantic search and clone detection
+  // "jina-code-v2" — best quality, 768d, ~642MB download, slower indexing
+  // "bge-small"    — 4-5x faster, 384d, ~127MB download, lower clone detection quality
+  "codegraph.embeddingModel": "jina-code-v2",
+
+  // Enable debug output channel for troubleshooting
+  "codegraph.debug": false,
+
+  // Steer Copilot toward using CodeGraph tools
+  "github.copilot.chat.codeGeneration.instructions": [
+    "When analyzing code structure, callers, callees, dependencies, or complexity, prefer codegraph_* tools over file search. CodeGraph has a pre-built semantic graph that returns structured results instantly."
+  ]
+}
