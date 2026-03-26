@@ -1217,8 +1217,12 @@ impl LanguageServer for CodeGraphBackend {
                     }
                 }
 
-                // Rebuild AI query engine indexes so callee/caller indexes reflect new node IDs
+                // Rebuild AI query engine indexes
                 self.query_engine.build_indexes().await;
+
+                // Incrementally re-embed only this file's symbols (not the whole codebase)
+                let path_str = path.to_string_lossy().to_string();
+                self.query_engine.update_file_vectors(&path_str).await;
             }
         }
     }

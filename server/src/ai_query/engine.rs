@@ -246,6 +246,83 @@ impl QueryEngine {
         );
     }
 
+    /// Re-embed only symbols from a specific file path.
+    /// Called on did_save to incrementally update embeddings without rebuilding all.
+    pub async fn update_file_vectors(&self, file_path: &str) {
+        let engine = match self.vector_engine.read().await.clone() {
+            Some(e) => e,
+            None => return,
+        };
+
+        let graph = self.graph.read().await;
+
+        // Collect symbols from this file only
+        let mut node_ids = Vec::new();
+        let mut texts = Vec::new();
+
+        for (node_id, node) in graph.iter_nodes() {
+            if !matches!(
+                node.node_type,
+                NodeType::Function | NodeType::Class | NodeType::Variable
+                    | NodeType::Interface | NodeType::Type
+            ) {
+                continue;
+            }
+
+            let path = node_props::path(node);
+            if !path.ends_with(file_path) && !file_path.ends_with(path) {
+                continue;
+            }
+
+            let name = node_props::name(node);
+            if name.is_empty() || name == "arrow_function" || name == "anonymous" {
+                continue;
+            }
+
+            let signature = node.properties.get_string("signature").unwrap_or("");
+            let docstring = node.properties.get_string("doc").unwrap_or("");
+
+            let embed_text = if !docstring.is_empty() && !signature.is_empty() {
+                format!("{name}: {signature} — {docstring}")
+            } else if !signature.is_empty() {
+                format!("{name}: {signature}")
+            } else if !docstring.is_empty() {
+                format!("{name} — {docstring}")
+            } else {
+                name.to_string()
+            };
+
+            node_ids.push(node_id);
+            texts.push(embed_text);
+        }
+
+        drop(graph);
+
+        if texts.is_empty() {
+            return;
+        }
+
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        match engine.embed_batch(&text_refs) {
+            Ok(vectors) => {
+                let mut symbol_vecs = self.symbol_vectors.write().await;
+                let mut symbol_texts = self.symbol_texts.write().await;
+                for (i, vec) in vectors.into_iter().enumerate() {
+                    symbol_vecs.insert(node_ids[i], vec);
+                    symbol_texts.insert(node_ids[i], texts[i].clone());
+                }
+                tracing::debug!(
+                    "[QueryEngine] Re-embedded {} symbols from {}",
+                    node_ids.len(),
+                    file_path
+                );
+            }
+            Err(e) => {
+                tracing::warn!("[QueryEngine] Failed to re-embed file {}: {:?}", file_path, e);
+            }
+        }
+    }
+
     /// Search for symbols by name, docstring, or comments.
     /// Uses hybrid BM25 + semantic scoring when vector engine is available.
     pub async fn symbol_search(&self, query: &str, options: &SearchOptions) -> SymbolSearchResult {
