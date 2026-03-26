@@ -156,7 +156,7 @@ fn get_dependency_graph_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_dependency_graph".to_string(),
-        description: Some("Analyzes file import/dependency relationships. USE WHEN: understanding module architecture, finding circular dependencies, planning refactoring, or tracing import chains. Returns a graph of files connected by import edges. direction='imports' shows what this file depends on, 'importedBy' shows what depends on this file, 'both' shows full picture. depth controls how many levels to traverse (1=direct only).".to_string()),
+        description: Some("Analyzes file import/dependency relationships. USE WHEN: understanding module architecture, finding circular dependencies, planning refactoring, or tracing import chains. Returns a graph of files connected by import edges. direction='imports' shows what this file depends on, 'importedBy' shows what depends on this file, 'both' shows full picture. depth controls how many levels to traverse (1=direct only). Requires uri parameter (file URI).".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -194,7 +194,7 @@ fn get_call_graph_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_call_graph".to_string(),
-        description: Some("Maps function call relationships showing callers and callees. USE WHEN: tracing execution flow, understanding function usage, finding dead code, or debugging. Returns nodes with name, type, file path, and line range for each caller/callee in the chain. Use depth to control how many levels to traverse.".to_string()),
+        description: Some("Maps function call relationships showing callers and callees. USE WHEN: tracing execution flow, understanding function usage, finding dead code, or debugging. Returns nodes with name, type, file path, and line range for each caller/callee in the chain. Use depth to control how many levels to traverse. Requires uri and line parameters.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -231,7 +231,7 @@ fn analyze_impact_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_impact".to_string(),
-        description: Some("Predicts blast radius of code changes before making them. USE WHEN: planning refactoring, renaming symbols, deleting code, or assessing risk. Returns: list of affected symbols (direct and transitive), risk assessment, and change type analysis. changeType affects the analysis: 'modify' shows callers/dependents, 'delete' shows all references that would break, 'rename' shows all sites needing updates.".to_string()),
+        description: Some("Predicts blast radius of code changes before making them. USE WHEN: planning refactoring, renaming symbols, deleting code, or assessing risk. Returns: list of affected symbols (direct and transitive), risk assessment, and change type analysis. changeType affects the analysis: 'modify' shows callers/dependents, 'delete' shows all references that would break, 'rename' shows all sites needing updates. Requires uri and line parameters.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -265,7 +265,7 @@ fn get_ai_context_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_ai_context".to_string(),
-        description: Some("Gathers comprehensive code context optimized for AI understanding. USE WHEN: explaining code, planning modifications, debugging issues, or writing tests. THIS IS YOUR PRIMARY TOOL for understanding unfamiliar code. Returns: primaryContext (full source code), relatedSymbols (full source or signature-only when budget is tight), imports (file-level module imports), siblingFunctions (other functions in same file with signatures), dependencies, architecture (module, layer, neighbors), and debugHints (complexity, branches, exception handlers, early returns — debug intent only). Intent controls prioritization: 'explain' = dependencies + callers + siblings, 'modify' = tests + callers, 'debug' = call chain + debug hints, 'test' = example tests + mockable dependencies. maxTokens controls budget — high-priority sections get full source, remaining budget fills with signature-only symbols for maximum coverage.".to_string()),
+        description: Some("Gathers comprehensive code context optimized for AI understanding. USE WHEN: explaining code, planning modifications, debugging issues, or writing tests. THIS IS YOUR PRIMARY TOOL for understanding unfamiliar code. Returns: primaryContext (full source code), relatedSymbols (full source or signature-only when budget is tight), imports (file-level module imports), siblingFunctions (other functions in same file with signatures), dependencies, architecture (module, layer, neighbors), and debugHints (complexity, branches, exception handlers, early returns — debug intent only). Intent controls prioritization: 'explain' = dependencies + callers + siblings, 'modify' = tests + callers, 'debug' = call chain + debug hints, 'test' = example tests + mockable dependencies. maxTokens controls budget — high-priority sections get full source, remaining budget fills with signature-only symbols for maximum coverage. Requires uri and line parameters.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -294,7 +294,7 @@ fn get_edit_context_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_edit_context".to_string(),
-        description: Some("Assembles everything needed to edit code at a specific location in a single call. USE WHEN: you are about to modify, refactor, or fix code and need full context before making changes. PREFER THIS over codegraph_get_ai_context when you are about to write or modify code — it includes callers (impact), tests (what to update), and git history (recent context) that get_ai_context does not. Use get_ai_context instead when you only need to understand or explain code. Returns 5 sections: (1) symbol — full source code of the function/method at the given line, (2) callers — functions that call this symbol (to assess impact of changes), (3) tests — related test functions (to know what to update/run), (4) memories — relevant debug notes, architectural decisions, and known issues, (5) recentChanges — recent git commits that touched this file. EXAMPLE: Before modifying a function's signature, call this to see all callers that would break, tests that need updating, and whether someone recently changed this code. Token budget controls total context size with priority: symbol > callers > tests > memories > git history.".to_string()),
+        description: Some("Assembles everything needed to edit code at a specific location in a single call. USE WHEN: you are about to modify, refactor, or fix code and need full context before making changes. PREFER THIS over codegraph_get_ai_context when you are about to write or modify code — it includes callers (impact), tests (what to update), and git history (recent context) that get_ai_context does not. Use get_ai_context instead when you only need to understand or explain code. Returns 5 sections: (1) symbol — full source code of the function/method at the given line, (2) callers — functions that call this symbol (to assess impact of changes), (3) tests — related test functions (to know what to update/run), (4) memories — relevant debug notes, architectural decisions, and known issues, (5) recentChanges — recent git commits that touched this file. EXAMPLE: Before modifying a function's signature, call this to see all callers that would break, tests that need updating, and whether someone recently changed this code. Token budget controls total context size with priority: symbol > callers > tests > memories > git history. Requires uri and line parameters.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -358,7 +358,7 @@ fn find_related_tests_tool() -> Tool {
 
     Tool {
         name: "codegraph_find_related_tests".to_string(),
-        description: Some("Discovers test files and functions that exercise specific code. USE WHEN: modifying code to know which tests to run/update, debugging to find test cases, or assessing test coverage. Returns tests array (name, id, relationship) for the target symbol, plus total count. Finds tests by tracing Calls edges to functions with test-like names (test_, _test).".to_string()),
+        description: Some("Discovers test files and functions that exercise specific code. USE WHEN: modifying code to know which tests to run/update, debugging to find test cases, or assessing test coverage. Returns tests array (name, id, relationship) for the target symbol, plus total count. Finds tests by tracing Calls edges to functions with test-like names (test_, _test). Requires uri and line parameters.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -387,7 +387,7 @@ fn get_symbol_info_tool() -> Tool {
 
     Tool {
         name: "codegraph_get_symbol_info".to_string(),
-        description: Some("Gets quick metadata about any symbol (function, class, variable, type). USE WHEN: you need to quickly understand what a symbol is, check its signature, or see usage count. FASTER than codegraph_get_ai_context when you only need basic info. Returns: name, kind, signature, visibility, file path, line range, and properties (is_async, is_static, etc.). Set includeReferences=true to also get all reference locations (slower).".to_string()),
+        description: Some("Gets quick metadata about any symbol (function, class, variable, type). USE WHEN: you need to quickly understand what a symbol is, check its signature, or see usage count. FASTER than codegraph_get_ai_context when you only need basic info. Returns: name, kind, signature, visibility, file path, line range, and properties (is_async, is_static, etc.). Set includeReferences=true to also get all reference locations (slower). Requires uri and line parameters.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -420,7 +420,7 @@ fn analyze_complexity_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_complexity".to_string(),
-        description: Some("Measures code complexity metrics for refactoring decisions. USE WHEN: identifying functions that need simplification, reviewing code quality, or prioritizing technical debt. Returns cyclomatic complexity score per function, with name, line range, and file path. Scores >10 typically indicate refactoring candidates, >20 is high complexity. Use threshold to filter — only functions at or above the threshold are returned. Omit line to analyze all functions in a file. Returns: {functions:[{name, complexity, grade, node_id, line_start, line_end, details:{complexity_branches, complexity_loops, complexity_logical_ops, complexity_nesting, complexity_exceptions, complexity_early_returns, lines_of_code}}], summary:{total_functions, average_complexity, max_complexity, above_threshold, threshold, overall_grade}, recommendations:[]}".to_string()),
+        description: Some("Measures code complexity metrics for refactoring decisions. USE WHEN: identifying functions that need simplification, reviewing code quality, or prioritizing technical debt. Returns cyclomatic complexity score per function, with name, line range, and file path. Scores >10 typically indicate refactoring candidates, >20 is high complexity. Use threshold to filter — only functions at or above the threshold are returned. Omit line to analyze all functions in a file. Returns: {functions:[{name, complexity, grade, node_id, line_start, line_end, details:{complexity_branches, complexity_loops, complexity_logical_ops, complexity_nesting, complexity_exceptions, complexity_early_returns, lines_of_code}}], summary:{total_functions, average_complexity, max_complexity, above_threshold, threshold, overall_grade}, recommendations:[]} Requires uri parameter. Optionally line for a specific function.".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -491,7 +491,7 @@ fn analyze_coupling_tool() -> Tool {
 
     Tool {
         name: "codegraph_analyze_coupling".to_string(),
-        description: Some("Measures module coupling for architectural analysis. USE WHEN: evaluating module boundaries, planning decoupling refactoring, or assessing architectural health. Returns metrics: afferent_coupling (incoming), efferent_coupling (outgoing), instability (0.0=stable, 1.0=unstable), total_dependencies, total_connections, plus a dependency_graph with nodes and edges. High instability (>0.8) suggests fragile module.".to_string()),
+        description: Some("Measures module coupling for architectural analysis. USE WHEN: evaluating module boundaries, planning decoupling refactoring, or assessing architectural health. Returns metrics: afferent_coupling (incoming), efferent_coupling (outgoing), instability (0.0=stable, 1.0=unstable), total_dependencies, total_connections, plus a dependency_graph with nodes and edges. High instability (>0.8) suggests fragile module. Requires uri parameter (file URI).".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
@@ -1107,7 +1107,7 @@ fn mine_git_file_tool() -> Tool {
 
     Tool {
         name: "codegraph_mine_git_history_for_file".to_string(),
-        description: Some("Mines git history for a specific file to create memories. USE WHEN: wanting to understand the history and evolution of a particular file.".to_string()),
+        description: Some("Mines git history for a specific file to create memories. USE WHEN: wanting to understand the history and evolution of a particular file. Requires uri parameter (file URI).".to_string()),
         input_schema: ToolInputSchema {
             schema_type: "object".to_string(),
             properties: Some(properties),
