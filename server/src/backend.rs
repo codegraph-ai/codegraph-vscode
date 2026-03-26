@@ -842,15 +842,32 @@ impl LanguageServer for CodeGraphBackend {
             );
             // Update memory manager with extension path by replacing it
             // Read embedding model from init options
-            let embedding_model = init_opts.as_ref()
-                .and_then(|opts| opts.get("embeddingModel"))
+            let raw_model = init_opts.as_ref()
+                .and_then(|opts| opts.get("embeddingModel"));
+            tracing::info!(
+                "[LSP::initialize] embeddingModel from init options: {:?}",
+                raw_model
+            );
+
+            let embedding_model = raw_model
                 .and_then(|v| v.as_str())
-                .and_then(|s| match s {
-                    "bge-small" => Some(codegraph_memory::CodeGraphEmbeddingModel::BgeSmall),
-                    "jina-code-v2" => Some(codegraph_memory::CodeGraphEmbeddingModel::JinaCodeV2),
-                    _ => None,
+                .and_then(|s| {
+                    tracing::info!("[LSP::initialize] Parsing embedding model string: {:?}", s);
+                    match s {
+                        "bge-small" => Some(codegraph_memory::CodeGraphEmbeddingModel::BgeSmall),
+                        "jina-code-v2" => Some(codegraph_memory::CodeGraphEmbeddingModel::JinaCodeV2),
+                        _ => {
+                            tracing::warn!("[LSP::initialize] Unknown embedding model: {:?}, using default", s);
+                            None
+                        }
+                    }
                 })
                 .unwrap_or_default();
+
+            tracing::info!(
+                "[LSP::initialize] Selected embedding model: {}",
+                embedding_model.display_name()
+            );
 
             // Safety: We're replacing the Arc contents during initialization before any use
             let new_manager = Arc::new(MemoryManager::with_model(Some(path.clone()), embedding_model));
@@ -858,7 +875,7 @@ impl LanguageServer for CodeGraphBackend {
             unsafe {
                 (*self_mut).memory_manager = new_manager;
             }
-            tracing::info!("[LSP::initialize] MemoryManager updated with extension path");
+            tracing::info!("[LSP::initialize] MemoryManager updated with extension path and model");
         } else {
             tracing::error!(
                 "[LSP::initialize] CRITICAL: No extension path provided in initialization options!"

@@ -35,6 +35,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         debug(`indexPaths: ${JSON.stringify(config.get('indexPaths'))}`);
         debug(`excludePatterns: ${JSON.stringify(config.get('excludePatterns'))}`);
         debug(`maxFileSizeKB: ${config.get('maxFileSizeKB')}`);
+        debug(`embeddingModel: ${config.get('embeddingModel')}`);
     }
 
     if (!config.get<boolean>('enabled', true)) {
