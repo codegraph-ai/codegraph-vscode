@@ -1196,6 +1196,7 @@ impl LanguageServer for CodeGraphBackend {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
+        tracing::info!("did_save called for: {}", uri);
 
         let path = match uri.to_file_path() {
             Ok(p) => p,
@@ -1204,6 +1205,7 @@ impl LanguageServer for CodeGraphBackend {
 
         if let Some(parser) = self.parsers.parser_for_path(&path) {
             if let Some(text) = params.text {
+                tracing::info!("did_save has text, re-parsing + re-embedding: {}", uri);
                 self.remove_file_from_graph(&path).await;
 
                 {

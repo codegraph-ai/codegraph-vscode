@@ -251,7 +251,10 @@ impl QueryEngine {
     pub async fn update_file_vectors(&self, file_path: &str) {
         let engine = match self.vector_engine.read().await.clone() {
             Some(e) => e,
-            None => return,
+            None => {
+                tracing::debug!("[QueryEngine] No vector engine, skipping file embedding for {}", file_path);
+                return;
+            }
         };
 
         let graph = self.graph.read().await;
@@ -311,7 +314,7 @@ impl QueryEngine {
                     symbol_vecs.insert(node_ids[i], vec);
                     symbol_texts.insert(node_ids[i], texts[i].clone());
                 }
-                tracing::debug!(
+                tracing::info!(
                     "[QueryEngine] Re-embedded {} symbols from {}",
                     node_ids.len(),
                     file_path
