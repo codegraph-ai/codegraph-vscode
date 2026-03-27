@@ -1681,11 +1681,16 @@ impl LanguageServer for CodeGraphBackend {
                     .log_message(MessageType::INFO, "Reindexing workspace...")
                     .await;
 
-                // Index all workspace folders
-                let workspace_folders = self.workspace_folders.read().await.clone();
+                // Use indexPaths if configured, otherwise fall back to workspace folders
+                let config = self.config.read().await.clone();
+                let paths_to_index: Vec<std::path::PathBuf> = if config.index_paths.is_empty() {
+                    self.workspace_folders.read().await.clone()
+                } else {
+                    config.index_paths.iter().map(std::path::PathBuf::from).collect()
+                };
                 let mut total_indexed = 0;
 
-                for folder in workspace_folders {
+                for folder in paths_to_index {
                     tracing::info!("Indexing folder: {:?}", folder);
                     let count = self.index_directory(&folder).await;
                     total_indexed += count;
