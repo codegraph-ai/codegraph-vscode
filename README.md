@@ -36,7 +36,7 @@ The server indexes the current working directory automatically. See `examples/` 
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=astudioplus.codegraph) or manually:
 
 ```bash
-code --install-extension codegraph-0.11.1.vsix
+code --install-extension codegraph-0.11.2.vsix
 ```
 
 The extension registers all 35 MCP tools plus 3 additional VS Code-specific tools as Language Model Tools. To steer Copilot toward using them:

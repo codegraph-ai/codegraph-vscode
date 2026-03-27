@@ -51,3 +51,4 @@ vsforge.config.json
 # Package artifacts
 *.vsix
 *.tgz
+examples/
