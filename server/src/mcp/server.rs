@@ -43,7 +43,7 @@ impl McpBackend {
     /// Starts with a fresh in-memory graph (re-indexes all files on startup).
     /// After indexing, persists to the shared database at `~/.codegraph/graph.db`
     /// (namespaced by project slug) for cross-project access.
-    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize, embedding_model: codegraph_memory::CodeGraphEmbeddingModel) -> Self {
+    pub fn new(workspaces: Vec<PathBuf>, exclude_dirs: Vec<String>, max_files: usize, embedding_model: codegraph_memory::CodeGraphEmbeddingModel, full_body_embedding: bool) -> Self {
         let primary = workspaces.first().expect("At least one workspace required");
         let slug = memory::project_slug(primary);
         tracing::info!("Project slug: {}", slug);
@@ -74,8 +74,11 @@ impl McpBackend {
 
         tracing::info!("Extension path for models: {:?}", extension_path);
 
+        let mut query_engine = QueryEngine::new(Arc::clone(&graph));
+        query_engine.set_full_body_embedding(full_body_embedding);
+
         Self {
-            query_engine: Arc::new(QueryEngine::new(Arc::clone(&graph))),
+            query_engine: Arc::new(query_engine),
             graph,
             parsers: Arc::new(ParserRegistry::new()),
             memory_manager: Arc::new(MemoryManager::with_model(extension_path, embedding_model)),
@@ -466,9 +469,10 @@ impl McpServer {
         exclude_dirs: Vec<String>,
         max_files: usize,
         embedding_model: codegraph_memory::CodeGraphEmbeddingModel,
+        full_body_embedding: bool,
     ) -> Self {
         Self {
-            backend: McpBackend::new(workspaces, exclude_dirs, max_files, embedding_model),
+            backend: McpBackend::new(workspaces, exclude_dirs, max_files, embedding_model, full_body_embedding),
             initialized: false,
             indexed: false,
         }

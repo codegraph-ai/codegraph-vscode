@@ -37,6 +37,10 @@ struct Args {
     /// Embedding model: jina-code-v2 (768d, best quality) or bge-small (384d, 5x faster)
     #[arg(long, default_value = "jina-code-v2")]
     embedding_model: String,
+
+    /// Embed full function body instead of just name+signature (~3x slower, better quality)
+    #[arg(long)]
+    full_body_embedding: bool,
 }
 
 #[tokio::main]
@@ -75,11 +79,12 @@ async fn main() {
         tracing::info!("Starting CodeGraph MCP server");
         tracing::info!("Workspaces: {:?}", workspaces);
         tracing::info!("Embedding model: {}", embedding_model.display_name());
+        tracing::info!("Full-body embedding: {}", args.full_body_embedding);
         if !args.exclude.is_empty() {
             tracing::info!("Excluding: {:?}", args.exclude);
         }
 
-        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude, args.max_files, embedding_model);
+        let mut server = codegraph_lsp::mcp::McpServer::new(workspaces, args.exclude, args.max_files, embedding_model, args.full_body_embedding);
         if let Err(e) = server.run().await {
             tracing::error!("MCP server error: {}", e);
             std::process::exit(1);

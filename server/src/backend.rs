@@ -892,6 +892,14 @@ impl LanguageServer for CodeGraphBackend {
                 (*self_mut).memory_manager = new_manager;
             }
             tracing::info!("[LSP::initialize] MemoryManager updated with extension path and model");
+
+            // Read full-body embedding setting
+            let full_body = init_opts.as_ref()
+                .and_then(|opts| opts.get("fullBodyEmbedding"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            self.query_engine.set_full_body_embedding(full_body);
+            tracing::info!("[LSP::initialize] Full-body embedding: {}", full_body);
         } else {
             tracing::error!(
                 "[LSP::initialize] CRITICAL: No extension path provided in initialization options!"

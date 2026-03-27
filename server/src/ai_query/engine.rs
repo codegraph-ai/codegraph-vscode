@@ -42,7 +42,13 @@ pub struct QueryEngine {
     symbol_vectors: Arc<RwLock<HashMap<NodeId, Vec<f32>>>>,
     /// Symbol text used for embedding (for rebuilding)
     symbol_texts: Arc<RwLock<HashMap<NodeId, String>>>,
+    /// Embed full function body (true) or just name+signature (false, default)
+    full_body_embedding: std::sync::atomic::AtomicBool,
 }
+
+/// Max characters of function body for full-body embedding.
+/// ~512 tokens ≈ first 40-50 lines of code.
+const FULL_BODY_MAX_CHARS: usize = 2048;
 
 impl QueryEngine {
     /// Create a new query engine with the given graph.
@@ -56,6 +62,55 @@ impl QueryEngine {
             vector_engine: Arc::new(RwLock::new(None)),
             symbol_vectors: Arc::new(RwLock::new(HashMap::new())),
             symbol_texts: Arc::new(RwLock::new(HashMap::new())),
+            full_body_embedding: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Enable or disable full-body embedding mode.
+    pub fn set_full_body_embedding(&self, enabled: bool) {
+        self.full_body_embedding.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Build the embedding text for a symbol node.
+    /// In signature mode: "name: signature — docstring"
+    /// In full-body mode: "name: signature\n<truncated source body>"
+    fn build_embed_text(
+        node: &codegraph::Node,
+        node_id: NodeId,
+        name: &str,
+        full_body: bool,
+        graph: &CodeGraph,
+    ) -> String {
+        let signature = node.properties.get_string("signature").unwrap_or("");
+        let docstring = node.properties.get_string("doc").unwrap_or("");
+
+        // Base: name + signature + docstring (always included)
+        let base = if !docstring.is_empty() && !signature.is_empty() {
+            format!("{name}: {signature} — {docstring}")
+        } else if !signature.is_empty() {
+            format!("{name}: {signature}")
+        } else if !docstring.is_empty() {
+            format!("{name} — {docstring}")
+        } else {
+            name.to_string()
+        };
+
+        if !full_body {
+            return base;
+        }
+
+        // Full-body: append truncated source code
+        let source = crate::domain::source_code::get_symbol_source(graph, node_id);
+        match source {
+            Some(body) if body.len() > base.len() + 10 => {
+                let truncated = if body.len() > FULL_BODY_MAX_CHARS {
+                    &body[..FULL_BODY_MAX_CHARS]
+                } else {
+                    &body
+                };
+                format!("{base}\n{truncated}")
+            }
+            _ => base, // fallback to signature mode if source unavailable
         }
     }
 
@@ -163,19 +218,14 @@ impl QueryEngine {
                 continue;
             }
 
-            // Build embedding text: "name: signature — docstring"
-            let signature = node.properties.get_string("signature").unwrap_or("");
-            let docstring = node.properties.get_string("doc").unwrap_or("");
-
-            let embed_text = if !docstring.is_empty() && !signature.is_empty() {
-                format!("{name}: {signature} — {docstring}")
-            } else if !signature.is_empty() {
-                format!("{name}: {signature}")
-            } else if !docstring.is_empty() {
-                format!("{name} — {docstring}")
-            } else {
-                name.to_string()
-            };
+            // Build embedding text
+            let embed_text = Self::build_embed_text(
+                node,
+                node_id,
+                &name,
+                self.full_body_embedding.load(std::sync::atomic::Ordering::Relaxed),
+                &graph,
+            );
 
             node_ids.push(node_id);
             texts.push(embed_text.clone());
@@ -196,16 +246,16 @@ impl QueryEngine {
         );
 
         // Embed in small chunks to limit peak memory usage.
-        // ONNX Runtime allocates intermediate tensors proportional to batch size,
-        // and fastembed uses par_chunks (Rayon) so each CPU core holds its own tensors.
-        // With Jina Code V2 (768d fp32), each embedding is ~3KB but ONNX intermediate
-        // tensors can be 100x larger. Chunk size 64 keeps peak memory under ~2GB.
-        const CHUNK_SIZE: usize = 64;
+        // ONNX Runtime allocates intermediate tensors proportional to batch size × token count.
+        // Signature mode (~20 tokens/item): batch 64 is fine.
+        // Full-body mode (~500 tokens/item): reduce batch to 16 to stay within memory.
+        let is_full_body = self.full_body_embedding.load(std::sync::atomic::Ordering::Relaxed);
+        let chunk_size: usize = if is_full_body { 16 } else { 64 };
         let mut symbol_vecs = HashMap::with_capacity(texts.len());
-        let total_chunks = (texts.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let total_chunks = (texts.len() + chunk_size - 1) / chunk_size;
 
-        for (chunk_idx, chunk_start) in (0..texts.len()).step_by(CHUNK_SIZE).enumerate() {
-            let chunk_end = (chunk_start + CHUNK_SIZE).min(texts.len());
+        for (chunk_idx, chunk_start) in (0..texts.len()).step_by(chunk_size).enumerate() {
+            let chunk_end = (chunk_start + chunk_size).min(texts.len());
             let chunk_refs: Vec<&str> = texts[chunk_start..chunk_end]
                 .iter()
                 .map(|s| s.as_str())
@@ -282,18 +332,13 @@ impl QueryEngine {
                 continue;
             }
 
-            let signature = node.properties.get_string("signature").unwrap_or("");
-            let docstring = node.properties.get_string("doc").unwrap_or("");
-
-            let embed_text = if !docstring.is_empty() && !signature.is_empty() {
-                format!("{name}: {signature} — {docstring}")
-            } else if !signature.is_empty() {
-                format!("{name}: {signature}")
-            } else if !docstring.is_empty() {
-                format!("{name} — {docstring}")
-            } else {
-                name.to_string()
-            };
+            let embed_text = Self::build_embed_text(
+                node,
+                node_id,
+                &name,
+                self.full_body_embedding.load(std::sync::atomic::Ordering::Relaxed),
+                &graph,
+            );
 
             node_ids.push(node_id);
             texts.push(embed_text);

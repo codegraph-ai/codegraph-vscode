@@ -96,6 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 indexPaths: latestConfig.get<string[]>('indexPaths'),
                 maxFileSizeKB: latestConfig.get<number>('maxFileSizeKB'),
                 embeddingModel: latestConfig.get<string>('embeddingModel'),
+                fullBodyEmbedding: latestConfig.get<boolean>('fullBodyEmbedding'),
             };
             console.log('[CodeGraph] Initialization options:', JSON.stringify(opts));
             return opts;

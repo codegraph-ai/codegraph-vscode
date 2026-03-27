@@ -253,6 +253,12 @@
                     ],
                     "description": "Embedding model for semantic search and code similarity"
                 },
+                "codegraph.fullBodyEmbedding": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "resource",
+                    "description": "Embed full function body (first ~50 lines) instead of just name+signature. Better quality for NL search and clone detection, ~3x slower indexing. Requires reindex after changing."
+                },
                 "codegraph.visualization.defaultDepth": {
                     "type": "number",
                     "default": 3,
